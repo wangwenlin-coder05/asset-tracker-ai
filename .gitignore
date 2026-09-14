@@ -1,0 +1,41 @@
+# Node / 依赖
+node_modules/
+frontend/node_modules/
+
+# 环境与密钥（重要：不要提交 .env）
+.env
+.env.*
+!.env.example
+
+# 运行日志 / 进程
+*.log
+server.pid
+npm-debug.log*
+
+# 上传的用户数据 / 媒体
+uploads/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# 前端构建产物
+frontend/dist/
+
+# Python
+python_libs/
+__pycache__/
+*.pyc
+*.pyo
+
+# Java 构建
+target/
+*.class
+.gradle/
+out/
+
+# 其他
+.DS_Store
+*.apk
+*.exe

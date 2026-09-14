@@ -1,0 +1,6 @@
+{
+  "watch": ["server.js", "股票计算器.html"],
+  "ignore": ["node_modules", "uploads"],
+  "ext": "js,html,json",
+  "delay": 500
+}

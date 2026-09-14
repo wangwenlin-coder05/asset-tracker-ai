@@ -1,0 +1,2 @@
+2026-08-04 15:28:21.340 <string>[76] <module> -> Can not move cursor. ListItemControl's BoundingRectangle is (0,0,0,0)[0x0]. SearchProperties: {ControlType: ListItemControl}
+2026-08-04 15:28:21.343 <string>[84] <module> -> Can not move cursor. ListItemControl's BoundingRectangle is (0,0,0,0)[0x0]. SearchProperties: {ControlType: ListItemControl}
