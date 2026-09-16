@@ -180,3 +180,14 @@ export const aiWorkApi = {
 }
 
 export default api
+
+// 量化回测引擎（通过 /quant 转发到 Python 服务）
+export const quantApi = {
+  ping: () => api.get('/quant/ping'),
+  listSymbols: () => api.get('/quant/symbols'),
+  syncSymbol: (data) => api.post('/quant/symbols/sync', data, { timeout: 180000 }),
+  coverage: (code) => api.get(`/quant/symbols/${encodeURIComponent(code)}/coverage`),
+  runBacktest: (data) => api.post('/quant/backtest/run', data, { timeout: 60000 }),
+  runGrid: (data) => api.post('/quant/backtest/grid', data, { timeout: 120000 }),
+  agentChat: (data) => api.post('/quant/agent/chat', data, { timeout: 120000 }),
+}

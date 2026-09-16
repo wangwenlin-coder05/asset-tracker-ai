@@ -10,6 +10,7 @@ frontend/node_modules/
 # 运行日志 / 进程
 *.log
 server.pid
+.launcher/*.pid
 npm-debug.log*
 
 # 上传的用户数据 / 媒体
@@ -23,11 +24,23 @@ uploads/
 # 前端构建产物
 frontend/dist/
 
+# 临时调试脚本
+quant/_t.py
+
 # Python
 python_libs/
 __pycache__/
 *.pyc
 *.pyo
+
+# quant 子系统（本地数据与虚拟环境不提交）
+quant/.venv/
+quant/data/
+quant/uvicorn.log
+quant/uvicorn.err.log
+quant/.pytest_cache/
+quant/.ruff_cache/
+quant/__pycache__/
 
 # Java 构建
 target/

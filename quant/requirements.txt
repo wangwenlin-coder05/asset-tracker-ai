@@ -1,0 +1,13 @@
+# quant 回测服务运行依赖（版本锁定，保证可复现）
+fastapi==0.115.14
+uvicorn[standard]==0.34.2
+pydantic==2.10.6
+baostock==0.8.9
+
+# 可选加速：缺省时引擎自动回落到纯 Python（不影响功能）
+numpy>=1.26,<3
+
+# 开发/测试
+pytest==8.3.5
+httpx==0.28.1
+ruff==0.11.2

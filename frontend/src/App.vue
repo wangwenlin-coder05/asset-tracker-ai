@@ -16,6 +16,8 @@
             <NoteBoard v-else-if="currentBoard === 'note'" />
             <ToolBoard v-else-if="currentBoard === 'tool'" />
             <WechatStockBoard v-else-if="currentBoard === 'wechat'" ref="wechatBoardRef" />
+            <QuantBoard v-else-if="currentBoard === 'quant'" />
+            <BatchGridPanel v-else-if="currentBoard === 'quant-grid'" />
             <AiWorkBoard v-else-if="currentBoard === 'ai'" ref="aiWorkBoardRef" />
             <AiCanvasBoard v-else-if="currentBoard === 'ai-canvas'" ref="aiCanvasBoardRef" />
           </div>
@@ -36,6 +38,8 @@ import WoolBoard from './components/WoolBoard.vue'
 import NoteBoard from './components/NoteBoard.vue'
 import ToolBoard from './components/ToolBoard.vue'
 import WechatStockBoard from './components/WechatStockBoard.vue'
+import QuantBoard from './components/QuantBoard.vue'
+import BatchGridPanel from './components/quant/BatchGridPanel.vue'
 import AiWorkBoard from './components/AiWorkBoard.vue'
 import AiCanvasBoard from './components/AiCanvasBoard.vue'
 import SettingsDialog from './components/SettingsDialog.vue'

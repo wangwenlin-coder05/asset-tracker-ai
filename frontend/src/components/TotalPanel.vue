@@ -145,6 +145,16 @@
               :class="currentBoard === 'wechat' ? 'bg-emerald-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'"
             >微信选股提取</button>
             <button
+              @click="$emit('switch-board', 'quant')"
+              class="px-5 py-1.5 rounded text-sm font-medium transition-all duration-200"
+              :class="currentBoard === 'quant' ? 'bg-indigo-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'"
+            >策略回测</button>
+            <button
+              @click="$emit('switch-board', 'quant-grid')"
+              class="px-5 py-1.5 rounded text-sm font-medium transition-all duration-200"
+              :class="currentBoard === 'quant-grid' ? 'bg-violet-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'"
+            >批量回测</button>
+            <button
               @click="$emit('switch-board', 'ai')"
               class="px-5 py-1.5 rounded text-sm font-medium transition-all duration-200"
               :class="currentBoard === 'ai' ? 'bg-gradient-to-r from-indigo-500 to-blue-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'"

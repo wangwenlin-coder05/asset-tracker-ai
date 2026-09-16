@@ -1146,6 +1146,55 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'frontend', 'dist', 'index.html'));
 });
 
+// ========== 量化回测引擎代理 ==========
+// 转发到独立 Python quant 服务（FastAPI），业务逻辑在 Python 侧，Node 只做端口转发。
+const http = require('http');
+// 从 /api/backtest/* 转发到 Python quant 服务（默认 http://localhost:8000）
+function quantProxy(req, res) {
+  const target = process.env.QUANT_SERVICE_URL || 'http://localhost:8000';
+  // 兼容两种入径：/quant/ping 与 /api/quant/ping 均转发为 /api/ping
+  const strip = /^\/(?:api\/)?quant\b/.test(req.originalUrl)
+    ? req.originalUrl.replace(/^\/(?:api\/)?quant\b/, '/api')
+    : req.originalUrl;
+  const url = target + strip;
+  const headers = { ...req.headers, host: new URL(target).host };
+  const hasBody = req.body && Object.keys(req.body).length > 0;
+  let body = Buffer.alloc(0);
+  if (hasBody && (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH')) {
+    body = Buffer.from(JSON.stringify(req.body), 'utf-8');
+    headers['content-length'] = body.length;
+    headers['content-type'] = 'application/json';
+  } else {
+    delete headers['content-length'];
+    delete headers['transfer-encoding'];
+  }
+  const proxyReq = http.request(url, {
+    method: req.method,
+    headers,
+    timeout: 120000,
+  }, (proxyRes) => {
+    res.status(proxyRes.statusCode);
+    res.setHeader('Content-Type', proxyRes.headers['content-type'] || 'application/json');
+    proxyRes.pipe(res);
+  });
+  proxyReq.on('error', (err) => {
+    if (!res.headersSent) {
+      res.status(502).json({
+        success: false,
+        error: '量化服务未启动（python quant/ 目录下运行 uvicorn quant.api:app --port 8000）',
+        detail: err.message,
+      });
+    } else {
+      res.end();
+    }
+  });
+  proxyReq.on('timeout', () => proxyReq.destroy(new Error('quant 服务超时')));
+  proxyReq.end(body);
+}
+
+app.use('/quant', quantProxy);
+app.use('/api/quant', quantProxy);
+
 // ========== 存款 API ==========
 app.get('/api/deposits', async (req, res) => {
   try {
