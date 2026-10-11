@@ -1,4 +1,5 @@
 import { ref, readonly } from 'vue'
+import { userStorage as localStorage } from '../auth'
 
 const STORAGE_KEY = 'deposit_reservoir_ring_count'
 export const MIN_SOUL_RINGS = 1

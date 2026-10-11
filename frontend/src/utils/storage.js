@@ -1,3 +1,4 @@
+import { userStorage as localStorage } from '../auth'
 export const storage = {
   get(key, defaultValue = null) {
     try {

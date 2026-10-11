@@ -33,15 +33,18 @@
               <div class="space-y-3">
                 <label class="block text-xs font-medium text-slate-600">
                   Agnes API Key
+                  <a href="https://platform.agnes-ai.com" target="_blank" rel="noopener noreferrer" class="ml-2 text-primary">官网申请</a>
                   <input v-model="form.agnes_api_key" type="password" autocomplete="off" class="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" placeholder="留空则保持现有配置" />
                 </label>
                 <label class="block text-xs font-medium text-slate-600">
                   GLM API Key
+                  <a href="https://open.bigmodel.cn" target="_blank" rel="noopener noreferrer" class="ml-2 text-primary">官网申请</a>
                   <input v-model="form.glm_api_key" type="password" autocomplete="off" class="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" placeholder="留空则保持现有配置" />
                 </label>
                 <label class="block text-xs font-medium text-slate-600">
                   默认 AI 模型
                   <select v-model="form.default_model" class="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10 bg-white">
+                    <option value="agnes-2.5-flash">agnes-2.5-flash（官网快速模型）</option>
                     <option value="agnes-2.0-flash">agnes-2.0-flash（快速）</option>
                     <option value="agnes-2.5-pro">agnes-2.5-pro（深度推理）</option>
                     <option value="glm-4-flash-250414">GLM-4 Flash</option>
@@ -207,6 +210,17 @@
             <div class="rounded-lg border border-slate-200 p-4">
               <div class="text-sm font-semibold text-slate-700 mb-3">新增自定义档位</div>
               <div class="space-y-3">
+                <p class="text-xs text-slate-500">你自备官网 Token 并自行承担 AI 费用。密钥只保存到你的账户，不使用平台共享密钥。</p>
+                <label class="block text-xs font-medium text-slate-600">
+                  ALAPI Token（可选，黄金行情）
+                  <a href="https://www.alapi.cn" target="_blank" rel="noopener noreferrer" class="ml-2 text-primary">官网申请</a>
+                  <input v-model="form.alapi_token" type="password" autocomplete="off" class="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm" placeholder="留空保持现有配置" />
+                </label>
+                <div class="flex flex-wrap gap-2 text-xs">
+                  <button type="button" class="text-rose-500" @click="clearKey('glm_api_key')">删除 GLM 密钥</button>
+                  <button type="button" class="text-rose-500" @click="clearKey('agnes_api_key')">删除 Agnes 密钥</button>
+                  <button type="button" class="text-rose-500" @click="clearKey('alapi_token')">删除 ALAPI Token</button>
+                </div>
                 <label class="block text-xs font-medium text-slate-600">
                   名称
                   <input v-model="newFee.name" placeholder="如：新开户" class="mt-1 w-full max-w-sm rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" />
@@ -535,7 +549,7 @@ import {
 const emit = defineEmits(['close'])
 const { ringCount, setRingCount } = useSoulRingSettings()
 const draftRingCount = ref(ringCount.value)
-const form = reactive({ agnes_api_key: '', glm_api_key: '', default_model: 'agnes-2.0-flash', gold_daily_count: 50, market_fetch_interval: 30000 })
+const form = reactive({ agnes_api_key: '', glm_api_key: '', alapi_token: '', default_model: 'agnes-2.5-flash', gold_daily_count: 50, market_fetch_interval: 30000 })
 const usage = reactive({ date: '', total: null, today: null, byModel: [], trend: [] })
 const saving = ref(false)
 const error = ref('')
@@ -983,11 +997,23 @@ async function testModel() {
       glm_api_key: form.glm_api_key,
       message: '你好',
     })
-    testResult.value = res?.reply || res?.content || JSON.stringify(res)
+    testResult.value = res?.result || res?.reply || res?.content || JSON.stringify(res)
+    form.agnes_api_key = ''
+    form.glm_api_key = ''
   } catch (err) {
     testError.value = err.response?.data?.error || err.response?.data?.message || '测试失败，请检查 API Key 和模型配置'
   } finally {
     testingModel.value = false
   }
+}
+
+async function clearKey(field) {
+  if (!window.confirm('确定删除该密钥？删除后相关功能不可调用，直到重新配置。')) return
+  try {
+    await aiSettingsApi.updateSettings({ [field]: null })
+    form[field] = ''
+    if (field === 'agnes_api_key') configured.agnes = false
+    if (field === 'glm_api_key') configured.glm = false
+  } catch { error.value = '删除密钥失败' }
 }
 </script>

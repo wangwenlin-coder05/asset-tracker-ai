@@ -93,6 +93,7 @@
 </template>
 
 <script setup>
+import { userStorage as localStorage } from '../auth'
 import { ref, computed } from 'vue'
 import { Wallet, Plus, PlusCircle } from 'lucide-vue-next'
 import DepositItem from './DepositItem.vue'

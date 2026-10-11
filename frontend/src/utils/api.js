@@ -1,13 +1,21 @@
 import axios from 'axios'
+import { auth } from '../auth'
 
 const api = axios.create({
   baseURL: '/api',
   timeout: 10000,
 })
 
+api.interceptors.request.use(config => {
+  config.headers['X-CSRF-Token'] = auth.csrfToken
+  config.withCredentials = true
+  return config
+})
+
 api.interceptors.response.use(
   response => response.data,
   error => {
+    if (error.response?.status === 401 && auth.user) window.location.reload()
     console.error('API Error:', error.response?.data || error)
     throw error
   }

@@ -1,5 +1,7 @@
 import { createApp } from 'vue'
 import './style.css'
-import App from './App.vue'
+import AuthGate from './AuthGate.vue'
+import { installAuthTransport } from './auth'
 
-createApp(App).mount('#app')
+installAuthTransport()
+createApp(AuthGate).mount('#app')

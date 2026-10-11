@@ -1,6 +1,11 @@
 require('dotenv').config();
 const express = require('express');
-const mysql = require('mysql2/promise');
+const { getPool, getRawPool } = require('./backend/tenant-db');
+const { context } = require('./backend/context');
+const { installAuth, allowedOrigins } = require('./backend/auth');
+const { getUserSecret, saveSettings, PROVIDERS } = require('./backend/ai-settings');
+const { isSecret } = require('./backend/secrets');
+const { tenantUploadDir, tenantUploadPath } = require('./backend/uploads');
 const cors = require('cors');
 const path = require('path');
 const multer = require('multer');
@@ -42,7 +47,7 @@ const movieDir = path.join(__dirname, 'uploads', 'movie');
 if (!fs.existsSync(movieDir)) fs.mkdirSync(movieDir, { recursive: true });
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, iconsDir),
+  destination: (req, file, cb) => cb(null, tenantUploadDir('icons')),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname);
     const name = Date.now() + '-' + Math.random().toString(36).slice(2, 8) + ext;
@@ -55,7 +60,7 @@ const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 }, fileFil
 }});
 
 const woolStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, woolDir),
+  destination: (req, file, cb) => cb(null, tenantUploadDir('wool')),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname);
     const d = new Date();
@@ -70,7 +75,7 @@ const woolUpload = multer({ storage: woolStorage, limits: { fileSize: 10 * 1024 
 }});
 
 const quizStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, quizDir),
+  destination: (req, file, cb) => cb(null, tenantUploadDir('quiz')),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname);
     const d = new Date();
@@ -84,25 +89,23 @@ const quizUpload = multer({ storage: quizStorage, limits: { fileSize: 10 * 1024 
   else cb(new Error('仅支持图片文件'));
 }});
 
-app.use(cors());
+app.use(cors({ origin: allowedOrigins(), credentials: true }));
 app.use(express.json({ limit: '15mb' }));
+app.get('/healthz', (req, res) => res.json({ ok: true }));
+installAuth(app);
 app.get('/favicon.ico', (req, res) => res.status(204).end());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
-  maxAge: '7d',
-  immutable: true
-}));
-
-const pool = mysql.createPool({
-  host: 'localhost',
-  user: 'root',
-  password: '1234',
-  database: 'stock_calculator',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-  dateStrings: true,
-  timezone: '+08:00'
+app.use('/uploads', (req, res) => {
+  try {
+    if (!req.path.startsWith(`/users/${req.user.id}/`)) return res.status(404).end();
+    const filename = tenantUploadPath(`uploads${decodeURIComponent(req.path)}`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    res.sendFile(filename, { dotfiles: 'allow' }, error => { if (error && !res.headersSent) res.status(404).end(); });
+  } catch (error) { res.status(404).end(); }
 });
+
+const pool = getPool();
 
 function genId() {
   return Date.now() + Math.random().toString(36).slice(2);
@@ -988,7 +991,6 @@ async function ensureAiArticlesTable() {
     if (err.code !== 'ER_TABLE_EXISTS_ERROR') console.warn('[ai_articles]', err.message);
   }
 }
-ensureAiArticlesTable();
 
 // 新增文章
 app.post('/api/ai/articles', async (req, res) => {
@@ -1158,6 +1160,9 @@ function quantProxy(req, res) {
     : req.originalUrl;
   const url = target + strip;
   const headers = { ...req.headers, host: new URL(target).host };
+  delete headers.cookie;
+  delete headers.authorization;
+  delete headers['x-csrf-token'];
   const hasBody = req.body && Object.keys(req.body).length > 0;
   let body = Buffer.alloc(0);
   if (hasBody && (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH')) {
@@ -1245,7 +1250,7 @@ function killPid(pid) {
 app.get('/api/quant-service/status', async (req, res) => {
   const running = await pingQuant();
   let aiReady = false;
-  try { aiReady = Boolean(await getGlmApiKey()); } catch (e) { aiReady = Boolean(process.env.GLM_API_KEY); }
+  try { aiReady = Boolean(await getGlmApiKey()); } catch (e) { aiReady = false; }
   res.json({ success: true, running, port: QUANT_PORT, managed: !!(quantProc && quantProc.exitCode === null), aiReady });
 });
 
@@ -1256,14 +1261,16 @@ app.post('/api/quant-service/start', async (req, res) => {
   }
   // 注入 GLM Key，让量化服务里的 AI 策略生成/改进无需手动配环境变量
   let glmKey = '';
-  try { glmKey = (await getGlmApiKey()) || ''; } catch (e) { glmKey = process.env.GLM_API_KEY || ''; }
+  try { glmKey = (await getGlmApiKey()) || ''; } catch (e) { glmKey = ''; }
   try {
     quantProc = spawn(QUANT_PY, ['-m', 'uvicorn', 'quant.api:app', '--port', String(QUANT_PORT)], {
       cwd: QUANT_DIR,
       windowsHide: true,
       env: {
         ...process.env,
-        ...(glmKey ? { GLM_API_KEY: glmKey } : {}),
+        GLM_API_KEY: glmKey,
+        AGNES_API_KEY: '',
+        ALAPI_TOKEN: '',
         // 量化服务里的 AI 调用（策略生成/改进）回传日志到本服务，写入 ai_logs
         AI_LOG_URL: `http://127.0.0.1:${port}/api/ai/logs`,
       },
@@ -1426,7 +1433,7 @@ app.post('/api/deposits/upload-icon', (req, res) => {
       const ext = path.extname(req.file.originalname);
       const safeName = req.body.name.replace(/[\\/:*?"<>|]/g, '_');
       const newName = safeName + '-' + Date.now() + ext;
-      const newPath = path.join(iconsDir, newName);
+      const newPath = path.join(tenantUploadDir('icons'), newName);
       try {
         fs.renameSync(req.file.path, newPath);
         filename = newName;
@@ -1442,7 +1449,7 @@ app.post('/api/deposits/upload-icon', (req, res) => {
 // 列出已有图标
 app.get('/api/deposits/icons', (req, res) => {
   try {
-    const files = fs.readdirSync(iconsDir);
+    const files = fs.readdirSync(tenantUploadDir('icons'));
     const icons = files
       .filter(f => /\.(png|jpg|jpeg|gif|webp|svg|ico)$/i.test(f))
       .map(f => ({ name: f, path: 'uploads/icons/' + f }));
@@ -1466,12 +1473,7 @@ app.post('/api/deposits/generate-icon', async (req, res) => {
       return res.status(400).json({ error: '请提供提示词或存款项标题' });
     }
     
-    let apiKey = '';
-    try {
-      const [rows] = await pool.query('SELECT setting_value FROM ai_settings WHERE setting_key = ?', ['glm_api_key']);
-      apiKey = rows[0]?.setting_value || '';
-    } catch (e) {}
-    apiKey = apiKey || process.env.GLM_API_KEY || '';
+    const apiKey = await getUserSecret('glm_api_key');
     if (!apiKey) {
       return res.status(400).json({ error: '未配置智谱 API Key，请在 AI 设置中配置' });
     }
@@ -1524,7 +1526,7 @@ app.post('/api/deposits/save-icon', async (req, res) => {
     const buf = Buffer.from(await imgRes.arrayBuffer());
     const safeName = (title || 'ai-icon').replace(/[\\/:*?"<>|]/g, '_').substring(0, 30);
     const filename = safeName + '-' + Date.now() + '.png';
-    const filePath = path.join(iconsDir, filename);
+    const filePath = path.join(tenantUploadDir('icons'), filename);
     fs.writeFileSync(filePath, buf);
 
     const localPath = 'uploads/icons/' + filename;
@@ -3656,14 +3658,14 @@ app.get('/api/ai/settings', async (req, res) => {
     const [rows] = await pool.query('SELECT setting_key, setting_value FROM ai_settings');
     const map = {};
     rows.forEach(r => {
-      if (r.setting_key.endsWith('_api_key')) {
+      if (isSecret(r.setting_key)) {
         map[`${r.setting_key}_configured`] = Boolean(r.setting_value);
       } else {
         map[r.setting_key] = r.setting_value || '';
       }
     });
     // 默认模型
-    if (!map.default_model) map.default_model = 'agnes-2.0-flash';
+    if (!map.default_model) map.default_model = 'agnes-2.5-flash';
     res.json(map);
   } catch (err) {
     console.error('获取AI设置失败:', err);
@@ -3676,6 +3678,7 @@ app.post('/api/ai/test-model', async (req, res) => {
   try {
     const { model } = req.body || {};
     if (!model) return res.status(400).json({ error: '请指定模型' });
+    await saveSettings(Object.fromEntries(['glm_api_key', 'agnes_api_key'].filter(key => req.body[key] !== undefined).map(key => [key, req.body[key]])));
     const result = await callAI('你是一个测试助手。', '请回复"模型测试成功"四个字。', null, model, 30000, 500);
     res.json({ result, model });
   } catch (err) {
@@ -3817,14 +3820,7 @@ app.get('/api/stocks/tx-logs', async (req, res) => {
 
 app.put('/api/ai/settings', async (req, res) => {
   try {
-    const settings = req.body; // { agnes_api_key: 'xxx', glm_api_key: 'xxx' }
-    const now = Date.now();
-    for (const [key, value] of Object.entries(settings)) {
-      await pool.execute(
-        'INSERT INTO ai_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE setting_value = ?, updated_at = ?',
-        [key, value || '', now, value || '', now]
-      );
-    }
+    await saveSettings(req.body);
     res.json({ ok: true });
   } catch (err) {
     console.error('保存AI设置失败:', err);
@@ -3833,9 +3829,10 @@ app.put('/api/ai/settings', async (req, res) => {
 });
 
 async function getGlmApiKey() {
-  const [rows] = await pool.query('SELECT setting_value FROM ai_settings WHERE setting_key = ?', ['glm_api_key']);
-  return rows[0]?.setting_value || process.env.GLM_API_KEY || '';
+  return getUserSecret('glm_api_key');
 }
+
+app.get('/api/ai/providers', (req, res) => res.json(PROVIDERS));
 
 app.post('/api/ai/videos/generate', async (req, res) => {
   try {
@@ -3894,7 +3891,7 @@ app.get('/api/ai/videos/status/:id', async (req, res) => {
     if (buffer.length > 100 * 1024 * 1024) throw new Error('生成视频文件过大');
     const levelFileMap = { '警戒': '1.mp4', '危险': '2.mp4', '危机': '3.mp4' };
     const filename = levelFileMap[level];
-    await fs.promises.writeFile(path.join(movieDir, filename), buffer);
+    await fs.promises.writeFile(path.join(tenantUploadDir('movie'), filename), buffer);
     res.json({ status: 'SUCCESS', videoPath: `uploads/movie/${filename}` });
   } catch (err) {
     console.error('查询AI视频失败:', err);
@@ -4798,8 +4795,8 @@ function parseAIJson(content) {
 app.post('/api/wool/recognize', async (req, res) => {
   try {
     const imagePath = String(req.body.imagePath || '');
-    if (!imagePath.startsWith('uploads/wool/')) return res.status(400).json({ error: '无效的凭证图片路径' });
-    const fullPath = path.join(__dirname, imagePath);
+    const fullPath = tenantUploadPath(imagePath);
+    if (path.dirname(fullPath) !== tenantUploadDir('wool')) return res.status(400).json({ error: '无效的凭证图片路径' });
     if (!fs.existsSync(fullPath)) return res.status(404).json({ error: '凭证图片不存在' });
     const now = new Date();
     const currentDate = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
@@ -5425,19 +5422,11 @@ app.get('/api/wechat/training-data', async (req, res) => {
 
 // 通用 AI 调用函数（支持多模型）
 async function callAI(systemPrompt, userPrompt, imagePath, model = 'agnes', timeoutMs = 30000, maxTokens = 800) {
+  if (typeof model !== 'string' || !/^(?:agnes$|agnes-|glm-)/.test(model) || model.length > 100) throw new Error('不支持的模型，请选择官网模型');
   const startTime = Date.now();
   const isGlm = model.startsWith('glm-');
   const provider = isGlm ? 'glm' : 'agnes';
-  // 数据库优先（用户通过设置页面管理 API Key），环境变量作为回退
-  const envMap = { agnes: 'AGNES_API_KEY', glm: 'GLM_API_KEY' };
-  let apiKey = '';
-  try {
-    const [rows] = await pool.query('SELECT setting_value FROM ai_settings WHERE setting_key = ?', [`${provider}_api_key`]);
-    apiKey = rows[0]?.setting_value || '';
-  } catch (e) {}
-  if (!apiKey) {
-    apiKey = process.env[envMap[provider] || 'AGNES_API_KEY'] || '';
-  }
+  const apiKey = await getUserSecret(`${provider}_api_key`);
   if (!apiKey) {
     const nameMap = { agnes: 'Agnes', glm: '智谱GLM' };
     const msg = `⚠️ 未配置 ${nameMap[provider] || provider} API Key，请在设置中配置。`;
@@ -5445,7 +5434,7 @@ async function callAI(systemPrompt, userPrompt, imagePath, model = 'agnes', time
     try {
       await pool.execute(
         'INSERT INTO ai_logs (model, provider, system_prompt_len, user_prompt_len, response_len, duration_ms, success, error_msg, request_content) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [resolvedModel || model, provider, systemPrompt.length, userPrompt.length, 0, Date.now() - startTime, 0, msg, `[系统提示] ${systemPrompt}\n\n[用户输入] ${userPrompt}`]
+        [model, provider, systemPrompt.length, userPrompt.length, 0, Date.now() - startTime, 0, msg, `[系统提示] ${systemPrompt}\n\n[用户输入] ${userPrompt}`]
       );
     } catch (_) {}
     return msg;
@@ -5454,12 +5443,12 @@ async function callAI(systemPrompt, userPrompt, imagePath, model = 'agnes', time
   // 模型配置
   const isAgnes = model === 'agnes' || model.startsWith('agnes-');
   let resolvedModel = model;
-  if (model === 'agnes') resolvedModel = 'agnes-2.0-flash';
+  if (model === 'agnes') resolvedModel = 'agnes-2.5-flash';
   if (imagePath && isGlm && !/v(?:-|$)/.test(model) && !model.includes('thinking-flash')) {
     resolvedModel = 'glm-4.6v-flash';
   }
   const config = isAgnes
-    ? { url: 'https://api.agnes-ai.cn/v1/chat/completions', model: resolvedModel }
+    ? { url: 'https://apihub.agnes-ai.com/v1/chat/completions', model: resolvedModel }
     : { url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', model: resolvedModel };
 
   const messages = [
@@ -5468,7 +5457,7 @@ async function callAI(systemPrompt, userPrompt, imagePath, model = 'agnes', time
 
   // 构建用户消息
   if (imagePath && imagePath.startsWith('uploads/')) {
-    const fullPath = path.join(__dirname, imagePath);
+    const fullPath = tenantUploadPath(imagePath);
     if (fs.existsSync(fullPath)) {
       const imageBuffer = fs.readFileSync(fullPath);
       const ext = path.extname(imagePath).toLowerCase();
@@ -5623,15 +5612,11 @@ async function autoFillStockLogic(eventId, messageText, stocks) {
 
 // 多图 AI 调用
 async function callAIMultiImage(systemPrompt, userPrompt, imagePaths, model = 'glm-4.6v', timeoutMs = 60000, maxTokens = 2000) {
+  if (typeof model !== 'string' || !/^(?:agnes$|agnes-|glm-)/.test(model) || model.length > 100) throw new Error('不支持的模型，请选择官网模型');
   const startTime = Date.now();
   const isGlm = model.startsWith('glm-');
   const provider = isGlm ? 'glm' : 'agnes';
-  let apiKey = '';
-  try {
-    const [rows] = await pool.query('SELECT setting_value FROM ai_settings WHERE setting_key = ?', [`${provider}_api_key`]);
-    apiKey = rows[0]?.setting_value || '';
-  } catch (e) {}
-  if (!apiKey) apiKey = process.env[isGlm ? 'GLM_API_KEY' : 'AGNES_API_KEY'] || '';
+  const apiKey = await getUserSecret(`${provider}_api_key`);
   if (!apiKey) {
     const msg = `⚠️ 未配置 ${isGlm ? '智谱GLM' : 'Agnes'} API Key，请在设置中配置。`;
     try {
@@ -5644,16 +5629,16 @@ async function callAIMultiImage(systemPrompt, userPrompt, imagePaths, model = 'g
   }
 
   let resolvedModel = model;
-  if (model === 'agnes') resolvedModel = 'agnes-2.0-flash';
+  if (model === 'agnes') resolvedModel = 'agnes-2.5-flash';
   const isAgnes = model === 'agnes' || model.startsWith('agnes-');
   const config = isAgnes
-    ? { url: 'https://api.agnes-ai.cn/v1/chat/completions', model: resolvedModel }
+    ? { url: 'https://apihub.agnes-ai.com/v1/chat/completions', model: resolvedModel }
     : { url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', model: resolvedModel };
 
   // 构建多图消息
   const contentParts = [{ type: 'text', text: userPrompt }];
   for (const imgPath of imagePaths) {
-    const fullPath = path.join(__dirname, imgPath);
+    const fullPath = tenantUploadPath(imgPath);
     if (fs.existsSync(fullPath)) {
       const imageBuffer = fs.readFileSync(fullPath);
       const ext = path.extname(imgPath).toLowerCase();
@@ -5745,9 +5730,10 @@ app.get('/api/heartbeat', (req, res) => {
 });
 
 // 黄金价格缓存（同一轮询周期内复用，避免重复消耗 ALAPI 配额）
-let goldCache = { price: null, source: '', market: '', updatedAt: '', fetchedAt: '', internationalPriceUsd: 0, lastFetchAt: 0 };
+const goldCaches = new Map();
 
 app.get('/api/gold-price', async (req, res) => {
+  let goldCache = goldCaches.get(req.user.id) || { price: null, lastFetchAt: 0 };
   const forceRefresh = req.query.force === '1' || req.query.force === 'true';
   const CACHE_TTL = 60 * 1000; // 1分钟内复用缓存（防止前端短时多次刷新）
   const now = Date.now();
@@ -5765,7 +5751,7 @@ app.get('/api/gold-price', async (req, res) => {
   }
 
   const cacheBuster = `_t=${now}`;
-  const alapiToken = process.env.ALAPI_TOKEN || '';
+  const alapiToken = await getUserSecret('alapi_token');
   let international = null;
   try {
     const response = await fetch(`https://api.gold-api.com/price/XAU?${cacheBuster}`, { signal: AbortSignal.timeout(8000), headers: { 'Cache-Control': 'no-cache' } });
@@ -5788,6 +5774,8 @@ app.get('/api/gold-price', async (req, res) => {
       internationalPriceUsd: Number(internationalPriceUsd || international?.price || 0)
     };
     goldCache = { ...payload, lastFetchAt: Date.now() };
+    if (goldCaches.size > 1000) goldCaches.delete(goldCaches.keys().next().value);
+    goldCaches.set(req.user.id, goldCache);
     return res.json(payload);
   };
 
@@ -6221,7 +6209,7 @@ async function autoRefreshTrackingPrices(eventId) {
 
 // 启动时同步所有含股票的消息到追踪表（确保历史消息中的股票被追踪）
 // 注意：此函数需在 syncTrackingFromEvent 定义后调用
-setImmediate(async () => {
+async function syncExistingTracking() {
   try {
     const [allEvents] = await pool.query(
       `SELECT * FROM wechat_events WHERE category = 'stock_pick' AND stocks_json != '[]' AND stocks_json IS NOT NULL ORDER BY created_at DESC`
@@ -6237,7 +6225,7 @@ setImmediate(async () => {
   } catch (e) {
     console.error('启动同步追踪失败:', e.message);
   }
-});
+}
 
 // 刷新单条追踪记录：从推票日起每日股价 + 累计涨跌幅
 async function refreshTrackingPrices(trackingId) {
@@ -7823,7 +7811,7 @@ const stockUploadDir = path.join(__dirname, 'uploads', 'stock');
 if (!fs.existsSync(stockUploadDir)) fs.mkdirSync(stockUploadDir, { recursive: true });
 const stockUpload = multer({
   storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, stockUploadDir),
+    destination: (req, file, cb) => cb(null, tenantUploadDir('stock')),
     filename: (req, file, cb) => {
       const ext = path.extname(file.originalname) || '.png';
       cb(null, Date.now() + '-' + Math.random().toString(36).slice(2, 8) + ext);
@@ -7938,7 +7926,7 @@ const boardUploadDir = path.join(__dirname, 'uploads', 'board');
 if (!fs.existsSync(boardUploadDir)) fs.mkdirSync(boardUploadDir, { recursive: true });
 const boardUpload = multer({
   storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, boardUploadDir),
+    destination: (req, file, cb) => cb(null, tenantUploadDir('board')),
     filename: (req, file, cb) => {
       const ext = path.extname(file.originalname) || '.png';
       cb(null, 'board-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + ext);
@@ -8844,7 +8832,11 @@ async function categorizeMessageWithLearn(text, stocksJson, memHit) {
 // 把带学习的分类器注册到 wechat-extractor，让自动捕获的消息也走带学习的分类
 setCategoryClassifierHook(categorizeMessageWithLearn);
 
-app.use(express.static(__dirname));
+app.use('/api', (req, res) => res.status(404).json({ error: '接口不存在' }));
+app.use((error, req, res, next) => {
+  console.error('请求失败:', error.code || error.name);
+  if (!res.headersSent) res.status(500).json({ error: '请求处理失败' });
+});
 
 // 初始化分类相关表（幂等，可重复调用）
 async function initCategoryTables() {
@@ -9073,6 +9065,7 @@ let server = null;
 
 async function startServer() {
   try {
+    await ensureAiArticlesTable();
     await migrate();
     // 初始化系统分类规则表和学习规则表
     await initCategoryTables();
@@ -9089,12 +9082,13 @@ async function startServer() {
     setCategoryClassifierHook(categorizeMessageWithLearn);
     setAutoFillLogicHook(autoFillStockLogic);
     await initEventsFromDb();
+    if (process.env.ENABLE_LOCAL_FEATURES === 'true' && process.env.BACKGROUND_JOBS_ENABLED !== 'false') setImmediate(syncExistingTracking);
     // 启动时自动修复分类为 NULL 或非法的历史消息
     await fixNullCategories();
     server = app.listen(port, () => {
       console.log(`服务器运行在 http://localhost:${port}`);
       // 延迟 3 秒预热行情缓存（新浪 70 页要 40+ 秒，首次后台跑不阻塞）
-      setTimeout(() => {
+      if (process.env.BACKGROUND_JOBS_ENABLED !== 'false') setTimeout(() => {
         fetchMarketOverview().then(d => {
           if (d) console.log('[market] 预热完成:', d.totalAmountYi, '亿, 涨' + d.riseCount + '/跌' + d.fallCount);
         }).catch(e => console.warn('[market] 预热失败:', e.message));
@@ -9218,7 +9212,7 @@ async function checkIntradayProfit() {
 }
 
 
-      setInterval(() => {
+      if (process.env.BACKGROUND_JOBS_ENABLED !== 'false') setInterval(() => {
         fetchMarketOverview().catch(() => {});
         checkIntradayProfit().catch(() => {});
       }, 60000);
@@ -9248,5 +9242,21 @@ async function shutdown() {
 
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
-startServer();
+async function bootstrap() {
+  if (Buffer.from(process.env.KEY_ENCRYPTION_KEY || '', 'base64').length !== 32) throw new Error('请配置有效的 KEY_ENCRYPTION_KEY');
+  const [locks] = await getRawPool().query("SELECT IS_USED_LOCK('stock-phase1-migration') AS holder");
+  if (locks[0].holder) throw new Error('数据库迁移正在运行，请等待完成后再启动');
+  const [migrations] = await getRawPool().query("SELECT completed_at FROM schema_migrations WHERE name = 'phase1'");
+  if (!migrations[0]?.completed_at) throw new Error('请先停旧服务并执行 npm run migrate:phase1 -- --apply');
+  const [owners] = await getRawPool().query("SELECT id, email, role FROM users WHERE role = 'owner' AND disabled = 0 LIMIT 1");
+  if (!owners.length) throw new Error('缺少迁移所有者');
+  owners[0].id = Number(owners[0].id);
+  await context.run({ user: owners[0], schema: true }, startServer);
+}
+
+bootstrap().catch(async error => {
+  console.error('启动失败:', error.message);
+  await getRawPool().end().catch(() => {});
+  process.exitCode = 1;
+});
 

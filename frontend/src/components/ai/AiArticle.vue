@@ -251,6 +251,7 @@
 </template>
 
 <script setup>
+import { userStorage as localStorage } from '../../auth'
 import { inject, reactive, ref, computed, watch, onMounted } from 'vue'
 import {
   Settings, Sliders, ChevronDown, Wand2, Hash, Trash2, FileText, Clock, Layers, Copy, Save, Share2, Sparkles, Loader,

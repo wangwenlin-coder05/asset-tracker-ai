@@ -213,11 +213,7 @@ function clearBlacklistCache() {
 let pool = null;
 function getPool() {
   if (pool) return pool;
-  const mysql = require('mysql2/promise');
-  pool = mysql.createPool({
-    host: 'localhost', user: 'root', password: '1234',
-    database: 'stock_calculator', dateStrings: true, timezone: '+08:00',
-  });
+  pool = require('./backend/tenant-db').getPool();
   return pool;
 }
 

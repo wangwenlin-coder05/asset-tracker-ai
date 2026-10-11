@@ -400,6 +400,7 @@
 </template>
 
 <script setup>
+import { userStorage as localStorage } from '../auth'
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   Waves, Settings, Sparkles, Droplets, X, Info, Check,

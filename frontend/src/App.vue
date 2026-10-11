@@ -24,9 +24,10 @@
           <WoolBoard v-else-if="currentBoard === 'wool'" />
           <NoteBoard v-else-if="currentBoard === 'note'" />
           <ToolBoard v-else-if="currentBoard === 'tool'" />
-          <WechatStockBoard v-else-if="currentBoard === 'wechat'" ref="wechatBoardRef" />
-          <QuantBoard v-else-if="currentBoard === 'quant'" />
-          <BatchGridPanel v-else-if="currentBoard === 'quant-grid'" />
+          <WechatStockBoard v-else-if="currentBoard === 'wechat' && auth.user.capabilities.localFeatures" ref="wechatBoardRef" />
+          <QuantBoard v-else-if="currentBoard === 'quant' && auth.user.capabilities.localFeatures" />
+          <BatchGridPanel v-else-if="currentBoard === 'quant-grid' && auth.user.capabilities.localFeatures" />
+          <div v-else-if="['wechat', 'quant', 'quant-grid'].includes(currentBoard)" class="p-8 text-slate-500">此能力仅允许本机所有者使用，云端暂未开放。</div>
           <AiWorkBoard v-else-if="currentBoard === 'ai'" ref="aiWorkBoardRef" />
           <AiCanvasBoard v-else-if="currentBoard === 'ai-canvas'" ref="aiCanvasBoardRef" />
           <QuizBoard v-else-if="currentBoard === 'quiz'" />
@@ -58,6 +59,7 @@ import SettingsDialog from './components/SettingsDialog.vue'
 import { useGold } from './composables/useGold'
 import { useDeposit } from './composables/useDeposit'
 import { loadFeeSettings } from './utils/feeConfig'
+import { auth } from './auth'
 
 const currentBoard = ref('stock')
 const stockBoardRef = ref(null)

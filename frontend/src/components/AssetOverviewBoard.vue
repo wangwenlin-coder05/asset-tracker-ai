@@ -438,6 +438,7 @@
 </template>
 
 <script setup>
+import { userStorage as localStorage } from '../auth'
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   Eye, EyeOff, Smile, Meh, Frown, AlertTriangle,

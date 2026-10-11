@@ -97,6 +97,7 @@
   </div>
 </template>
 <script setup>
+import { userStorage as localStorage } from '../auth'
 import { computed, inject, ref, watch } from 'vue'
 import { Activity, ChevronLeft, ChevronRight, Coins, FilterX, Gauge, LocateFixed, MessageSquareText, Pencil, Plus, ReceiptText, Rocket, Search, Store, Trash2, TriangleAlert, WalletCards, X } from 'lucide-vue-next'
 import NewWoolDialog from './dialogs/NewWoolDialog.vue'

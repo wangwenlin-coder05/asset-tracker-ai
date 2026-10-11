@@ -11,6 +11,10 @@ frontend/node_modules/
 *.log
 server.pid
 .launcher/*.pid
+.launcher/phase1-backups/
+.launcher/phase1-verify-*/
+.launcher/phase1-credentials.json
+.launcher/phase1-inventory.txt
 npm-debug.log*
 
 # 上传的用户数据 / 媒体

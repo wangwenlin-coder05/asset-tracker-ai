@@ -147,3 +147,10 @@ asset-tracker-ai/
 - 本项目用于个人投研与学习实践。
 - 行情与推送数据仅供研究参考，**不构成任何投资建议**；量化模块仅做回测验证，不下单、不接实盘。
 - 敏感配置（数据库、API 密钥）请放在 `.env` 中，**不要提交到仓库**。
+# Phase 1 多用户版本
+
+已增加注册/登录、分账户数据隔离与用户自带 AI Key。详细改造方案及迁移步骤见 `docs/phase1-saas.md`，逐接口清单见 `docs/phase1-api-inventory.md`。
+
+本机已有数据需要先停旧服务，再运行 `npm run migrate:phase1 -- --apply`；此工作区已执行并备份。所有者登录信息保存在未跟踪的 `.launcher/phase1-credentials.json`。普通用户自行注册及填写官网 Token；平台不共享 `.env` 中的模型 Key。
+
+运行 `npm run test:phase1`、`npm run test:phase1:integration` 验证隔离。微信/共享量化及任意 URL 抓取在 Phase 1 仅限本机所有者；公网发布还需完成后续部署和安全配置。

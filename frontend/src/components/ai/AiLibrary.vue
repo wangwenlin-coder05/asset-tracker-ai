@@ -236,6 +236,7 @@
 </template>
 
 <script setup>
+import { userStorage as localStorage } from '../../auth'
 import { inject, reactive, ref, computed, watch, onMounted, markRaw } from 'vue'
 import {
   LibraryBig, Search, Plus, FileText, Clock, ChevronLeft, ChevronRight, BookOpenCheck,

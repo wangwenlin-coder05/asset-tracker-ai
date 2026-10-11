@@ -144,6 +144,7 @@
 </template>
 
 <script setup>
+import { userStorage as localStorage } from '../../auth'
 import { inject, onMounted, ref } from 'vue'
 import {
   TrendingUp, TrendingDown, Zap, ArrowRight, Globe, Clock, FileText, Sparkles, ChevronRight,

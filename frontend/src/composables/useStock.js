@@ -1,4 +1,5 @@
 import { ref, computed } from 'vue'
+import { userStorage as localStorage } from '../auth'
 import { calcStock } from '../utils/calculator'
 import { stockApi } from '../utils/api'
 import { calculateHoldingDays, calculateHoldingDaysByRange, num, sumByFilter } from '../utils/formatter'

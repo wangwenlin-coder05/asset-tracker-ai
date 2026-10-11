@@ -1,0 +1,1875 @@
+[
+  {
+    "method": "GET",
+    "path": "/api/stocks",
+    "sourceLine": 286,
+    "tables": [
+      "buy_records",
+      "sell_records",
+      "stocks"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/stocks/:id",
+    "sourceLine": 412,
+    "tables": [
+      "buy_records",
+      "sell_records",
+      "stocks"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/stocks/:id/sell-records",
+    "sourceLine": 478,
+    "tables": [
+      "sell_records"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/stocks/:id/sell-record",
+    "sourceLine": 488,
+    "tables": [
+      "sell_records",
+      "stocks"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/stocks/:id/sell-record/:recordId",
+    "sourceLine": 514,
+    "tables": [
+      "sell_records"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/stocks/:id/sell-record/:recordId",
+    "sourceLine": 524,
+    "tables": [
+      "sell_records"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/stocks/:id/buy-records",
+    "sourceLine": 555,
+    "tables": [
+      "buy_records"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/stocks/:id/buy-record",
+    "sourceLine": 565,
+    "tables": [
+      "buy_records",
+      "stocks"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/stocks/:id/buy-record/:recordId",
+    "sourceLine": 614,
+    "tables": [
+      "buy_records"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/stocks/:id/buy-record/:recordId",
+    "sourceLine": 624,
+    "tables": [
+      "buy_records"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/stocks",
+    "sourceLine": 654,
+    "tables": [
+      "stocks"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/stocks/:id",
+    "sourceLine": 691,
+    "tables": [
+      "stocks"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/stocks/:id/clear",
+    "sourceLine": 731,
+    "tables": [
+      "stocks"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/stocks/:id",
+    "sourceLine": 744,
+    "tables": [
+      "stocks"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/ai/hot/platforms",
+    "sourceLine": 812,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "GET",
+    "path": "/api/ai/hot",
+    "sourceLine": 825,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "GET",
+    "path": "/api/ai/hot/batch",
+    "sourceLine": 840,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "GET",
+    "path": "/api/ai/article-parse",
+    "sourceLine": 866,
+    "tables": [],
+    "access": "local-owner-only",
+    "csrf": false,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/ai/articles",
+    "sourceLine": 996,
+    "tables": [
+      "ai_articles"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/ai/articles",
+    "sourceLine": 1029,
+    "tables": [
+      "ai_articles"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/ai/articles/:id",
+    "sourceLine": 1081,
+    "tables": [
+      "ai_articles"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/ai/articles/:id",
+    "sourceLine": 1099,
+    "tables": [
+      "ai_articles"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/ai/articles/:id",
+    "sourceLine": 1137,
+    "tables": [
+      "ai_articles"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "ALL",
+    "path": "/quant",
+    "sourceLine": 1200,
+    "tables": [],
+    "access": "local-owner-only",
+    "csrf": false,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "ALL",
+    "path": "/api/quant",
+    "sourceLine": 1201,
+    "tables": [],
+    "access": "local-owner-only",
+    "csrf": false,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/quant-service/status",
+    "sourceLine": 1250,
+    "tables": [],
+    "access": "local-owner-only",
+    "csrf": false,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/quant-service/start",
+    "sourceLine": 1257,
+    "tables": [],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/quant-service/stop",
+    "sourceLine": 1294,
+    "tables": [],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/deposits",
+    "sourceLine": 1304,
+    "tables": [
+      "deposit_items",
+      "deposit_transactions",
+      "installment_bills",
+      "installment_plans"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/deposits",
+    "sourceLine": 1344,
+    "tables": [
+      "deposit_items"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/deposits/:id",
+    "sourceLine": 1362,
+    "tables": [
+      "deposit_items"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/deposits/:id",
+    "sourceLine": 1399,
+    "tables": [
+      "deposit_items"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/deposits/:id/move",
+    "sourceLine": 1409,
+    "tables": [
+      "deposit_items"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/deposits/upload-icon",
+    "sourceLine": 1424,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "GET",
+    "path": "/api/deposits/icons",
+    "sourceLine": 1450,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "POST",
+    "path": "/api/deposits/generate-icon",
+    "sourceLine": 1463,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "POST",
+    "path": "/api/deposits/save-icon",
+    "sourceLine": 1518,
+    "tables": [],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/deposits/:id/transactions",
+    "sourceLine": 1544,
+    "tables": [
+      "deposit_transactions"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/deposits/:id/transactions",
+    "sourceLine": 1557,
+    "tables": [
+      "deposit_items",
+      "deposit_transactions"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/deposits/:id/repay",
+    "sourceLine": 1610,
+    "tables": [
+      "deposit_items",
+      "deposit_transactions"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/installments/:depositItemId",
+    "sourceLine": 1777,
+    "tables": [
+      "installment_plans"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/installments",
+    "sourceLine": 1875,
+    "tables": [
+      "deposit_items",
+      "installment_bills",
+      "installment_plans"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/installments/:id",
+    "sourceLine": 1913,
+    "tables": [
+      "deposit_items",
+      "installment_bills",
+      "installment_plans"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/installments/:id",
+    "sourceLine": 1945,
+    "tables": [
+      "installment_bills",
+      "installment_plans"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/installments/:planId/bills",
+    "sourceLine": 1957,
+    "tables": [
+      "installment_bills"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/installments/bills/:id/pay",
+    "sourceLine": 1980,
+    "tables": [
+      "deposit_items",
+      "deposit_transactions",
+      "installment_bills",
+      "installment_plans"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/wechat/db/clear",
+    "sourceLine": 3113,
+    "tables": [
+      "wechat_events"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/wechat/blacklist",
+    "sourceLine": 3123,
+    "tables": [
+      "wechat_blacklist"
+    ],
+    "access": "local-owner-only",
+    "csrf": false,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/blacklist",
+    "sourceLine": 3133,
+    "tables": [
+      "wechat_blacklist"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/wechat/blacklist/:id",
+    "sourceLine": 3153,
+    "tables": [
+      "wechat_blacklist"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/wechat/blacklist/:id",
+    "sourceLine": 3161,
+    "tables": [
+      "wechat_blacklist"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/wechat/session-skip-rules",
+    "sourceLine": 3173,
+    "tables": [
+      "wechat_blacklist"
+    ],
+    "access": "local-owner-only",
+    "csrf": false,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/wechat/whitelist",
+    "sourceLine": 3187,
+    "tables": [
+      "wechat_whitelist"
+    ],
+    "access": "local-owner-only",
+    "csrf": false,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/whitelist",
+    "sourceLine": 3194,
+    "tables": [
+      "wechat_whitelist"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/wechat/whitelist/:id",
+    "sourceLine": 3207,
+    "tables": [
+      "wechat_whitelist"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/wechat/whitelist/:id",
+    "sourceLine": 3214,
+    "tables": [
+      "wechat_whitelist"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/whitelist/summarize",
+    "sourceLine": 3224,
+    "tables": [
+      "ai_logs",
+      "ai_usage",
+      "wechat_category_rules",
+      "wechat_category_system_rules",
+      "wechat_events",
+      "wechat_whitelist"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/ai/market-analysis",
+    "sourceLine": 3311,
+    "tables": [
+      "ai_logs",
+      "ai_usage"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/ai/settings",
+    "sourceLine": 3656,
+    "tables": [
+      "ai_settings"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/ai/test-model",
+    "sourceLine": 3677,
+    "tables": [
+      "ai_logs",
+      "ai_usage"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/ai/usage",
+    "sourceLine": 3691,
+    "tables": [
+      "ai_logs"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/ai/logs",
+    "sourceLine": 3738,
+    "tables": [
+      "ai_logs"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/ai/logs",
+    "sourceLine": 3755,
+    "tables": [
+      "ai_logs",
+      "ai_usage"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/stocks/tx-log",
+    "sourceLine": 3786,
+    "tables": [
+      "tx_logs"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/stocks/tx-logs",
+    "sourceLine": 3805,
+    "tables": [
+      "tx_logs"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/ai/settings",
+    "sourceLine": 3821,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "GET",
+    "path": "/api/ai/providers",
+    "sourceLine": 3835,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "POST",
+    "path": "/api/ai/videos/generate",
+    "sourceLine": 3837,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "GET",
+    "path": "/api/ai/videos/status/:id",
+    "sourceLine": 3871,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "GET",
+    "path": "/api/wool",
+    "sourceLine": 3968,
+    "tables": [
+      "wool_items"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wool",
+    "sourceLine": 4004,
+    "tables": [
+      "deposit_items",
+      "deposit_transactions",
+      "wool_items"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/wool/notes",
+    "sourceLine": 4029,
+    "tables": [
+      "wool_notes"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wool/notes",
+    "sourceLine": 4053,
+    "tables": [
+      "wool_notes"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/wool/notes/:id",
+    "sourceLine": 4071,
+    "tables": [
+      "wool_notes"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/wool/notes/:id",
+    "sourceLine": 4093,
+    "tables": [
+      "wool_notes"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wool/notes/organize",
+    "sourceLine": 4105,
+    "tables": [
+      "ai_logs",
+      "ai_usage"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/stock/notes",
+    "sourceLine": 4139,
+    "tables": [
+      "stock_notes"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/stock/notes",
+    "sourceLine": 4156,
+    "tables": [
+      "stock_notes"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/stock/notes/:id",
+    "sourceLine": 4173,
+    "tables": [
+      "stock_notes"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/stock/notes/:id",
+    "sourceLine": 4195,
+    "tables": [
+      "stock_notes"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/stock/watchlist",
+    "sourceLine": 4209,
+    "tables": [
+      "stock_daily_analysis",
+      "stock_watchlist"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/stock/watchlist",
+    "sourceLine": 4266,
+    "tables": [
+      "stock_watchlist"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/stock/watchlist/:id",
+    "sourceLine": 4284,
+    "tables": [
+      "stock_watchlist"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/stock/watchlist/:id",
+    "sourceLine": 4307,
+    "tables": [
+      "stock_daily_analysis",
+      "stock_watchlist"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/stock/watchlist/:id/analysis",
+    "sourceLine": 4320,
+    "tables": [
+      "stock_daily_analysis",
+      "stock_watchlist"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/stock/watchlist/:id/analysis/:date",
+    "sourceLine": 4381,
+    "tables": [
+      "stock_daily_analysis"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/stock/daily-changes",
+    "sourceLine": 4393,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "GET",
+    "path": "/api/stock/ipo-market-value",
+    "sourceLine": 4425,
+    "tables": [
+      "buy_records",
+      "sell_records",
+      "stocks"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/stock/daily-summary",
+    "sourceLine": 4549,
+    "tables": [
+      "stock_daily_summary"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/stock/daily-summary",
+    "sourceLine": 4570,
+    "tables": [
+      "stock_daily_summary"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/tools/categories",
+    "sourceLine": 4598,
+    "tables": [
+      "tools"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/tools",
+    "sourceLine": 4608,
+    "tables": [
+      "tools"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/tools",
+    "sourceLine": 4628,
+    "tables": [
+      "tools"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tools/:id",
+    "sourceLine": 4645,
+    "tables": [
+      "tools"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/tools/:id",
+    "sourceLine": 4670,
+    "tables": [
+      "tools"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/tools/reorder",
+    "sourceLine": 4682,
+    "tables": [
+      "tools"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/wool/:id",
+    "sourceLine": 4697,
+    "tables": [
+      "deposit_items",
+      "deposit_transactions",
+      "wool_items"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/wool/:id",
+    "sourceLine": 4744,
+    "tables": [
+      "deposit_items",
+      "deposit_transactions",
+      "wool_items"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wool/upload-image",
+    "sourceLine": 4775,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wool/recognize",
+    "sourceLine": 4795,
+    "tables": [
+      "ai_logs",
+      "ai_usage"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/wool/calendar",
+    "sourceLine": 4828,
+    "tables": [
+      "wool_daily_amounts",
+      "wool_items"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/wool/daily/:date",
+    "sourceLine": 4872,
+    "tables": [
+      "wool_daily_amounts"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/wool/daily/:date",
+    "sourceLine": 4889,
+    "tables": [
+      "wool_daily_amounts"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/plans",
+    "sourceLine": 4915,
+    "tables": [
+      "daily_plans"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/plans",
+    "sourceLine": 4933,
+    "tables": [
+      "daily_plans"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/plans/:id",
+    "sourceLine": 4950,
+    "tables": [
+      "daily_plans"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/plans/:id",
+    "sourceLine": 4974,
+    "tables": [
+      "daily_plans",
+      "plan_completions"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/plans/completions/:date",
+    "sourceLine": 4987,
+    "tables": [
+      "plan_completions"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/plans/:id/toggle",
+    "sourceLine": 5001,
+    "tables": [
+      "plan_completions"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/plans/reorder",
+    "sourceLine": 5028,
+    "tables": [
+      "daily_plans"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/notes/:date",
+    "sourceLine": 5045,
+    "tables": [
+      "daily_notes"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/notes/:date",
+    "sourceLine": 5061,
+    "tables": [
+      "daily_notes"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/quiz",
+    "sourceLine": 5086,
+    "tables": [
+      "quiz_questions"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/quiz/upload-image",
+    "sourceLine": 5105,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "POST",
+    "path": "/api/quiz",
+    "sourceLine": 5117,
+    "tables": [
+      "quiz_questions"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/quiz/:id",
+    "sourceLine": 5133,
+    "tables": [
+      "quiz_questions"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/quiz/:id",
+    "sourceLine": 5155,
+    "tables": [
+      "quiz_answers",
+      "quiz_questions"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/quiz/answer",
+    "sourceLine": 5167,
+    "tables": [
+      "quiz_answers"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "GET",
+    "path": "/api/quiz/answers/:questionId",
+    "sourceLine": 5184,
+    "tables": [
+      "quiz_answers"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/quiz/evaluate",
+    "sourceLine": 5203,
+    "tables": [
+      "ai_logs",
+      "ai_usage",
+      "quiz_questions"
+    ],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/ai/extract-logic",
+    "sourceLine": 5269,
+    "tables": [
+      "ai_logs",
+      "ai_usage"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/logic/train",
+    "sourceLine": 5322,
+    "tables": [
+      "wechat_logic_training"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/wechat/training-data",
+    "sourceLine": 5350,
+    "tables": [
+      "wechat_category_feedback",
+      "wechat_category_rules",
+      "wechat_category_system_rules",
+      "wechat_logic_training",
+      "wechat_tracking"
+    ],
+    "access": "local-owner-only",
+    "csrf": false,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/heartbeat",
+    "sourceLine": 5728,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "GET",
+    "path": "/api/gold-price",
+    "sourceLine": 5735,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "GET",
+    "path": "/api/stock-price",
+    "sourceLine": 5887,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "GET",
+    "path": "/api/stock/name/:code",
+    "sourceLine": 5939,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "GET",
+    "path": "/api/stock/search",
+    "sourceLine": 5963,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "GET",
+    "path": "/api/wechat/tracking",
+    "sourceLine": 6458,
+    "tables": [
+      "wechat_events",
+      "wechat_tracking"
+    ],
+    "access": "local-owner-only",
+    "csrf": false,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/tracking/manual",
+    "sourceLine": 6579,
+    "tables": [
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/wechat/tracking/:id",
+    "sourceLine": 6614,
+    "tables": [
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/wechat/tracking/delete-by-date-range",
+    "sourceLine": 6638,
+    "tables": [
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/wechat/tracking/batch-update",
+    "sourceLine": 6676,
+    "tables": [
+      "wechat_tracking"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/wechat/tracking/:id/lock",
+    "sourceLine": 6725,
+    "tables": [
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/wechat/tracking/:id/entry-type",
+    "sourceLine": 6753,
+    "tables": [
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/wechat/tracking/:id/daily",
+    "sourceLine": 6774,
+    "tables": [
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": false,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/wechat/investor-analysis",
+    "sourceLine": 6889,
+    "tables": [
+      "wechat_events",
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": false,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/tracking/:id/refresh",
+    "sourceLine": 7086,
+    "tables": [
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/wechat/status",
+    "sourceLine": 7096,
+    "tables": [],
+    "access": "local-owner-only",
+    "csrf": false,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/market/overview",
+    "sourceLine": 7393,
+    "tables": [
+      "ai_settings"
+    ],
+    "access": "authenticated-user",
+    "csrf": false,
+    "change": "原请求/响应结构保留；查询/子查询/JOIN/事务强制 user_id；写入自动归当前账号"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/monitor/start",
+    "sourceLine": 7398,
+    "tables": [],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/monitor/stop",
+    "sourceLine": 7407,
+    "tables": [],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/wechat/events/:id/stocks-usage",
+    "sourceLine": 7412,
+    "tables": [
+      "wechat_events",
+      "wechat_tracking"
+    ],
+    "access": "local-owner-only",
+    "csrf": false,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/events/:id/delete",
+    "sourceLine": 7449,
+    "tables": [
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/wechat/events/:id",
+    "sourceLine": 7492,
+    "tables": [
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/wechat/events",
+    "sourceLine": 7530,
+    "tables": [
+      "wechat_events",
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/tracking/refresh-all",
+    "sourceLine": 7562,
+    "tables": [
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/wechat/investor/:sender/hold-days",
+    "sourceLine": 7601,
+    "tables": [
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": false,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/wechat/investor/:sender",
+    "sourceLine": 7651,
+    "tables": [
+      "wechat_events",
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/extract",
+    "sourceLine": 7694,
+    "tables": [
+      "extract_learn",
+      "wechat_category_feedback",
+      "wechat_category_rules",
+      "wechat_category_system_rules"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/extract/learn",
+    "sourceLine": 7743,
+    "tables": [
+      "extract_learn"
+    ],
+    "access": "local-owner-only",
+    "csrf": false,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/extract/learn",
+    "sourceLine": 7764,
+    "tables": [
+      "extract_learn"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/extract-image",
+    "sourceLine": 7827,
+    "tables": [
+      "ai_logs",
+      "ai_usage",
+      "extract_learn",
+      "wechat_category_feedback",
+      "wechat_category_rules",
+      "wechat_category_system_rules"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/board/upload-image",
+    "sourceLine": 7942,
+    "tables": [],
+    "access": "authenticated-user",
+    "csrf": true,
+    "change": "新增会话鉴权；不读其他用户数据库数据"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/extract/save",
+    "sourceLine": 7949,
+    "tables": [
+      "ai_logs",
+      "ai_usage",
+      "extract_learn",
+      "wechat_category_feedback",
+      "wechat_category_rules",
+      "wechat_category_system_rules",
+      "wechat_events",
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/wechat/events/:id/category",
+    "sourceLine": 8014,
+    "tables": [
+      "ai_settings",
+      "wechat_category_feedback",
+      "wechat_category_rules",
+      "wechat_events",
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/wechat/events/:id/text",
+    "sourceLine": 8110,
+    "tables": [
+      "ai_logs",
+      "ai_settings",
+      "ai_usage",
+      "wechat_category_rules",
+      "wechat_category_system_rules",
+      "wechat_events",
+      "wechat_tracking"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/wechat/events/:id/stock-logic",
+    "sourceLine": 8216,
+    "tables": [
+      "wechat_events"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/wechat/events/:id/stocks",
+    "sourceLine": 8243,
+    "tables": [
+      "wechat_events",
+      "wechat_tracking",
+      "wechat_tracking_daily"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/category-feedback",
+    "sourceLine": 8488,
+    "tables": [
+      "ai_settings",
+      "wechat_category_feedback",
+      "wechat_category_rules"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "GET",
+    "path": "/api/wechat/category-rules",
+    "sourceLine": 8550,
+    "tables": [
+      "wechat_category_rules",
+      "wechat_category_system_rules"
+    ],
+    "access": "local-owner-only",
+    "csrf": false,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/wechat/category-rules/system/:id",
+    "sourceLine": 8595,
+    "tables": [
+      "wechat_category_system_rules"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/wechat/category-rules/learned/:id",
+    "sourceLine": 8615,
+    "tables": [
+      "wechat_category_rules"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/category-rules/system/reset",
+    "sourceLine": 8627,
+    "tables": [
+      "wechat_category_system_rules"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/category-rules/learned",
+    "sourceLine": 8716,
+    "tables": [
+      "wechat_category_rules"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  },
+  {
+    "method": "POST",
+    "path": "/api/wechat/reclassify",
+    "sourceLine": 8740,
+    "tables": [
+      "extract_learn",
+      "wechat_category_feedback",
+      "wechat_category_rules",
+      "wechat_category_system_rules",
+      "wechat_events"
+    ],
+    "access": "local-owner-only",
+    "csrf": true,
+    "change": "本机所有者 + 直接回环访问；云端禁用；SQL 仍限当前 user_id"
+  }
+]

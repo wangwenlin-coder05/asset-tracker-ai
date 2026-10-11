@@ -239,6 +239,7 @@
 </template>
 
 <script setup>
+import { userStorage as localStorage } from '../../auth'
 import { inject, reactive, ref, computed, onMounted } from 'vue'
 import {
   Link, Ticket, ChevronDown, Wand2, Rocket, Copy, ExternalLink, Sparkles, Download,
