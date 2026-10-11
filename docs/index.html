@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Asset Tracker AI · A股投研决策引擎</title>
+<meta name="description" content="面向个人 A 股投资者的投研决策引擎：行情看板、T+1 有效止盈模型、AI 大盘情绪分析、无限画布复盘，内置可自然语言驱动的 AI Agent 量化回测子系统。">
+<meta property="og:title" content="Asset Tracker AI · A股投研决策引擎">
+<meta property="og:description" content="行情看板 · T+1 有效止盈风控模型 · AI 量化回测子系统">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230b1024'/%3E%3Cpath d='M22 68l16-22 14 12 26-32' stroke='%237c8cff' stroke-width='9' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#070b1a;
+    --bg-soft:#0d1327;
+    --card:rgba(255,255,255,.045);
+    --card-brd:rgba(255,255,255,.10);
+    --txt:#e8ecf8;
+    --txt-dim:#9aa6c4;
+    --acc:#7c8cff;
+    --acc2:#57e0d0;
+    --acc3:#c084fc;
+    --ok:#3ddc97;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg);
+    color:var(--txt);
+    font-family:"PingFang SC","Microsoft YaHei","Segoe UI",system-ui,-apple-system,sans-serif;
+    line-height:1.7;
+    -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+  }
+  a{color:inherit;text-decoration:none}
+  .wrap{width:min(1160px,92vw);margin:0 auto}
+
+  /* ---------- 背景星空 ---------- */
+  .sky{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+  .sky::before,.sky::after{
+    content:"";position:absolute;inset:-30%;
+    background-image:
+      radial-gradient(1.4px 1.4px at 20% 30%,rgba(255,255,255,.85),transparent),
+      radial-gradient(1.2px 1.2px at 70% 12%,rgba(160,190,255,.8),transparent),
+      radial-gradient(1.6px 1.6px at 45% 72%,rgba(255,255,255,.7),transparent),
+      radial-gradient(1.2px 1.2px at 85% 60%,rgba(200,180,255,.75),transparent),
+      radial-gradient(1.4px 1.4px at 12% 82%,rgba(255,255,255,.6),transparent);
+    background-size:520px 520px,620px 620px,700px 700px,560px 560px,800px 800px;
+    animation:drift 90s linear infinite;
+  }
+  .sky::after{filter:blur(.6px);opacity:.55;animation-duration:150s;animation-direction:reverse}
+  @keyframes drift{to{transform:translate3d(-260px,-180px,0)}}
+  .glow{position:absolute;border-radius:50%;filter:blur(90px);opacity:.55}
+  .glow.g1{width:520px;height:520px;top:-180px;left:-120px;background:radial-gradient(circle,#4b5bff,transparent 65%)}
+  .glow.g2{width:620px;height:620px;top:220px;right:-220px;background:radial-gradient(circle,#7a3cff,transparent 65%)}
+  .glow.g3{width:480px;height:480px;top:1400px;left:-160px;background:radial-gradient(circle,#00b3a4,transparent 65%);opacity:.35}
+
+  main,header,footer{position:relative;z-index:1}
+
+  /* ---------- 顶部导航 ---------- */
+  header{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);
+    background:rgba(7,11,26,.72);border-bottom:1px solid rgba(255,255,255,.07)}
+  .nav{display:flex;align-items:center;gap:26px;height:64px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.2px}
+  .brand .dot{width:26px;height:26px;border-radius:9px;
+    background:linear-gradient(140deg,var(--acc),var(--acc3));box-shadow:0 0 18px rgba(124,140,255,.65)}
+  .nav .links{display:flex;gap:22px;margin-left:auto;font-size:14px;color:var(--txt-dim)}
+  .nav .links a:hover{color:var(--txt)}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:9px 16px;border-radius:11px;
+    font-size:14px;font-weight:600;border:1px solid var(--card-brd);transition:.22s}
+  .btn:hover{transform:translateY(-1px)}
+  .btn.primary{background:linear-gradient(135deg,var(--acc),#9d6bff);border-color:transparent;
+    box-shadow:0 10px 30px -12px rgba(124,140,255,.9)}
+  .btn.ghost{background:rgba(255,255,255,.05)}
+
+  /* ---------- Hero ---------- */
+  .hero{display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center;padding:78px 0 70px}
+  .pill{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:#cfd7ff;
+    padding:5px 13px;border-radius:999px;border:1px solid rgba(124,140,255,.4);
+    background:rgba(124,140,255,.12)}
+  .pill b{color:#fff}
+  h1{font-size:clamp(30px,4.4vw,50px);line-height:1.22;letter-spacing:-.5px;margin:20px 0 16px}
+  h1 .grad{background:linear-gradient(100deg,#8ea2ff,#c084fc 45%,#57e0d0);
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  .lead{color:var(--txt-dim);font-size:16.5px;max-width:560px}
+  .cta{display:flex;gap:14px;margin-top:30px;flex-wrap:wrap}
+  .meta{margin-top:26px;display:flex;gap:26px;flex-wrap:wrap;font-size:13px;color:var(--txt-dim)}
+  .meta b{display:block;font-size:20px;color:var(--txt);font-weight:700}
+
+  /* ---------- Hero 预览卡（纯 CSS 绘制） ---------- */
+  .preview{position:relative;border-radius:20px;padding:18px;border:1px solid var(--card-brd);
+    background:linear-gradient(160deg,rgba(21,28,54,.92),rgba(10,14,30,.92));
+    box-shadow:0 40px 90px -40px rgba(0,0,0,.95),inset 0 1px 0 rgba(255,255,255,.06)}
+  .preview .bar{display:flex;gap:7px;margin-bottom:14px}
+  .preview .bar i{width:10px;height:10px;border-radius:50%;background:#2b3559;display:block}
+  .preview .bar i:first-child{background:#ff5f57}.preview .bar i:nth-child(2){background:#febc2e}.preview .bar i:nth-child(3){background:#28c840}
+  .tile{border-radius:14px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.035);padding:14px}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .kpi{font-size:11px;color:var(--txt-dim);letter-spacing:.4px}
+  .num{font-size:23px;font-weight:700;font-variant-numeric:tabular-nums}
+  .num.up{color:#3ddc97}.num.dim{color:#cfd7ff}
+  .track{height:7px;border-radius:99px;background:rgba(255,255,255,.09);overflow:hidden;margin:10px 0 6px}
+  .track i{display:block;height:100%;width:31%;border-radius:99px;
+    background:linear-gradient(90deg,#5b6cff,#b06bff);box-shadow:0 0 14px rgba(140,110,255,.8)}
+  .spark{display:flex;align-items:flex-end;gap:4px;height:52px;margin-top:12px}
+  .spark span{flex:1;border-radius:4px 4px 2px 2px;background:linear-gradient(180deg,#7c8cff,rgba(124,140,255,.15))}
+  .bottle{margin-top:12px;display:flex;align-items:center;gap:14px}
+  .bottle .glass{width:56px;height:86px;border-radius:14px 14px 20px 20px;
+    border:1px solid rgba(150,190,255,.55);
+    background:linear-gradient(180deg,rgba(120,150,255,.30),rgba(90,120,255,.10));
+    box-shadow:0 0 26px rgba(110,150,255,.45) inset,0 0 22px rgba(110,150,255,.35)}
+  .badge{position:absolute;font-size:12px;padding:6px 12px;border-radius:999px;
+    background:rgba(10,14,30,.9);border:1px solid var(--card-brd);color:#cfd7ff;
+    box-shadow:0 10px 26px -14px rgba(0,0,0,.9)}
+  .badge.b1{top:-14px;right:22px}
+  .badge.b2{bottom:-14px;left:22px}
+
+  /* ---------- 通用区块 ---------- */
+  section{padding:68px 0}
+  .eyebrow{font-size:13px;letter-spacing:2.4px;color:var(--acc2);text-transform:uppercase;font-weight:600}
+  h2{font-size:clamp(23px,3vw,33px);margin:12px 0 14px;letter-spacing:-.3px}
+  .sub{color:var(--txt-dim);max-width:680px}
+  .grid{display:grid;gap:18px;margin-top:38px}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g4{grid-template-columns:repeat(4,1fr)}
+  .card{border:1px solid var(--card-brd);border-radius:16px;padding:22px;
+    background:var(--card);backdrop-filter:blur(8px);transition:.25s}
+  .card:hover{transform:translateY(-3px);border-color:rgba(124,140,255,.45);
+    background:rgba(124,140,255,.08)}
+  .card h3{font-size:16.5px;margin-bottom:9px;display:flex;align-items:center;gap:9px}
+  .ico{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:15px;
+    background:linear-gradient(140deg,rgba(124,140,255,.32),rgba(192,132,252,.24));
+    border:1px solid rgba(255,255,255,.12)}
+  .card p{font-size:14px;color:var(--txt-dim)}
+  .tags{display:flex;flex-wrap:wrap;gap:7px;margin-top:13px}
+  .tag{font-size:11.5px;color:#c9d3f5;padding:3px 9px;border-radius:7px;
+    background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.09)}
+
+  /* ---------- 流程 ---------- */
+  .flow{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:34px}
+  .step{border:1px solid var(--card-brd);border-radius:14px;padding:18px;background:var(--card);position:relative}
+  .step .n{font-size:12px;color:var(--acc2);font-weight:700;letter-spacing:1.6px}
+  .step h4{font-size:15px;margin:8px 0 6px}
+  .step p{font-size:13.5px;color:var(--txt-dim)}
+  .step.ok{border-color:rgba(61,220,151,.42);background:rgba(61,220,151,.07)}
+  .step.ok h4{color:var(--ok)}
+
+  /* ---------- 表格 ---------- */
+  .tbl{margin-top:30px;border:1px solid var(--card-brd);border-radius:16px;overflow:hidden;
+    background:var(--card)}
+  .tbl .tr{display:grid;grid-template-columns:230px 1fr;gap:16px;padding:15px 20px;
+    border-top:1px solid rgba(255,255,255,.06);font-size:14.5px}
+  .tbl .tr:first-child{border-top:0}
+  .tbl .tr b{color:#dfe6ff;font-weight:600}
+  .tbl .tr span{color:var(--txt-dim)}
+
+  /* ---------- 更新日志 ---------- */
+  .rel{border-left:2px solid rgba(124,140,255,.5);padding-left:22px;margin-top:32px;position:relative}
+  .rel::before{content:"";position:absolute;left:-7px;top:8px;width:12px;height:12px;border-radius:50%;
+    background:linear-gradient(140deg,var(--acc),var(--acc3));box-shadow:0 0 14px rgba(124,140,255,.9)}
+  .rel h3{font-size:17px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .ver{font-size:12px;color:#0a0e1e;background:linear-gradient(135deg,#8ea2ff,#57e0d0);
+    padding:2px 10px;border-radius:999px;font-weight:700}
+  .date{font-size:13px;color:var(--txt-dim);font-weight:400}
+  .rel ul{margin:12px 0 0;padding-left:18px;color:var(--txt-dim);font-size:14.5px}
+  .rel li{margin:5px 0}
+  .rel li b{color:#dfe6ff}
+
+  /* ---------- 代码块 ---------- */
+  pre{margin-top:26px;border:1px solid var(--card-brd);border-radius:14px;padding:20px;
+    background:rgba(4,7,18,.85);overflow-x:auto;font-size:13.5px;line-height:1.85;
+    font-family:ui-monospace,SFMono-Regular,Consolas,"Cascadia Mono",monospace;color:#d7e0ff}
+  pre .c{color:#6b7aa8}
+  pre .k{color:#7ee0c8}
+
+  /* ---------- 页脚 ---------- */
+  footer{border-top:1px solid rgba(255,255,255,.07);padding:34px 0 50px;margin-top:44px;
+    color:var(--txt-dim);font-size:13.5px}
+  .foot{display:flex;justify-content:space-between;gap:18px;flex-wrap:wrap;align-items:center}
+  .disc{margin-top:16px;font-size:12.5px;color:#7d89ab;max-width:820px}
+
+  @media (max-width:980px){
+    .hero{grid-template-columns:1fr;gap:40px;padding-top:52px}
+    .g4{grid-template-columns:repeat(2,1fr)}
+    .g3{grid-template-columns:repeat(2,1fr)}
+    .flow{grid-template-columns:repeat(2,1fr)}
+    .nav .links{display:none}
+  }
+  @media (max-width:620px){
+    .g4,.g3,.flow{grid-template-columns:1fr}
+    .tbl .tr{grid-template-columns:1fr;gap:4px}
+    .row{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+
+<div class="sky">
+  <div class="glow g1"></div><div class="glow g2"></div><div class="glow g3"></div>
+</div>
+
+<header>
+  <div class="wrap nav">
+    <div class="brand"><span class="dot"></span>Asset Tracker AI</div>
+    <nav class="links">
+      <a href="#features">功能板块</a>
+      <a href="#model">止盈模型</a>
+      <a href="#quant">量化回测</a>
+      <a href="#release">版本更新</a>
+      <a href="#start">快速开始</a>
+    </nav>
+    <a class="btn ghost" href="https://github.com/wangwenlin-coder05/asset-tracker-ai" target="_blank" rel="noopener">GitHub 仓库</a>
+  </div>
+</header>
+
+<main>
+  <!-- ============ Hero ============ -->
+  <div class="wrap hero">
+    <div>
+      <span class="pill">🟢 当前版本 <b>v1.1.0</b> · 2026-10-11 发布</span>
+      <h1>A股投研决策引擎<br><span class="grad">让每一次止盈都算数</span></h1>
+      <p class="lead">
+        行情看板 · AI 大盘情绪分析 · 智能推荐自动提取 · <b>T+1 有效止盈风控模型</b> · 无限画布复盘，
+        并内置可自然语言驱动的 <b>AI Agent 量化回测子系统</b>。
+      </p>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/wangwenlin-coder05/asset-tracker-ai" target="_blank" rel="noopener">⭐ 查看源码</a>
+        <a class="btn ghost" href="#start">🚀 快速开始</a>
+      </div>
+      <div class="meta">
+        <div><b>12</b>功能板块</div>
+        <div><b>T+1</b>有效止盈校验</div>
+        <div><b>100%</b>本地部署</div>
+        <div><b>0</b>实盘下单 · 纯研究</div>
+      </div>
+    </div>
+
+    <!-- 纯 CSS 界面预览 -->
+    <div class="preview">
+      <span class="badge b1">实时行情 · 止盈计算</span>
+      <span class="badge b2">资金蓄水池 · 星河可视化</span>
+      <div class="bar"><i></i><i></i><i></i></div>
+      <div class="row">
+        <div class="tile">
+          <div class="kpi">总资产</div>
+          <div class="num dim">¥ 1,286,400</div>
+          <div class="spark">
+            <span style="height:38%"></span><span style="height:56%"></span><span style="height:44%"></span>
+            <span style="height:72%"></span><span style="height:61%"></span><span style="height:88%"></span>
+            <span style="height:70%"></span><span style="height:96%"></span>
+          </div>
+        </div>
+        <div class="tile">
+          <div class="kpi">今日盈亏（T+1 口径）</div>
+          <div class="num up">+ 12,860</div>
+          <div class="kpi" style="margin-top:14px">有效止盈胜率</div>
+          <div class="num" style="font-size:19px">68.4%</div>
+        </div>
+      </div>
+      <div class="tile" style="margin-top:12px">
+        <div class="kpi">止盈阈值 5% · 触发进度</div>
+        <div class="track"><i></i></div>
+        <div class="kpi">已触发 6 / 19 只持仓</div>
+      </div>
+      <div class="tile bottle" style="margin-top:12px">
+        <div class="glass"></div>
+        <div>
+          <div class="kpi">资金蓄水池 · 星河为证</div>
+          <div class="num" style="font-size:19px">30.0% <span style="font-size:12px;color:var(--txt-dim)">已填充</span></div>
+          <div class="kpi">容量 ¥500,000 · 用途自由</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 功能板块 ============ -->
+  <section id="features" class="wrap">
+    <div class="eyebrow">Features</div>
+    <h2>覆盖投研全流程的功能板块</h2>
+    <p class="sub">从行情盯盘、止盈决策、资金管理到复盘沉淀与量化验证，一个自托管的个人投研工作站。</p>
+
+    <div class="grid g4">
+      <div class="card">
+        <h3><span class="ico">📊</span>资产总览</h3>
+        <p>总资产、当日盈亏、仓位与板块分布集中呈现，开盘一眼看清账户全貌。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">📈</span>股票 · 止盈计算</h3>
+        <p>买入成本 + 佣金/印花税费率自动计算止盈价，支持多档阈值与清仓记录。</p>
+        <div class="tags"><span class="tag">T+1</span><span class="tag">费率可配置</span></div>
+      </div>
+      <div class="card">
+        <h3><span class="ico">🪙</span>黄金板块</h3>
+        <p>黄金持仓与买入记录，星河粒子背景可视化，与股票资产统一核算。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">🫧</span>资金蓄水池</h3>
+        <p>为购房、购车等专项目标单独蓄水，容量与填充进度以玻璃瓶形态直观呈现。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">👁️</span>自选股监控</h3>
+        <p>自选池管理 + 每日涨跌跟踪 + AI 分析结论留痕，可回溯历史研判观点。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">💬</span>微信消息提取</h3>
+        <p>从公众号/群消息中自动识别标的与推荐逻辑，规则可学习、可沉淀。</p>
+        <div class="tags"><span class="tag">Node</span><span class="tag">Java</span><span class="tag">Python</span></div>
+      </div>
+      <div class="card">
+        <h3><span class="ico">🧠</span>AI 工作台 / 画布</h3>
+        <p>AI 大盘情绪与个股逻辑分析，无限画布做投研笔记与复盘推演。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">🤖</span>AI 量化回测</h3>
+        <p>自然语言下达回测指令，Agent 自动同步数据、生成策略并输出报告。</p>
+        <div class="tags"><span class="tag">FastAPI</span><span class="tag">事件驱动</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ T+1 模型 ============ -->
+  <section id="model" class="wrap">
+    <div class="eyebrow">Core Model</div>
+    <h2>核心算法：T+1 有效止盈模型</h2>
+    <p class="sub">避免「同一日冲高回落」的虚假止盈 —— 只把<strong>次日盘中仍能守住涨幅</strong>的推荐，计为有效业绩。</p>
+
+    <div class="flow">
+      <div class="step">
+        <div class="n">STEP 01</div>
+        <h4>D0 推荐日</h4>
+        <p>收盘涨幅 &gt; 阈值（默认 5%，可选 10% / 20%）</p>
+      </div>
+      <div class="step">
+        <div class="n">STEP 02</div>
+        <h4>D1 次日开盘</h4>
+        <p>校验开盘价是否仍在阈值之上，规避未来函数</p>
+      </div>
+      <div class="step ok">
+        <div class="n">RESULT</div>
+        <h4>✅ 有效止盈</h4>
+        <p>次日开盘仍 ≥ 阈值，计为有效业绩</p>
+      </div>
+      <div class="step">
+        <div class="n">FILTERED</div>
+        <h4>❌ 浮盈（无效）</h4>
+        <p>冲高回落不计数，支持按推荐源排名投资人表现</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 量化子系统 ============ -->
+  <section id="quant" class="wrap">
+    <div class="eyebrow">Quant Subsystem</div>
+    <h2>自然语言驱动的量化回测闭环</h2>
+    <p class="sub">「回测茅台，止盈 5%，止损 5%」→ 自动同步行情 → 构建策略 → 事件驱动回测 → 生成报告。</p>
+
+    <div class="tbl">
+      <div class="tr"><b>AI Agent</b><span>LLM Function Calling 编排 同步 → 回测 → 报告 多步工具链；内置确定性规则双路径回退，无 Key 也能端到端跑通。</span></div>
+      <div class="tr"><b>事件驱动回测引擎</b><span>逐 K 线撮合、T+1 次日开盘成交、显式规避未来函数；numpy 向量化计算最大回撤 / 夏普。</span></div>
+      <div class="tr"><b>参数网格寻优</b><span>多标的 × 参数组合笛卡尔积扫描，一键输出最优 止盈 / 止损 / 移动止盈 / 持仓 配置。</span></div>
+      <div class="tr"><b>自定义策略工作室</b><span>AI 生成策略代码、静态校验、冒烟测试、版本留存与一键回滚（v1.1.0 新增）。</span></div>
+      <div class="tr"><b>数据链路</b><span>腾讯 / baostock 双源增量同步、自动识别交易所前缀、指数退避重试，落库 SQLite。</span></div>
+    </div>
+  </section>
+
+  <!-- ============ 版本更新 ============ -->
+  <section id="release" class="wrap">
+    <div class="eyebrow">Changelog</div>
+    <h2>版本更新</h2>
+
+    <div class="rel">
+      <h3><span class="ver">v1.1.0</span> 功能大版本<span class="date">2026-10-11</span></h3>
+      <ul>
+        <li><b>新增板块</b>：资产总览、自选股监控（含 AI 分析留痕）、测评、T+1 计算器、资金蓄水池、黄金星河</li>
+        <li><b>视觉体系</b>：新增玻璃拟态特效组件（GlassSurface / Lightfall / SpecularEdge / SpecularOutline）与星河粒子背景</li>
+        <li><b>后端接口</b>：量化服务启停、自选股监控增删改查与 AI 分析、每日涨跌与日报、提取规则学习</li>
+        <li><b>量化系统</b>：自定义策略生成与版本管理（校验 / 冒烟 / 存储 / 回滚）、策略工作室与交易明细</li>
+        <li><b>依赖升级</b>：Express 4 → 5，mysql2 / sharp 同步升级；首页直达各板块</li>
+      </ul>
+    </div>
+
+    <div class="rel" style="margin-top:44px">
+      <h3><span class="ver">v1.0.0</span> 初始版本<span class="date">2026-07-21</span></h3>
+      <ul>
+        <li>股票投研与止盈计算系统：行情看板、止盈计算、持仓与买卖记录</li>
+        <li>存款与黄金板块、微信公众号股票信息提取（Node + Java + Python）</li>
+        <li>一键启动脚本与项目文档</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============ 快速开始 ============ -->
+  <section id="start" class="wrap">
+    <div class="eyebrow">Get Started</div>
+    <h2>本地部署 · 数据不出内网</h2>
+    <p class="sub">需要 Node.js 20+ 与 MySQL 8；量化子系统另需 Python 3.10+。</p>
+<pre><span class="c"># 获取源码</span>
+git clone https://github.com/wangwenlin-coder05/asset-tracker-ai.git
+
+<span class="c"># —— 主应用（Node + MySQL）——</span>
+npm install
+cp .env.example .env      <span class="c"># 配置数据库等</span>
+npm start
+cd frontend &amp;&amp; npm install &amp;&amp; npm run dev   <span class="c"># http://localhost:5273</span>
+
+<span class="c"># —— 量化服务（Python）——</span>
+cd quant
+python -m venv .venv
+.venv\Scripts\activate    <span class="c"># Linux/macOS: source .venv/bin/activate</span>
+pip install -r requirements.txt
+python -m uvicorn quant.api:app --host 127.0.0.1 --port 8000</pre>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/wangwenlin-coder05/asset-tracker-ai" target="_blank" rel="noopener">打开仓库</a>
+      <a class="btn ghost" href="https://github.com/wangwenlin-coder05/asset-tracker-ai/tree/main/quant" target="_blank" rel="noopener">量化子系统文档</a>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <div>© 2026 asset-tracker-ai · 个人投研与学习实践项目</div>
+      <div>
+        <a class="btn ghost" href="https://github.com/wangwenlin-coder05/asset-tracker-ai" target="_blank" rel="noopener">GitHub</a>
+        <a class="btn ghost" href="https://github.com/wangwenlin-coder05/asset-tracker-ai/releases" target="_blank" rel="noopener" style="margin-left:8px">Releases</a>
+      </div>
+    </div>
+    <p class="disc">
+      免责声明：本页面仅用于项目展示。项目行情与推送数据仅供研究参考，不构成任何投资建议；
+      量化模块仅做回测验证，不下单、不接实盘。系统为本地自托管部署，页面本身不包含任何实时账户数据。
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

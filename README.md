@@ -13,11 +13,15 @@
   <img alt="Vue" src="https://img.shields.io/badge/Vue-3-42b883?style=flat-square&logo=vuedotjs&logoColor=white">
   <img alt="Tailwind" src="https://img.shields.io/badge/Tailwind_CSS-3-06B6D4?style=flat-square&logo=tailwindcss&logoColor=white">
   <img alt="Node" src="https://img.shields.io/badge/Node.js-20-339933?style=flat-square&logo=nodejs&logoColor=white">
-  <img alt="Express" src="https://img.shields.io/badge/Express-4-000000?style=flat-square&logo=express">
+  <img alt="Express" src="https://img.shields.io/badge/Express-5-000000?style=flat-square&logo=express">
   <img alt="MySQL" src="https://img.shields.io/badge/MySQL-8-4479A1?style=flat-square&logo=mysql&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10-blue?style=flat-square&logo=python&logoColor=white">
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-0.1-009688?style=flat-square&logo=fastapi&logoColor=white">
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-local-003B57?style=flat-square&logo=sqlite&logoColor=white">
+</p>
+
+<p align="center">
+  <a href="https://wangwenlin-coder05.github.io/asset-tracker-ai/"><b>🌐 在线展示页 · 点此直接查看项目介绍</b></a>
 </p>
 
 > 面向个人 A 股投资者的**投研决策引擎**：行情看板 · AI 大盘情绪分析 · 智能推荐自动提取 · **T+1 有效止盈风控模型** · 无限画布复盘，**并内置可自然语言驱动的 AI Agent 量化回测子系统**。
@@ -132,6 +136,7 @@ asset-tracker-ai/
 ├─ quant/                  # 量化回测子系统
 │   ├─ quant/             # 引擎/策略/Agent/数据同步/API
 │   └─ tests/              # 引擎与 API 用例
+├─ docs/                   # GitHub Pages 展示页
 └─ .env.example            # 环境变量示例
 ```
 
