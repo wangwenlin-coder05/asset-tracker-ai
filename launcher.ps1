@@ -13,7 +13,7 @@ $BackendOutLog = Join-Path $StateDir 'backend.out.log'
 $BackendErrLog = Join-Path $StateDir 'backend.err.log'
 $FrontendOutLog = Join-Path $StateDir 'frontend.out.log'
 $FrontendErrLog = Join-Path $StateDir 'frontend.err.log'
-$ProjectPorts = @(3000) + (5173..5180)
+$ProjectPorts = @(3300) + (5273..5280)
 
 New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
 
@@ -101,24 +101,24 @@ Remove-Item -LiteralPath $BackendOutLog,$BackendErrLog,$FrontendOutLog,$Frontend
 $backend = $null
 $frontend = $null
 try {
-  Write-Host '[2/5] Starting backend on port 3000...'
+  Write-Host '[2/5] Starting backend on port 3300...'
   $backend = Start-Process -FilePath $node.Source -ArgumentList @('server.js') -WorkingDirectory $ProjectDir -WindowStyle Hidden -RedirectStandardOutput $BackendOutLog -RedirectStandardError $BackendErrLog -PassThru
   [System.IO.File]::WriteAllText($BackendPidFile, [string]$backend.Id, [System.Text.Encoding]::ASCII)
-  Wait-HttpReady -Url 'http://127.0.0.1:3000/api/heartbeat' -Process $backend -Name 'Backend' -ErrorLog $BackendErrLog
+  Wait-HttpReady -Url 'http://127.0.0.1:3300/api/heartbeat' -Process $backend -Name 'Backend' -ErrorLog $BackendErrLog
 
   Write-Host '[3/5] Checking backend data endpoints...'
-  foreach ($url in @('http://127.0.0.1:3000/api/stocks?board=stock', 'http://127.0.0.1:3000/api/stocks?board=gold', 'http://127.0.0.1:3000/api/deposits')) {
+  foreach ($url in @('http://127.0.0.1:3300/api/stocks?board=stock', 'http://127.0.0.1:3300/api/stocks?board=gold', 'http://127.0.0.1:3300/api/deposits')) {
     $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10
     if ($response.StatusCode -ne 200) { throw "Backend health check failed: $url ($($response.StatusCode))" }
   }
 
-  Write-Host '[4/5] Starting frontend on fixed port 5173...'
-  $frontend = Start-Process -FilePath $npm.Source -ArgumentList @('run','dev','--','--host','127.0.0.1','--port','5173','--strictPort') -WorkingDirectory $FrontendDir -WindowStyle Hidden -RedirectStandardOutput $FrontendOutLog -RedirectStandardError $FrontendErrLog -PassThru
+  Write-Host '[4/5] Starting frontend on fixed port 5273...'
+  $frontend = Start-Process -FilePath $npm.Source -ArgumentList @('run','dev','--','--host','127.0.0.1','--port','5273','--strictPort') -WorkingDirectory $FrontendDir -WindowStyle Hidden -RedirectStandardOutput $FrontendOutLog -RedirectStandardError $FrontendErrLog -PassThru
   [System.IO.File]::WriteAllText($FrontendPidFile, [string]$frontend.Id, [System.Text.Encoding]::ASCII)
-  Wait-HttpReady -Url 'http://127.0.0.1:5173' -Process $frontend -Name 'Frontend' -ErrorLog $FrontendErrLog
+  Wait-HttpReady -Url 'http://127.0.0.1:5273' -Process $frontend -Name 'Frontend' -ErrorLog $FrontendErrLog
 
-  Write-Host '[5/5] Ready: http://localhost:5173' -ForegroundColor Green
-  if (-not $NoBrowser) { Start-Process 'http://localhost:5173' }
+  Write-Host '[5/5] Ready: http://localhost:5273' -ForegroundColor Green
+  if (-not $NoBrowser) { Start-Process 'http://localhost:5273' }
   exit 0
 } catch {
   Write-Host ''

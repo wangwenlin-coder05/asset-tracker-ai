@@ -27,7 +27,7 @@ const {
 } = require('./wechat-extractor');
 
 const app = express();
-const port = Number(process.env.PORT) || 3000;
+const port = Number(process.env.PORT) || 3300;
 
 const iconsDir = path.join(__dirname, 'uploads', 'icons');
 if (!fs.existsSync(iconsDir)) fs.mkdirSync(iconsDir, { recursive: true });
@@ -1195,6 +1195,104 @@ function quantProxy(req, res) {
 app.use('/quant', quantProxy);
 app.use('/api/quant', quantProxy);
 
+// ========== 量化服务（Python/FastAPI）启停控制 ==========
+// 前端「开关」直接控制 8000 端口服务，免去手动敲命令。
+// 注意：路径用 /api/quant-service（连字符），不会命中上面的 /api/quant 代理。
+const { spawn, execFile } = require('child_process');
+const QUANT_DIR = path.join(__dirname, 'quant');
+const QUANT_PY = path.join(QUANT_DIR, '.venv', 'Scripts', 'python.exe');
+const QUANT_PORT = Number(process.env.QUANT_PORT) || 8000;
+let quantProc = null;
+const quantLogs = [];
+
+function pushQuantLog(buf) {
+  for (const line of String(buf || '').split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    quantLogs.push(line.trim());
+    if (quantLogs.length > 200) quantLogs.shift();
+  }
+}
+
+function pingQuant(timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${QUANT_PORT}/api/ping`, { timeout: timeoutMs }, (res) => {
+      res.resume();
+      resolve(res.statusCode >= 200 && res.statusCode < 500);
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+  });
+}
+
+function quantPortPids() {
+  return new Promise((resolve) => {
+    execFile('powershell', ['-NoProfile', '-Command',
+      `Get-NetTCPConnection -State Listen -LocalPort ${QUANT_PORT} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`],
+      { windowsHide: true, timeout: 8000 },
+      (err, stdout) => {
+        if (err) return resolve([]);
+        resolve([...new Set(String(stdout).split(/\s+/).filter((s) => /^\d+$/.test(s)))]);
+      });
+  });
+}
+
+function killPid(pid) {
+  return new Promise((resolve) => {
+    execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 8000 }, () => resolve());
+  });
+}
+
+app.get('/api/quant-service/status', async (req, res) => {
+  const running = await pingQuant();
+  let aiReady = false;
+  try { aiReady = Boolean(await getGlmApiKey()); } catch (e) { aiReady = Boolean(process.env.GLM_API_KEY); }
+  res.json({ success: true, running, port: QUANT_PORT, managed: !!(quantProc && quantProc.exitCode === null), aiReady });
+});
+
+app.post('/api/quant-service/start', async (req, res) => {
+  if (await pingQuant()) return res.json({ success: true, running: true, message: '量化服务已在运行' });
+  if (!fs.existsSync(QUANT_PY)) {
+    return res.status(400).json({ success: false, error: `未找到虚拟环境：${QUANT_PY}` });
+  }
+  // 注入 GLM Key，让量化服务里的 AI 策略生成/改进无需手动配环境变量
+  let glmKey = '';
+  try { glmKey = (await getGlmApiKey()) || ''; } catch (e) { glmKey = process.env.GLM_API_KEY || ''; }
+  try {
+    quantProc = spawn(QUANT_PY, ['-m', 'uvicorn', 'quant.api:app', '--port', String(QUANT_PORT)], {
+      cwd: QUANT_DIR,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        ...(glmKey ? { GLM_API_KEY: glmKey } : {}),
+        // 量化服务里的 AI 调用（策略生成/改进）回传日志到本服务，写入 ai_logs
+        AI_LOG_URL: `http://127.0.0.1:${port}/api/ai/logs`,
+      },
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, error: '启动失败：' + e.message });
+  }
+  quantProc.stdout.on('data', pushQuantLog);
+  quantProc.stderr.on('data', pushQuantLog);
+  quantProc.on('exit', () => { quantProc = null; });
+
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    if (await pingQuant(1000)) return res.json({ success: true, running: true, message: '量化服务已启动' });
+    if (!quantProc) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  res.status(504).json({ success: false, error: '启动超时', log: quantLogs.slice(-20) });
+});
+
+app.post('/api/quant-service/stop', async (req, res) => {
+  let killed = false;
+  if (quantProc && quantProc.exitCode === null) { await killPid(quantProc.pid); killed = true; }
+  for (const pid of await quantPortPids()) { await killPid(pid); killed = true; }
+  quantProc = null;
+  const stillUp = await pingQuant(1000);
+  res.json({ success: true, running: stillUp, killed, message: stillUp ? '仍有进程占用端口' : '量化服务已停止' });
+});
+
 // ========== 存款 API ==========
 app.get('/api/deposits', async (req, res) => {
   try {
@@ -2126,6 +2224,76 @@ const HARDCODED_NEWS_PATTERNS = [
   /牛股|妖股|龙头|热点|题材|概念/,
 ];
 
+// === A股股票代码有效性验证 ===
+// 编码规律：
+//   600/601/603/605 沪主板(10%) | 68x 科创板(20%) | 900 沪B股
+//   000/001/002 深主板(10%)   | 30x 创业板(20%)
+//   8xx/92x 北交所(30%)
+//   11/12 开头：可转债
+//   730/780/787 等：新股申购代码（需排除）
+//   5/15/16 开头：基金/REITs（需排除）
+//
+// strict 模式说明：
+//   strict=false (默认) — 宽泛匹配：普通股 + 可转债 + B股 + 北交所
+//   strict=true        — 严格匹配：只算A股普通股，排除可转债/B股/基金/申购代码
+function isValidStockCode(code, strict = false) {
+  if (!code || typeof code !== 'string') return false;
+  const c = code.trim();
+  if (!/^\d{6}$/.test(c)) return false;
+  const prefix3 = c.slice(0, 3);
+  const prefix2 = c.slice(0, 2);
+  const prefix1 = c.slice(0, 1);
+
+  // 先排除新股申购代码（7开头）
+  if (isSubscriptionCode(c)) return false;
+
+  // 排除基金代码（5/15/16开头等）
+  if (prefix1 === '5') return false;
+  if (prefix2 === '15' || prefix2 === '16') return false;
+
+  // 沪市主板
+  if (['600', '601', '603', '605'].includes(prefix3)) return true;
+  // 科创板
+  if (prefix2 === '68') return true;
+
+  // 深市主板/原中小板
+  if (['000', '001', '002'].includes(prefix3)) return true;
+  // 创业板
+  if (prefix2 === '30') return true;
+
+  // 北交所（8开头、92开头）
+  if (prefix2 === '92' || prefix1 === '8') return true;
+
+  // 沪B股 — 严格模式排除
+  if (prefix3 === '900') return !strict;
+
+  // 可转债 — 严格模式排除
+  if (prefix2 === '11' || prefix2 === '12') return !strict;
+
+  return false;
+}
+
+// 判断是否为新股申购代码（7开头）
+function isSubscriptionCode(code) {
+  if (!code || typeof code !== 'string') return false;
+  const c = code.trim();
+  if (!/^\d{6}$/.test(c)) return false;
+  const prefix1 = c.slice(0, 1);
+  return prefix1 === '7'; // 所有7开头都视为申购/配号类代码
+}
+
+// 从文本中提取所有符合A股编码规律的6位股票代码
+function extractValidStockCodes(text, strict = false) {
+  if (!text || typeof text !== 'string') return [];
+  const codes = new Set();
+  const matches = text.match(/(?:^|[^\d])(\d{6})(?:$|[^\d])/g) || [];
+  for (const m of matches) {
+    const code = m.replace(/[^\d]/g, '');
+    if (isValidStockCode(code, strict)) codes.add(code);
+  }
+  return [...codes];
+}
+
 // 基于系统规则的分类函数（替代旧的硬编码 MARKETING_PATTERNS）
 async function categorizeMessage(text, stocksJson) {
   try {
@@ -2143,21 +2311,44 @@ async function categorizeMessage(text, stocksJson) {
   // 硬编码权重衰减系数：0条规则时=1.0（满权重），10条以上=0.5（减半）
   const hardcodeWeight = 1 - learningFactor * 0.5;
 
-  // 1. 从 stocksJson 判断：有股票代码 → 给 stock_pick 加高分（但不立即返回，让营销信号也能竞争）
+  // 分类得分初始化
   const categoryScores = { stock_pick: 0, market_news: 0, marketing: 0 };
+
+  // 1. stocksJson 中有有效股票代码 → 强推票信号（直接判推票）
   try {
     const stocks = JSON.parse(stocksJson || '[]');
-    const hasValidStock = stocks.some(s => s && s.code && /^\d{6}$/.test(String(s.code).trim()));
-    if (hasValidStock) categoryScores.stock_pick += 5 * hardcodeWeight;
+    const hasValidStock = stocks.some(s => s && s.code && isValidStockCode(String(s.code).trim()));
+    if (hasValidStock) categoryScores.stock_pick += 6 * hardcodeWeight;
   } catch {}
 
-  // 2. 文本中包含【股票名 6位代码】格式（强推票信号）
-  if (/【\s*[^】]*?\s+\d{6}\s*】/.test(text)) categoryScores.stock_pick += 4 * hardcodeWeight;
+  // 2. 文本中【股票名 6位代码】格式 → 强推票信号
+  // 提取所有【... ...】中的代码并验证有效性
+  const bracketCodeMatches = text.match(/【\s*[^】]*?\s+(\d{6})\s*】/g) || [];
+  let validBracketCodeCount = 0;
+  for (const m of bracketCodeMatches) {
+    const codeMatch = m.match(/\d{6}/);
+    if (codeMatch && isValidStockCode(codeMatch[0])) validBracketCodeCount++;
+  }
+  if (validBracketCodeCount > 0) categoryScores.stock_pick += 5 * hardcodeWeight;
 
-  // 3. 文本中包含6位数字股票代码且前后非数字（避免身份证/电话号误判）
-  const codeMatches = cleanText.match(/(?:^|[^\d])(\d{6})(?:$|[^\d])/g) || [];
-  if (codeMatches.length > 0) categoryScores.stock_pick += 3 * hardcodeWeight;
-  if (/^\d{6}$/.test(cleanText)) categoryScores.stock_pick += 3 * hardcodeWeight;
+  // 3. 文本中包含6位有效A股代码（前后非数字，避免身份证/电话号误判）
+  const validCodesInText = extractValidStockCodes(cleanText);
+  if (validCodesInText.length > 0) categoryScores.stock_pick += 4 * hardcodeWeight;
+
+  // 4. 推票回顾模式：涨停/连板/T+1 等关键词 + 股票名/代码 → 判推票
+  const pickReviewKeywords = ['涨停', '跌停', 'T+1', 'T+0', '累计涨', '连板', '强势涨停', '两连板', '2连板', '3连板', '封板', '打板', '首板', '二板', '三板', '断板'];
+  const hasPickReviewKeyword = pickReviewKeywords.some(k => text.includes(k));
+  const stockNameInBrackets = /【[#⭕🔥]?\s*[^】]{2,10}\s*】/.test(text);
+  if (hasPickReviewKeyword && (stockNameInBrackets || validCodesInText.length > 0 || categoryScores.stock_pick > 0)) {
+    categoryScores.stock_pick += 3 * hardcodeWeight;
+  }
+
+  // 5. 【股票名】 + 推荐关键词 → 判推票
+  const recommendKeywords = ['关注', '低吸', '买入', '建仓', '加仓', '推荐', '目标价', '看涨', '看好', '机会', '潜力', '布局', '抄底', '上车', '埋伏'];
+  const hasRecommendKeyword = recommendKeywords.some(k => text.includes(k));
+  if (stockNameInBrackets && hasRecommendKeyword) {
+    categoryScores.stock_pick += 3 * hardcodeWeight;
+  }
 
   // 5. 基于系统规则 + 硬编码兜底打分分类
   let systemRuleMatched = false;
@@ -2207,12 +2398,11 @@ async function categorizeMessage(text, stocksJson) {
   for (const p of HARDCODED_NEWS_PATTERNS) {
     try { if (p.test(text)) categoryScores.market_news += 1.5 * hcW; } catch {}
   }
-  // 推票模式检查
+
+  // 【股票名】括号信号（兜底，仅当其他信号不强时生效）
   const hasStockBracket = /【[#⭕🔥\s]*[^】]{2,10}[#⭕🔥\s]*】/.test(text);
-  if (hasStockBracket) categoryScores.stock_pick += 2 * hcW;
-  const pickReviewKws = ['涨停', '跌停', 'T+1', 'T+0', '累计涨', '连板', '强势涨停', '封板', '打板', '两连板', '2连板', '3连板'];
-  for (const kw of pickReviewKws) {
-    if (text.includes(kw)) categoryScores.stock_pick += 1 * hcW;
+  if (hasStockBracket && categoryScores.stock_pick < 3) {
+    categoryScores.stock_pick += 1.5 * hcW;
   }
 
   // 营销强信号覆盖：只有 marketing 得分不仅达到阈值，而且**明显高于** market_news 时才优先返回 marketing
@@ -2235,18 +2425,13 @@ async function categorizeMessage(text, stocksJson) {
     return 'marketing';
   }
 
-  // 推票回顾模式：【股票名】+ 涨停/连板/T+1 等关键词（即使没有代码也算）
-  const stockNameInBrackets = /【[#⭕🔥]?\s*[^】]{2,10}\s*】/.test(text);
-  const pickReviewKeywords = ['涨停', '跌停', 'T+1', 'T+0', '累计涨', '连板', '强势涨停', '两连板', '2连板', '3连板', '封板', '打板'];
-  const hasPickReviewKeyword = pickReviewKeywords.some(k => text.includes(k));
-  if (stockNameInBrackets && hasPickReviewKeyword) return 'stock_pick';
-
-  // 有【】括号且无其他强信号时，倾向推票（因为很少有其他类型消息用【】）
-  if (stockNameInBrackets) {
-    // 检查是否有行情关键词（大盘/走势/板块等）覆盖
+  // 【股票名】括号兜底：有括号且无明显行情覆盖词时，倾向推票
+  if (hasStockBracket && categoryScores.stock_pick > 0) {
     const newsOverrideKeywords = ['大盘', '走势', '板块', '行情', '市场', '指数', '沪指', '深成指', '创业板指'];
     const hasNewsOverride = newsOverrideKeywords.some(k => text.includes(k));
-    if (!hasNewsOverride) return 'stock_pick';
+    if (!hasNewsOverride && categoryScores.marketing < 3) {
+      return 'stock_pick';
+    }
   }
 
   // 返回得分最高的类别
@@ -2669,6 +2854,78 @@ async function migrate() {
       content TEXT,
       created_at BIGINT DEFAULT 0,
       updated_at BIGINT DEFAULT 0
+    )
+  `);
+
+  // 股票每日观察/分析表
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS stock_watchlist (
+      id VARCHAR(64) PRIMARY KEY,
+      code VARCHAR(10) NOT NULL DEFAULT '',
+      name VARCHAR(50) NOT NULL DEFAULT '',
+      is_holding TINYINT DEFAULT 0,
+      pinned TINYINT DEFAULT 0,
+      sort_order INT DEFAULT 0,
+      created_at BIGINT DEFAULT 0,
+      updated_at BIGINT DEFAULT 0
+    )
+  `);
+
+  // 股票每日分析记录表（一只股票每天一条）
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS stock_daily_analysis (
+      id VARCHAR(64) PRIMARY KEY,
+      watch_id VARCHAR(64) NOT NULL DEFAULT '',
+      code VARCHAR(10) NOT NULL DEFAULT '',
+      date VARCHAR(20) NOT NULL DEFAULT '',
+      action_type VARCHAR(20) DEFAULT '',
+      sentiment VARCHAR(20) DEFAULT '',
+      target_buy_price VARCHAR(24) DEFAULT NULL,
+      target_buy_price_high VARCHAR(24) DEFAULT NULL,
+      target_sell_price VARCHAR(24) DEFAULT NULL,
+      target_sell_price_high VARCHAR(24) DEFAULT NULL,
+      stop_loss_price VARCHAR(24) DEFAULT NULL,
+      stop_loss_price_high VARCHAR(24) DEFAULT NULL,
+      buy_share_count INT DEFAULT NULL,
+      sell_share_count INT DEFAULT NULL,
+      loss_share_count INT DEFAULT NULL,
+      note TEXT,
+      next_day_note TEXT,
+      review_result VARCHAR(20) DEFAULT '',
+      review_note VARCHAR(500) DEFAULT '',
+      created_at BIGINT DEFAULT 0,
+      updated_at BIGINT DEFAULT 0,
+      UNIQUE KEY uk_watch_date (watch_id, date)
+    )
+  `);
+
+  // 价格计划支持区间（如 6.40~6.50），列类型放宽为字符串
+  for (const col of ['target_buy_price', 'target_sell_price', 'stop_loss_price']) {
+    try { await pool.execute(`ALTER TABLE stock_daily_analysis MODIFY ${col} VARCHAR(24) DEFAULT NULL`); } catch (e) {}
+  }
+  // 旧的单一 share_count 迁移为「目标买入股数」，保留历史数据
+  try { await pool.execute('ALTER TABLE stock_daily_analysis CHANGE COLUMN share_count buy_share_count INT DEFAULT NULL'); } catch (e) {}
+  // 价格计划三项各自附带股数
+  for (const col of ['buy_share_count', 'sell_share_count', 'loss_share_count']) {
+    try { await pool.execute(`ALTER TABLE stock_daily_analysis ADD COLUMN ${col} INT DEFAULT NULL`); } catch (e) {}
+  }
+  // 价格计划支持区间上限价
+  for (const col of ['target_buy_price_high', 'target_sell_price_high', 'stop_loss_price_high']) {
+    try { await pool.execute(`ALTER TABLE stock_daily_analysis ADD COLUMN ${col} VARCHAR(24) DEFAULT NULL`); } catch (e) {}
+  }
+  // 「明日看法」字段：T 日盘后写给 T+1 看的备注
+  try { await pool.execute('ALTER TABLE stock_daily_analysis ADD COLUMN next_day_note TEXT'); } catch (e) {}
+
+  // 每日盘后总结表（每个交易日一条）
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS stock_daily_summary (
+      id VARCHAR(64) PRIMARY KEY,
+      date VARCHAR(20) NOT NULL DEFAULT '',
+      content TEXT,
+      auto_content TEXT,
+      created_at BIGINT DEFAULT 0,
+      updated_at BIGINT DEFAULT 0,
+      UNIQUE KEY uk_summary_date (date)
     )
   `);
 
@@ -3427,17 +3684,47 @@ app.post('/api/ai/test-model', async (req, res) => {
   }
 });
 
-// AI 调用统计（从日志表统计，确保与日志一致）
+// AI 调用统计（累计 + 今日 + 近 7 天趋势 + 按模型分布）
 app.get('/api/ai/usage', async (req, res) => {
   try {
     const today = new Date().toISOString().split('T')[0];
-    const [rows] = await pool.query(
-      'SELECT model, COUNT(*) as count FROM ai_logs WHERE success = 1 AND DATE(created_at) = ? GROUP BY model',
+    // 累计总数
+    const [totalRows] = await pool.query('SELECT COUNT(*) as total FROM ai_logs WHERE success = 1');
+    const total = totalRows[0].total || 0;
+    // 今日
+    const [todayRows] = await pool.query(
+      'SELECT COUNT(*) as count FROM ai_logs WHERE success = 1 AND DATE(created_at) = ?',
       [today]
     );
-    const total = rows.reduce((sum, r) => sum + r.count, 0);
-    const byModel = rows.map(r => ({ model: r.model, count: r.count }));
-    res.json({ date: today, total, byModel });
+    const todayCount = todayRows[0].count || 0;
+    // 今日按模型分布
+    const [modelRows] = await pool.query(
+      'SELECT model, COUNT(*) as count FROM ai_logs WHERE success = 1 AND DATE(created_at) = ? GROUP BY model ORDER BY count DESC',
+      [today]
+    );
+    const byModel = modelRows.map(r => ({ model: r.model, count: r.count }));
+    // 近 7 天趋势（含今天）
+    const [trendRows] = await pool.query(
+      "SELECT DATE(created_at) as date, COUNT(*) as count FROM ai_logs " +
+      "WHERE success = 1 AND created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY) " +
+      "GROUP BY DATE(created_at) ORDER BY date ASC"
+    );
+    // 补齐最近 7 天，没有的天补 0
+    const trend = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().split('T')[0];
+      const found = trendRows.find(r => r.date === dateStr);
+      trend.push({ date: dateStr, count: found ? found.count : 0 });
+    }
+    res.json({
+      date: today,
+      total,           // 累计调用
+      today: todayCount, // 今日调用
+      byModel,
+      trend,            // 近 7 天 [{date, count}]
+    });
   } catch (err) {
     console.error('获取AI使用统计失败:', err);
     res.status(500).json({ error: err.message });
@@ -3458,6 +3745,37 @@ app.get('/api/ai/logs', async (req, res) => {
   } catch (err) {
     console.error('获取AI调用日志失败:', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// AI 调用日志：写入（内部服务回传，如量化 Python 服务的 AI 策略生成）
+app.post('/api/ai/logs', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const truncate = (str, maxLen) => {
+      const s = str == null ? '' : String(str);
+      return !s ? '' : s.length > maxLen ? s.slice(0, maxLen) + `\n...(已截断, 共${s.length}字符)` : s;
+    };
+    const model = String(b.model || '').slice(0, 64);
+    const provider = String(b.provider || 'quant').slice(0, 32);
+    const success = b.success === false ? 0 : 1;
+    await pool.execute(
+      'INSERT INTO ai_logs (model, provider, system_prompt_len, user_prompt_len, response_len, duration_ms, success, error_msg, request_content, response_content) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [model, provider, Number(b.system_prompt_len) || 0, Number(b.user_prompt_len) || 0,
+       Number(b.response_len) || 0, Number(b.duration_ms) || 0, success,
+       String(b.error_msg || ''), truncate(b.request_content, 2000), truncate(b.response_content, 2000)]
+    );
+    if (success) {
+      const today = new Date().toISOString().split('T')[0];
+      await pool.execute(
+        'INSERT INTO ai_usage (date, model, count) VALUES (?, ?, 1) ON DUPLICATE KEY UPDATE count = count + 1',
+        [today, model]
+      );
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('写入AI调用日志失败:', err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -3885,6 +4203,397 @@ app.delete('/api/stock/notes/:id', async (req, res) => {
   } catch (err) {
     console.error('删除股票笔记失败:', err);
     res.status(500).json({ error: '删除失败' });
+  }
+});
+
+// ========== 股票观察/每日分析 ==========
+
+// 获取观察列表（含今日分析）
+app.get('/api/stock/watchlist', async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT * FROM stock_watchlist ORDER BY pinned DESC, sort_order ASC, created_at DESC'
+    );
+    const today = new Date().toISOString().slice(0, 10);
+    const watchIds = rows.map(r => r.id);
+    let analysisMap = {};
+    if (watchIds.length > 0) {
+      const placeholders = watchIds.map(() => '?').join(',');
+      const [analyses] = await pool.query(
+        `SELECT * FROM stock_daily_analysis WHERE watch_id IN (${placeholders}) ORDER BY date DESC`,
+        watchIds
+      );
+      for (const a of analyses) {
+        if (!analysisMap[a.watch_id]) analysisMap[a.watch_id] = [];
+        analysisMap[a.watch_id].push({
+          id: a.id,
+          date: a.date,
+          actionType: a.action_type || '',
+          sentiment: a.sentiment || '',
+          targetBuyPrice: a.target_buy_price != null ? String(a.target_buy_price) : null,
+          targetBuyPriceHigh: a.target_buy_price_high != null ? String(a.target_buy_price_high) : null,
+          targetSellPrice: a.target_sell_price != null ? String(a.target_sell_price) : null,
+          targetSellPriceHigh: a.target_sell_price_high != null ? String(a.target_sell_price_high) : null,
+          stopLossPrice: a.stop_loss_price != null ? String(a.stop_loss_price) : null,
+          stopLossPriceHigh: a.stop_loss_price_high != null ? String(a.stop_loss_price_high) : null,
+          buyShareCount: a.buy_share_count != null ? Number(a.buy_share_count) : null,
+          sellShareCount: a.sell_share_count != null ? Number(a.sell_share_count) : null,
+          lossShareCount: a.loss_share_count != null ? Number(a.loss_share_count) : null,
+          note: a.note || '',
+          nextDayNote: a.next_day_note || '',
+          reviewResult: a.review_result || '',
+          reviewNote: a.review_note || '',
+          createdAt: a.created_at,
+          updatedAt: a.updated_at
+        });
+      }
+    }
+    res.json(rows.map(r => ({
+      id: r.id,
+      code: r.code,
+      name: r.name,
+      isHolding: !!r.is_holding,
+      pinned: !!r.pinned,
+      sortOrder: r.sort_order || 0,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+      analyses: analysisMap[r.id] || []
+    })));
+  } catch (err) {
+    console.error('获取观察列表失败:', err);
+    res.status(500).json({ error: '获取失败' });
+  }
+});
+
+// 添加观察股票
+app.post('/api/stock/watchlist', async (req, res) => {
+  try {
+    const { code, name, isHolding } = req.body;
+    if (!code) return res.status(400).json({ error: '代码不能为空' });
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    await pool.execute(
+      'INSERT INTO stock_watchlist (id, code, name, is_holding, pinned, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, 0, 0, ?, ?)',
+      [id, code, name || code, isHolding ? 1 : 0, now, now]
+    );
+    res.json({ id, code, name: name || code, isHolding: !!isHolding, pinned: false, sortOrder: 0, createdAt: now, updatedAt: now, analyses: [] });
+  } catch (err) {
+    console.error('添加观察股票失败:', err);
+    res.status(500).json({ error: '添加失败' });
+  }
+});
+
+// 更新观察股票（置顶、排序、名称等）
+app.put('/api/stock/watchlist/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { pinned, sortOrder, name, isHolding } = req.body;
+    const now = Date.now();
+    const fields = [];
+    const values = [];
+    if (pinned !== undefined) { fields.push('pinned = ?'); values.push(pinned ? 1 : 0); }
+    if (sortOrder !== undefined) { fields.push('sort_order = ?'); values.push(sortOrder); }
+    if (name !== undefined) { fields.push('name = ?'); values.push(name); }
+    if (isHolding !== undefined) { fields.push('is_holding = ?'); values.push(isHolding ? 1 : 0); }
+    if (fields.length === 0) return res.json({ ok: true });
+    fields.push('updated_at = ?');
+    values.push(now, id);
+    await pool.execute(`UPDATE stock_watchlist SET ${fields.join(', ')} WHERE id = ?`, values);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('更新观察股票失败:', err);
+    res.status(500).json({ error: '更新失败' });
+  }
+});
+
+// 删除观察股票
+app.delete('/api/stock/watchlist/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.execute('DELETE FROM stock_watchlist WHERE id = ?', [id]);
+    await pool.execute('DELETE FROM stock_daily_analysis WHERE watch_id = ?', [id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('删除观察股票失败:', err);
+    res.status(500).json({ error: '删除失败' });
+  }
+});
+
+// 保存/更新每日分析
+app.put('/api/stock/watchlist/:id/analysis', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { date, actionType, sentiment, targetBuyPrice, targetBuyPriceHigh, targetSellPrice, targetSellPriceHigh, stopLossPrice, stopLossPriceHigh, buyShareCount, sellShareCount, lossShareCount, note, nextDayNote, reviewResult, reviewNote } = req.body;
+    if (!date) return res.status(400).json({ error: '日期不能为空' });
+
+    const shareCols = [['buyShareCount', 'buy_share_count'], ['sellShareCount', 'sell_share_count'], ['lossShareCount', 'loss_share_count']];
+
+    // 先查有没有
+    const [existing] = await pool.query(
+      'SELECT id FROM stock_daily_analysis WHERE watch_id = ? AND date = ?',
+      [id, date]
+    );
+
+    const now = Date.now();
+    if (existing.length > 0) {
+      const fields = [];
+      const values = [];
+      if (actionType !== undefined) { fields.push('action_type = ?'); values.push(actionType || ''); }
+      if (sentiment !== undefined) { fields.push('sentiment = ?'); values.push(sentiment || ''); }
+      if (targetBuyPrice !== undefined) { fields.push('target_buy_price = ?'); values.push(targetBuyPrice || null); }
+      if (targetBuyPriceHigh !== undefined) { fields.push('target_buy_price_high = ?'); values.push(targetBuyPriceHigh || null); }
+      if (targetSellPrice !== undefined) { fields.push('target_sell_price = ?'); values.push(targetSellPrice || null); }
+      if (targetSellPriceHigh !== undefined) { fields.push('target_sell_price_high = ?'); values.push(targetSellPriceHigh || null); }
+      if (stopLossPrice !== undefined) { fields.push('stop_loss_price = ?'); values.push(stopLossPrice || null); }
+      if (stopLossPriceHigh !== undefined) { fields.push('stop_loss_price_high = ?'); values.push(stopLossPriceHigh || null); }
+      for (const [key, col] of shareCols) {
+        if (req.body[key] === undefined) continue;
+        const n = Number(req.body[key]);
+        fields.push(`${col} = ?`);
+        values.push(Number.isFinite(n) && n > 0 ? Math.floor(n) : null);
+      }
+      if (note !== undefined) { fields.push('note = ?'); values.push(note || ''); }
+      if (nextDayNote !== undefined) { fields.push('next_day_note = ?'); values.push(nextDayNote || ''); }
+      if (reviewResult !== undefined) { fields.push('review_result = ?'); values.push(reviewResult || ''); }
+      if (reviewNote !== undefined) { fields.push('review_note = ?'); values.push(reviewNote || ''); }
+      if (fields.length === 0) return res.json({ ok: true });
+      fields.push('updated_at = ?');
+      values.push(now, existing[0].id);
+      await pool.execute(`UPDATE stock_daily_analysis SET ${fields.join(', ')} WHERE id = ?`, values);
+      res.json({ ok: true, id: existing[0].id });
+    } else {
+      const aid = crypto.randomUUID();
+      const shareVal = v => {
+        const n = Number(v);
+        return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+      };
+      await pool.execute(
+        `INSERT INTO stock_daily_analysis (id, watch_id, code, date, action_type, sentiment, target_buy_price, target_buy_price_high, target_sell_price, target_sell_price_high, stop_loss_price, stop_loss_price_high, buy_share_count, sell_share_count, loss_share_count, note, next_day_note, review_result, review_note, created_at, updated_at)
+         VALUES (?, ?, (SELECT code FROM stock_watchlist WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [aid, id, id, date, actionType || '', sentiment || '', targetBuyPrice || null, targetBuyPriceHigh || null, targetSellPrice || null, targetSellPriceHigh || null, stopLossPrice || null, stopLossPriceHigh || null, shareVal(buyShareCount), shareVal(sellShareCount), shareVal(lossShareCount), note || '', nextDayNote || '', reviewResult || '', reviewNote || '', now, now]
+      );
+      res.json({ ok: true, id: aid });
+    }
+  } catch (err) {
+    console.error('保存每日分析失败:', err);
+    res.status(500).json({ error: '保存失败' });
+  }
+});
+
+// 删除某日分析
+app.delete('/api/stock/watchlist/:id/analysis/:date', async (req, res) => {
+  try {
+    const { id, date } = req.params;
+    await pool.execute('DELETE FROM stock_daily_analysis WHERE watch_id = ? AND date = ?', [id, date]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('删除分析失败:', err);
+    res.status(500).json({ error: '删除失败' });
+  }
+});
+
+// 批量获取个股近 N 日日涨跌幅（用于每日分析的复盘验证 / 盘后总结）
+app.post('/api/stock/daily-changes', async (req, res) => {
+  try {
+    const rawCodes = Array.isArray(req.body?.codes) ? req.body.codes : [];
+    const codes = [...new Set(rawCodes.map(c => String(c || '').trim()).filter(Boolean))].slice(0, 60);
+    const days = Math.min(Math.max(Number(req.body?.days) || 90, 10), 250);
+    if (!codes.length) return res.json({ data: {}, fetchedAt: Date.now() });
+
+    const data = {};
+    for (const code of codes) {
+      try {
+        const history = await fetchStockDailyHistory(code, days);
+        data[code] = history.map((k, i) => {
+          const base = i > 0 ? history[i - 1].close : k.open;
+          return {
+            date: k.date,
+            open: k.open,
+            close: k.close,
+            pct: base > 0 ? Number((((k.close - base) / base) * 100).toFixed(2)) : null
+          };
+        });
+      } catch (e) {
+        data[code] = [];
+      }
+    }
+    res.json({ data, fetchedAt: Date.now() });
+  } catch (err) {
+    console.error('获取日涨跌失败:', err);
+    res.status(500).json({ error: '获取失败' });
+  }
+});
+
+// A股打新底仓市值：T-2 前 20 个交易日日均市值（沪深分开）
+app.get('/api/stock/ipo-market-value', async (req, res) => {
+  try {
+    // 1. 取所有未清仓股票及交易记录
+    const [rows] = await pool.query(
+      `SELECT id, code, name, is_cleared FROM stocks WHERE board = 'stock' AND is_cleared = 0 ORDER BY created_at`
+    );
+    if (!rows.length) {
+      return res.json({ sh: 0, sz: 0, bj: 0, shDaily: [], szDaily: [], bjDaily: [], avgDays: 0, t2Date: '', fetchedAt: Date.now() });
+    }
+    const stockIds = rows.map(r => r.id);
+    const [buyRows] = await pool.query(
+      `SELECT stock_id, buy_count, DATE_FORMAT(buy_date, '%Y-%m-%d') AS buy_date
+       FROM buy_records WHERE stock_id IN (?) ORDER BY buy_date ASC, created_at ASC`, [stockIds]);
+    const [sellRows] = await pool.query(
+      `SELECT stock_id, sell_count, DATE_FORMAT(sell_date, '%Y-%m-%d') AS sell_date
+       FROM sell_records WHERE stock_id IN (?) ORDER BY sell_date ASC, created_at ASC`, [stockIds]);
+
+    const buyMap = new Map(), sellMap = new Map();
+    for (const r of buyRows) {
+      if (!buyMap.has(r.stock_id)) buyMap.set(r.stock_id, []);
+      buyMap.get(r.stock_id).push({ date: r.buy_date, count: Number(r.buy_count) || 0 });
+    }
+    for (const r of sellRows) {
+      if (!sellMap.has(r.stock_id)) sellMap.set(r.stock_id, []);
+      sellMap.get(r.stock_id).push({ date: r.sell_date, count: Number(r.sell_count) || 0 });
+    }
+
+    // 板块归属（仅A股：沪60/68、深00/30、北4/8）
+    function ipoExchange(code) {
+      const c = String(code).trim();
+      if (/^60/.test(c) || /^68/.test(c)) return 'sh';
+      if (/^00/.test(c) || /^30/.test(c)) return 'sz';
+      if (/^[48]/.test(c)) return 'bj';
+      return null;
+    }
+
+    // 2. 并发拉取每只股票近 60 天日线（足够覆盖 20+2 个交易日）
+    const stockHistory = {};
+    const concurrency = 6;
+    let idx = 0;
+    async function worker() {
+      while (idx < rows.length) {
+        const i = idx++;
+        const stock = rows[i];
+        const ex = ipoExchange(stock.code);
+        if (!ex) continue;
+        try {
+          const history = await fetchStockDailyHistory(stock.code, 60);
+          stockHistory[stock.id] = { ex, history, buys: buyMap.get(stock.id) || [], sells: sellMap.get(stock.id) || [] };
+        } catch (e) {
+          console.error(`[IPO] 获取 ${stock.code} 日线失败:`, e.message);
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+    // 3. 以第一只有数据的股票的交易日历为基准（所有A股交易日历一致）
+    let tradeDays = [];
+    for (const id of Object.keys(stockHistory)) {
+      const h = stockHistory[id].history;
+      if (h && h.length > 0) { tradeDays = h.map(k => k.date); break; }
+    }
+    if (!tradeDays.length) {
+      return res.json({ sh: 0, sz: 0, bj: 0, shDaily: [], szDaily: [], bjDaily: [], avgDays: 0, t2Date: '', fetchedAt: Date.now() });
+    }
+
+    // T-2：取倒数第 3 个交易日（最后一个=T，倒数第二=T-1，倒数第三=T-2）
+    // 若交易日不足 22 天，用全部
+    const totalDays = tradeDays.length;
+    const t2Index = Math.max(0, totalDays - 3);
+    const t2Date = tradeDays[t2Index] || '';
+    // 20 日窗口：[t2Index - 19, t2Index]
+    const windowStart = Math.max(0, t2Index - 19);
+    const windowDays = tradeDays.slice(windowStart, t2Index + 1);
+
+    // 4. 对每个交易日，按交易所汇总当日持仓市值
+    const daily = {};
+    for (const id of Object.keys(stockHistory)) {
+      const { ex, history, buys, sells } = stockHistory[id];
+      const closeMap = new Map(history.map(k => [k.date, k.close]));
+      // 预处理买卖：按日期累计
+      let cumBuy = 0, cumSell = 0;
+      let bi = 0, si = 0;
+      const sortedBuys = [...buys].sort((a, b) => a.date.localeCompare(b.date));
+      const sortedSells = [...sells].sort((a, b) => a.date.localeCompare(b.date));
+      for (const day of windowDays) {
+        while (bi < sortedBuys.length && sortedBuys[bi].date <= day) { cumBuy += sortedBuys[bi].count; bi++; }
+        while (si < sortedSells.length && sortedSells[si].date <= day) { cumSell += sortedSells[si].count; si++; }
+        const shares = Math.max(0, cumBuy - cumSell);
+        const close = closeMap.get(day);
+        if (shares > 0 && close && close > 0) {
+          if (!daily[day]) daily[day] = { sh: 0, sz: 0, bj: 0 };
+          daily[day][ex] += shares * close;
+        }
+      }
+    }
+
+    // 5. 计算 20 日日均
+    let shSum = 0, szSum = 0, bjSum = 0;
+    const shDaily = [], szDaily = [], bjDaily = [];
+    for (const day of windowDays) {
+      const d = daily[day] || { sh: 0, sz: 0, bj: 0 };
+      shSum += d.sh; szSum += d.sz; bjSum += d.bj;
+      shDaily.push({ date: day, value: d.sh });
+      szDaily.push({ date: day, value: d.sz });
+      bjDaily.push({ date: day, value: d.bj });
+    }
+    const n = windowDays.length || 1;
+    res.json({
+      sh: Math.round(shSum / n * 100) / 100,
+      sz: Math.round(szSum / n * 100) / 100,
+      bj: Math.round(bjSum / n * 100) / 100,
+      shDaily, szDaily, bjDaily,
+      avgDays: windowDays.length,
+      t2Date,
+      fetchedAt: Date.now()
+    });
+  } catch (err) {
+    console.error('[IPO] 底仓市值计算失败:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 获取某日盘后总结
+app.get('/api/stock/daily-summary', async (req, res) => {
+  try {
+    const date = String(req.query.date || '').trim();
+    if (!date) return res.status(400).json({ error: '日期不能为空' });
+    const [rows] = await pool.query('SELECT * FROM stock_daily_summary WHERE date = ?', [date]);
+    if (!rows.length) return res.json({ date, content: '', autoContent: '', createdAt: 0, updatedAt: 0 });
+    const r = rows[0];
+    res.json({
+      date: r.date,
+      content: r.content || '',
+      autoContent: r.auto_content || '',
+      createdAt: r.created_at,
+      updatedAt: r.updated_at
+    });
+  } catch (err) {
+    console.error('获取盘后总结失败:', err);
+    res.status(500).json({ error: '获取失败' });
+  }
+});
+
+// 保存某日盘后总结
+app.put('/api/stock/daily-summary', async (req, res) => {
+  try {
+    const date = String(req.body?.date || '').trim();
+    if (!date) return res.status(400).json({ error: '日期不能为空' });
+    const content = String(req.body?.content ?? '');
+    const autoContent = String(req.body?.autoContent ?? '');
+    const now = Date.now();
+    const [existing] = await pool.query('SELECT id FROM stock_daily_summary WHERE date = ?', [date]);
+    if (existing.length) {
+      await pool.execute(
+        'UPDATE stock_daily_summary SET content = ?, auto_content = ?, updated_at = ? WHERE id = ?',
+        [content, autoContent, now, existing[0].id]
+      );
+      return res.json({ ok: true, id: existing[0].id });
+    }
+    const id = crypto.randomUUID();
+    await pool.execute(
+      'INSERT INTO stock_daily_summary (id, date, content, auto_content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, date, content, autoContent, now, now]
+    );
+    res.json({ ok: true, id });
+  } catch (err) {
+    console.error('保存盘后总结失败:', err);
+    res.status(500).json({ error: '保存失败' });
   }
 });
 
@@ -7004,13 +7713,108 @@ app.post('/api/wechat/extract', async (req, res) => {
     if (await isBlacklisted({ sender, chatName, text })) {
       return res.status(403).json({ error: '命中黑名单，已跳过提取', blocked: true });
     }
-    const result = extractWechatStocks(text, sender);
+    const memHit = await queryExtractLearn(text);
+    const result = extractWechatStocks(text, sender, memHit);
     const stocksJson = JSON.stringify(result.stocks || []);
-    const category = await categorizeMessageWithLearn(text, stocksJson);
-    res.json({ ...result, category });
+    const category = await categorizeMessageWithLearn(text, stocksJson, memHit);
+    res.json({
+      ...result,
+      category,
+      memoryHit: memHit ? { hit_count: memHit.hit_count, correct_label: memHit.correct_label, correct_code: memHit.correct_code } : null,
+    });
   } catch (error) {
     console.error('wechat extract failed:', error);
     res.status(500).json({ error: '消息提取失败', message: error.message });
+  }
+});
+
+// ============ 带反馈学习的识别：记忆（extract_learn）相关 API ============
+// 从 extract_learn 表查原文片段是否命中记忆（子串包含），用于识别时"记忆命中优先"强覆盖。
+// 未命中返回 null；命中返回单条（按精确匹配优先、命中次数多者优先）。
+async function queryExtractLearn(text) {
+  try {
+    if (typeof text !== 'string' || !text.trim()) return null;
+    const q = String(text).trim().slice(0, 2000);
+    const db = pool;
+    const [rows] = await db.query(
+      `SELECT id, source_text, wrong_label, correct_label, wrong_code, correct_code, hit_count
+       FROM extract_learn
+       WHERE ? LIKE CONCAT('%', source_text, '%')
+       ORDER BY (source_text = ?) DESC, hit_count DESC, id DESC
+       LIMIT 1`,
+      [q, q]
+    );
+    return rows.length ? rows[0] : null;
+  } catch (err) {
+    // 表未创建或查询失败时不影响业务
+    return null;
+  }
+}
+
+// GET /api/extract/learn?q=<消息文本>：按子串包含返回命中记忆记录；无记忆返回 null
+app.get('/api/extract/learn', async (req, res) => {
+  try {
+    const q = String(req.query?.q || '').trim();
+    if (!q) return res.status(400).json({ error: '缺少 q 参数' });
+    const db = pool;
+    const [rows] = await db.query(
+      `SELECT id, source_text, wrong_label, correct_label, wrong_code, correct_code, hit_count
+       FROM extract_learn
+       WHERE ? LIKE CONCAT('%', source_text, '%')
+       ORDER BY (source_text = ?) DESC, hit_count DESC, id DESC`,
+      [q, q]
+    );
+    res.json(rows.length ? rows : null);
+  } catch (error) {
+    console.error('extract learn query failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/extract/learn：记录/更新一条用户纠正的记忆
+// body: { source_text, wrong_label, correct_label, wrong_code, correct_code }
+app.post('/api/extract/learn', async (req, res) => {
+  try {
+    const db = pool;
+    const {
+      source_text = '',
+      wrong_label = '',
+      correct_label = '',
+      wrong_code = '',
+      correct_code = '',
+    } = req.body || {};
+    if (!source_text || typeof source_text !== 'string') {
+      return res.status(400).json({ error: 'source_text 不能为空' });
+    }
+    if (!['marketing', 'stock_pick', 'market_news'].includes(correct_label)) {
+      return res.status(400).json({ error: 'correct_label 无效，可选：marketing / stock_pick / market_news' });
+    }
+    const src = String(source_text).slice(0, 500);
+    const wrongL = wrong_label && ['marketing', 'stock_pick', 'market_news'].includes(wrong_label) ? wrong_label : null;
+    const correctC = /^\d{6}$/.test(String(correct_code || '').trim()) ? String(correct_code).trim() : null;
+    const wrongC = /^\d{6}$/.test(String(wrong_code || '').trim()) ? String(wrong_code).trim() : null;
+    const now = Date.now();
+
+    // 同 source_text 已存在 → 更新正确分类/代码并 hit_count+1；否则插入
+    const [rows] = await db.query('SELECT id, hit_count FROM extract_learn WHERE source_text = ?', [src]);
+    if (rows.length) {
+      await db.execute(
+        `UPDATE extract_learn SET correct_label = ?, correct_code = ?, wrong_label = ?, wrong_code = ?, updated_at = ? WHERE id = ?`,
+        [correct_label, correctC, wrongL, wrongC, now, rows[0].id]
+      );
+      await db.execute('UPDATE extract_learn SET hit_count = hit_count + 1 WHERE id = ?', [rows[0].id]);
+      return res.json({ ok: true, learned: false, hit_count: (rows[0].hit_count || 0) + 1 });
+    }
+
+    await db.execute(
+      `INSERT INTO extract_learn (source_text, wrong_label, correct_label, wrong_code, correct_code, hit_count, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+      [src, wrongL, correct_label, wrongC, correctC, now, now]
+    );
+    res.json({ ok: true, learned: true, hit_count: 1 });
+  } catch (error) {
+    console.error('extract learn save failed:', error.message);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -7976,8 +8780,12 @@ app.post('/api/wechat/reclassify', async (req, res) => {
 });
 
 // 在 server.js 的 categorizeMessage 函数基础上，加入学习规则重新计算（用新的包裹函数）
-async function categorizeMessageWithLearn(text, stocksJson) {
-  // 清理逻辑已移至 updateRulesFromFeedback，按新增条数触发
+async function categorizeMessageWithLearn(text, stocksJson, memHit) {
+  // 记忆命中优先：用户纠正过该原文片段 → 直接采用纠正后的分类，不再走规则/学习误判
+  if (!memHit) memHit = await queryExtractLearn(text);
+  if (memHit && memHit.correct_label && ['marketing', 'stock_pick', 'market_news'].includes(memHit.correct_label)) {
+    return memHit.correct_label;
+  }
   let base = 'market_news';
   try {
     base = await categorizeMessage(text, stocksJson);
@@ -8084,6 +8892,24 @@ async function initCategoryTables() {
         INDEX idx_category (category)
       )
     `);
+
+    // 记忆学习表：用户纠正过一次的原文片段（记忆式学习，非大模型推理）
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS extract_learn (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        source_text VARCHAR(500) NOT NULL,
+        wrong_label VARCHAR(30),
+        correct_label VARCHAR(30) NOT NULL,
+        wrong_code VARCHAR(10),
+        correct_code VARCHAR(10),
+        hit_count INT DEFAULT 0,
+        created_at BIGINT DEFAULT 0,
+        updated_at BIGINT DEFAULT 0,
+        INDEX idx_source_text (source_text),
+        INDEX idx_correct_label (correct_label)
+      )
+    `);
+    console.log('识别记忆学习表初始化完成');
 
     // 初始化系统规则
     const [existing] = await pool.query('SELECT COUNT(*) AS cnt FROM wechat_category_system_rules');

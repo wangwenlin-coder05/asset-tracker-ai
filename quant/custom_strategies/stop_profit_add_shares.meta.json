@@ -1,0 +1,27 @@
+{
+  "key": "stop_profit_add_shares",
+  "name": "止盈加仓策略",
+  "description": "建仓后涨到止盈比例卖出；下跌按跌幅补仓，补仓数量按倍数递增",
+  "buy_rule": "空仓时按「建仓股数」建仓；持仓后每跌「补仓跌幅」按「补仓倍数」递增补仓",
+  "sell_rule": "现价较持仓均价涨到「止盈比例」时全部卖出",
+  "idea": "买入后涨五个点止盈，如下跌，每10个点补一倍仓，底仓100股，补仓依次100/200/400，不止损直到盈利5%止盈",
+  "version": 2,
+  "created_at": 1791203825.7415423,
+  "updated_at": 1791204103.8120897,
+  "note": "AI 生成 · 参数化改造",
+  "param_values": {
+    "first_shares": 200,
+    "max_adds": 5,
+    "take_profit_pct": 5,
+    "add_drop_pct": 10,
+    "add_multiplier": 2
+  },
+  "history": [
+    {
+      "version": 1,
+      "at": 1791203825.7415423,
+      "note": "AI 生成",
+      "file": "versions/stop_profit_add_shares.v1.py"
+    }
+  ]
+}

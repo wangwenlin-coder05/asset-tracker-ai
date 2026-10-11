@@ -1,7 +1,7 @@
 <template>
   <div>
     <MarketTicker ref="marketTickerRef" />
-    <div id="stockList" class="space-y-3 overflow-x-auto px-2">
+    <div id="stockList" class="space-y-3 overflow-x-auto">
       <template v-if="loading">
         <div class="text-center py-8 text-slate-400">加载中...</div>
       </template>
@@ -14,13 +14,13 @@
       </template>
       <template v-else>
         <StockCard
-          v-for="stock in stockList"
+          v-for="stock in displayStockList"
           :key="stock.id"
           :stock="stock"
           :realtime-price="stockPrices[stock.code] || null"
           @buy="openBuyDialog"
           @sell="openSellDialog"
-          @clear="handleClearStock"
+          @clear="openClearDialog"
           @delete="handleDeleteStock"
           @delete-transaction="handleDeleteTransaction"
           @update="handleUpdateStock"
@@ -31,7 +31,7 @@
       </template>
     </div>
     <div v-if="clearedList.length > 0" id="clearedSection" class="mt-6">
-      <div class="px-2 mb-3 flex items-center justify-between gap-3 flex-wrap">
+      <div class="mb-3 flex items-center justify-between gap-3 flex-wrap">
         <h3 class="text-sm font-semibold text-slate-600 flex items-center gap-2">
           <Archive class="w-4 h-4" />
           清仓记录（{{ clearedList.length }}）
@@ -72,7 +72,7 @@
           :stock="stock"
           @buy="openBuyDialog"
           @sell="openSellDialog"
-          @clear="handleClearStock"
+          @clear="openClearDialog"
           @delete="handleDeleteStock"
           @delete-transaction="handleDeleteTransaction"
           @update="handleUpdateStock"
@@ -82,13 +82,23 @@
         />
       </div>
     </div>
-    <button @click="showNewStockDialog = true" class="fixed bottom-6 right-6 z-30 flex items-center gap-1.5 rounded-full bg-blue-600 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-blue-600/25 transition hover:-translate-y-0.5 hover:bg-blue-700" title="新增买入">
+    <button @click="openNewStockDialog" class="fixed bottom-6 right-6 z-30 flex items-center gap-1.5 rounded-full bg-blue-600 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-blue-600/25 transition hover:-translate-y-0.5 hover:bg-blue-700" title="新增买入">
       <Plus class="h-4 w-4" />
       新增买入
     </button>
+    <StockWatchPanel
+      ref="watchPanelRef"
+      :stock-prices="stockPrices"
+      :holding-stocks="stockList"
+      :cleared-stocks="clearedList"
+      @refresh-price="refreshStockPrices"
+      @buy="handleWatchBuy"
+      @sell="handleWatchSell"
+    />
     <NewStockDialog
       v-if="showNewStockDialog"
-      @close="showNewStockDialog = false"
+      :prefill="newStockPrefill"
+      @close="closeNewStockDialog"
       @confirm="handleAddStock"
     />
     <BuyRecordDialog
@@ -106,6 +116,13 @@
       @close="showSellDialog = false"
       @confirm="handleAddSellRecord"
     />
+    <ClearStockDialog
+      v-if="showClearDialog"
+      :stock-id="currentStockId"
+      :stock="currentStock"
+      @close="showClearDialog = false"
+      @confirm="handleClearStock"
+    />
   </div>
 </template>
 
@@ -114,12 +131,15 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { Database, Archive, Plus, ArrowDownAZ, ArrowUpAZ, Undo2 } from 'lucide-vue-next'
 import StockCard from './StockCard.vue'
 import MarketTicker from './MarketTicker.vue'
+import StockWatchPanel from './StockWatchPanel.vue'
 import NewStockDialog from './dialogs/NewStockDialog.vue'
 import BuyRecordDialog from './dialogs/BuyRecordDialog.vue'
 import SellRecordDialog from './dialogs/SellRecordDialog.vue'
+import ClearStockDialog from './dialogs/ClearStockDialog.vue'
 import { useStock } from '../composables/useStock'
 import { useStockPrice } from '../composables/useStockPrice'
-import { calcStock, calcSellFee } from '../utils/calculator'
+import { calcStock } from '../utils/calculator'
+import { buyFeeParts, sellFeeParts } from '../utils/feeConfig'
 
 const marketTickerRef = ref(null)
 function restartMarketPolling() { return marketTickerRef.value?.restartMarketPolling?.() }
@@ -188,8 +208,27 @@ function refreshStockPrices(force = false) {
   if (allStockCodes.value.length) fetchStockPrices(allStockCodes.value, force)
 }
 
+// 持仓展示顺序：持仓 0 股但未清仓的排到持仓尾部。
+// 顺序只在进入股票板块（数据加载完成）时拍一次快照，编辑过程中不重排；
+// 切换到其他板块再切回后组件重新挂载，会自动按最新持仓重排。
+const zeroTailIds = ref(new Set())
+function snapshotHoldingOrder() {
+  zeroTailIds.value = new Set(stockList.value.filter(s => (Number(s.count) || 0) <= 0).map(s => s.id))
+}
+const displayStockList = computed(() => {
+  const tail = zeroTailIds.value
+  const main = []
+  const zero = []
+  for (const s of stockList.value) {
+    if (tail.has(s.id)) zero.push(s)
+    else main.push(s)
+  }
+  return [...main, ...zero]
+})
+
 onMounted(async () => {
   await loadStocks()
+  snapshotHoldingOrder()
   refreshStockPrices(true) // 启动时无条件请求一次（即使收盘）
   startStockPriceTimer(() => allStockCodes.value)
 })
@@ -205,7 +244,39 @@ watch(allStockCodes, () => {
 const showNewStockDialog = ref(false)
 const showBuyDialog = ref(false)
 const showSellDialog = ref(false)
+const showClearDialog = ref(false)
 const currentStockId = ref(null)
+const newStockPrefill = ref({ code: '', name: '' })
+
+function openNewStockDialog(prefill = { code: '', name: '' }) {
+  newStockPrefill.value = prefill
+  showNewStockDialog.value = true
+}
+
+function closeNewStockDialog() {
+  showNewStockDialog.value = false
+  newStockPrefill.value = { code: '', name: '' }
+}
+
+function findStockByCode(code) {
+  const c = String(code || '').trim()
+  if (!c) return null
+  return stockList.value.find(s => String(s.code || '').trim() === c) || null
+}
+
+// 观察面板 → 登记买入：已建仓直接加仓，未建仓则打开建仓弹窗并预填
+function handleWatchBuy(payload) {
+  const stock = findStockByCode(payload?.code)
+  if (stock) { openBuyDialog(stock.id); return }
+  openNewStockDialog({ code: payload?.code || '', name: payload?.name || '' })
+}
+
+// 观察面板 → 登记卖出：仅已建仓股票可卖
+function handleWatchSell(payload) {
+  const stock = findStockByCode(payload?.code)
+  if (!stock) { alert('该股票尚未建仓，无法登记卖出'); return }
+  openSellDialog(stock.id)
+}
 
 const currentStock = computed(() => getStock(currentStockId.value))
 const currentStockBuyCount = computed(() => {
@@ -229,12 +300,21 @@ function openSellDialog(stockId) {
   showSellDialog.value = true
 }
 
-async function handleAddStock(data) {
-  const stock = await addStock(data)
-  showNewStockDialog.value = false
+function openClearDialog(stockId) {
+  currentStockId.value = stockId
+  showClearDialog.value = true
+}
 
-  const commission = Math.max(data.buyPrice * data.count * 0.00023, 5.00)
-  const transferFee = data.buyPrice * data.count * 0.00001
+async function handleAddStock(data) {
+  if (data.batchCompleted) {
+    closeNewStockDialog()
+    refreshStockPrices(true)
+    return
+  }
+  const stock = await addStock(data)
+  closeNewStockDialog()
+
+  const { commission, transferFee } = buyFeeParts(data.buyPrice * data.count)
 
   await addBuyRecord(stock.id, {
     buyDate: data.buyDate,
@@ -260,24 +340,20 @@ async function handleDeleteStock(stockId) {
   }
 }
 
-async function handleClearStock(stockId, sellPrice, tradeCount, avgCost) {
-  if (!confirm(`确定以 ${sellPrice} 元价格清仓 ${tradeCount} 股吗？`)) return
-
-  if (sellPrice > 0 && tradeCount > 0) {
-    const fees = calcSellFee(sellPrice, tradeCount)
-    const netProfit = parseFloat(((sellPrice - avgCost) * tradeCount - fees.total).toFixed(2))
-    const today = new Date().toISOString().split('T')[0]
-    await addSellRecord(stockId, {
-      sellDate: today,
-      sellPrice,
-      sellCount: tradeCount,
-      sellCommission: fees.commission,
-      sellTransferFee: fees.transferFee,
-      stampTax: fees.stampTax,
-      netProfit
+async function handleClearStock(data) {
+  if (data.sellPrice > 0 && data.sellCount > 0) {
+    await addSellRecord(currentStockId.value, {
+      sellDate: data.sellDate,
+      sellPrice: data.sellPrice,
+      sellCount: data.sellCount,
+      sellCommission: data.sellCommission,
+      sellTransferFee: data.sellTransferFee,
+      stampTax: data.stampTax,
+      netProfit: data.netProfit
     })
   }
-  await clearStock(stockId)
+  await clearStock(currentStockId.value)
+  showClearDialog.value = false
 }
 
 async function handleAddBuyRecord(data) {
@@ -414,9 +490,7 @@ async function handleQuickRecord(stockId, groupItem, price) {
   if (groupItem.tType === '正T') {
     // 正T：已有买入，录入卖出
     const sellAmt = price * firstTx.buyCount
-    const sellCommission = Math.max(sellAmt * 0.00023, 5)
-    const sellTransferFee = sellAmt * 0.00001
-    const stampTax = sellAmt * 0.001
+    const { commission: sellCommission, transferFee: sellTransferFee, stampTax } = sellFeeParts(sellAmt)
     const sellFees = sellCommission + sellTransferFee + stampTax
 
     const buyAmount = firstTx.buyPrice * firstTx.buyCount
@@ -442,8 +516,7 @@ async function handleQuickRecord(stockId, groupItem, price) {
   } else {
     // 反T：已有卖出，录入买入承接
     const buyAmt = price * firstTx.sellCount
-    const commission = Math.max(buyAmt * 0.00023, 5)
-    const transferFee = buyAmt * 0.00001
+    const { commission, transferFee } = buyFeeParts(buyAmt)
 
     const sellAmount = firstTx.sellPrice * firstTx.sellCount
     const sellFees = (firstTx.sellCommission || 0) + (firstTx.sellTransferFee || 0) + (firstTx.stampTax || 0)

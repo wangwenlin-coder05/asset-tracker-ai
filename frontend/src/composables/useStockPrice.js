@@ -2,7 +2,7 @@ import { ref } from 'vue'
 
 const stockPrices = ref({})
 const stockPriceMeta = ref({ source: '', fetchedAt: '' })
-const PRICE_INTERVAL = 2 * 60 * 1000
+const PRICE_INTERVAL = 30 * 1000
 const WINDOW_START_HOUR = 9
 const WINDOW_START_MIN = 15
 const WINDOW_END_HOUR = 15

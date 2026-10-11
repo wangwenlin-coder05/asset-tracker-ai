@@ -71,7 +71,7 @@ TOOL_SCHEMAS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "code": {"type": "string", "description": "6位股票代码"},
-                    "strategy": {"type": "string", "enum": ["t1_take_profit", "t1_confirmed"], "description": "策略，默认 t1_take_profit"},
+                    "strategy": {"type": "string", "enum": ["t1_take_profit", "t1_confirmed", "ma_cross", "momentum", "bollinger", "turtle"], "description": "策略：t1_take_profit=T+1止盈；t1_confirmed=放量/均线确认+T+1；ma_cross=均线金叉；momentum=均线上动量；bollinger=布林带回归；turtle=海龟突破"},
                     "take_profit": {"type": "number", "description": "止盈阈值（小数，如0.05=5%）"},
                     "stop_loss": {"type": "number", "description": "止损阈值（负小数，如-0.05）"},
                     "trailing_stop": {"type": "number", "description": "移动止盈回撤比例（小数，可空）"},

@@ -1,5 +1,5 @@
 <template>
-  <div class="w-full rounded-lg border border-slate-100 bg-white">
+  <div class="w-full rounded-lg border border-slate-100 bg-white relative">
     <svg :viewBox="`0 0 ${W} ${H}`" :width="'100%'" :height="height" preserveAspectRatio="none" class="block">
       <!-- 渐变区域 -->
       <defs>
@@ -22,6 +22,17 @@
     <div v-if="hover && tooltip" class="px-2 py-1 text-[11px] font-medium text-slate-500">
       {{ tooltip }}
     </div>
+    <!-- 坐标标注 -->
+    <template v-if="showAxis">
+      <div class="absolute left-2 top-1 text-[10px] text-slate-400 pointer-events-none">{{ fmt(max) }}</div>
+      <div class="absolute left-2 bottom-[18px] text-[10px] text-slate-400 pointer-events-none">{{ fmt(min) }}</div>
+      <!-- X 轴日期刻度：用 HTML 叠加（SVG 被横向拉伸，文字会变形） -->
+      <div v-if="xTicks.length" class="absolute inset-x-0 bottom-0 h-4 pointer-events-none">
+        <span v-for="(t, i) in xTicks" :key="'xt'+i"
+          class="absolute bottom-0 text-[10px] text-slate-400 whitespace-nowrap"
+          :style="tickStyle(t, i)">{{ t.label }}</span>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -36,12 +47,15 @@ const props = defineProps({
   invert: { type: Boolean, default: false }, // 回撤：向下为风险
   fill: { type: Boolean, default: true },
   negativeFill: { type: Boolean, default: false },
+  showAxis: { type: Boolean, default: false },
 })
 
 const W = 600
+const H = props.height
 const padL = 8
 const padR = 8
 const padT = 6
+const padB = 20
 const gradId = `grad-${Math.random().toString(36).slice(2, 8)}`
 const lineColor = props.color
 
@@ -66,7 +80,7 @@ const range = computed(() => {
 
 function yFor(v) {
   const { lo, hi } = range.value
-  return padT + (1 - (v - lo) / (hi - lo)) * (props.height - padT * 2)
+  return padT + (1 - (v - lo) / (hi - lo)) * (props.height - padT - padB)
 }
 function xFor(i) {
   return padL + (i / Math.max(props.data.length - 1, 1)) * (W - padL - padR)
@@ -78,14 +92,14 @@ const areaPath = computed(() => {
   if (!points.value.length) return ''
   const first = points.value[0]
   const last = points.value[points.value.length - 1]
-  const baselineY = props.invert ? yFor(0) : props.height - padT * 0.5
+  const baselineY = props.invert ? yFor(0) : props.height - padB
   return `M${first.x},${baselineY} L` + points.value.map(p => `${p.x},${p.y}`).join(' L') + ` L${last.x},${baselineY} Z`
 })
 const gridY = computed(() => {
   const n = 4
   const arr = []
   for (let i = 0; i < n; i++) {
-    const gy = padT + (i / (n - 1)) * (props.height - padT * 2)
+    const gy = padT + (i / (n - 1)) * (props.height - padT - padB)
     arr.push(gy)
   }
   return arr
@@ -95,5 +109,29 @@ function fmt(v) {
   if (props.formatValue === 'money') return '¥' + new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(v)
   if (props.formatValue === '%') return v.toFixed(2) + '%'
   return typeof v === 'number' ? v.toFixed(2) : v
+}
+
+// X 轴日期刻度：均匀取 4~5 个点
+const xTicks = computed(() => {
+  const data = props.data
+  if (!data || data.length < 2) return []
+  const n = Math.min(data.length, 5)
+  const ticks = []
+  for (let i = 0; i < n; i++) {
+    const idx = Math.round((i / (n - 1)) * (data.length - 1))
+    const d = data[idx]
+    ticks.push({
+      x: xFor(idx),
+      label: d.date ? d.date.slice(5) : '', // MM-DD
+    })
+  }
+  return ticks
+})
+
+// 刻度定位：首尾贴边对齐，中间居中，避免标签超出容器
+function tickStyle(t, i) {
+  const last = xTicks.value.length - 1
+  const transform = i === 0 ? 'translateX(0)' : (i === last ? 'translateX(-100%)' : 'translateX(-50%)')
+  return { left: (t.x / W) * 100 + '%', transform }
 }
 </script>

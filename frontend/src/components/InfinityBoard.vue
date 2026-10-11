@@ -100,7 +100,6 @@
               left: el.x + 'px', top: el.y + 'px',
               width: el.width + 'px', height: el.height + 'px',
               background: noteColors[el.color || 'yellow'],
-              transform: el._hoverScale ? 'scale(1.08)' : 'scale(1)',
               zIndex: el._hoverScale ? 3 : 1,
               transition: isDragging ? 'none' : undefined,
             }"

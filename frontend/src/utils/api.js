@@ -137,6 +137,10 @@ export const wechatApi = {
   // 分类反馈
   submitCategoryFeedback: (data) => api.post('/wechat/category-feedback', data),
 
+  // 记忆式学习：带反馈的识别（extract_learn）
+  getExtractLearn: (q) => api.get('/extract/learn', { params: { q } }),
+  submitExtractLearn: (data) => api.post('/extract/learn', data),
+
   // 训练数据
   getTrainingData: (params) => api.get('/wechat/training-data', { params }),
 
@@ -162,6 +166,17 @@ export const wechatApi = {
 
 export const goldApi = {
   getPrice: () => api.get('/gold-price'),
+}
+
+export const quizApi = {
+  getQuestions: () => api.get('/quiz'),
+  createQuestion: (data) => api.post('/quiz', data),
+  updateQuestion: (id, data) => api.put(`/quiz/${id}`, data),
+  deleteQuestion: (id) => api.delete(`/quiz/${id}`),
+  uploadImage: (formData) => api.post('/quiz/upload-image', formData, { timeout: 60000, headers: { 'Content-Type': 'multipart/form-data' } }),
+  evaluate: (data) => api.post('/quiz/evaluate', data, { timeout: 120000 }),
+  saveAnswer: (data) => api.post('/quiz/answer', data),
+  getAnswers: (questionId) => api.get(`/quiz/answers/${questionId}`),
 }
 
 export const aiWorkApi = {
@@ -190,4 +205,26 @@ export const quantApi = {
   runBacktest: (data) => api.post('/quant/backtest/run', data, { timeout: 60000 }),
   runGrid: (data) => api.post('/quant/backtest/grid', data, { timeout: 120000 }),
   agentChat: (data) => api.post('/quant/agent/chat', data, { timeout: 120000 }),
+
+  // 策略工坊：AI 生成 / 改进 / 校验 / 保存自定义策略
+  strategyRegistry: () => api.get('/quant/strategy/registry'),
+  strategyGenerate: (data) => api.post('/quant/strategy/generate', data, { timeout: 300000 }),
+  strategyRefine: (data) => api.post('/quant/strategy/refine', data, { timeout: 300000 }),
+  strategyValidate: (data) => api.post('/quant/strategy/validate', data, { timeout: 120000 }),
+  strategySave: (data) => api.post('/quant/strategy/save', data, { timeout: 120000 }),
+  strategyCustomList: () => api.get('/quant/strategy/custom'),
+  strategyCustomDetail: (key) => api.get(`/quant/strategy/custom/${encodeURIComponent(key)}`),
+  strategyCustomDelete: (key) => api.delete(`/quant/strategy/custom/${encodeURIComponent(key)}`),
+  strategyRollback: (key, version) =>
+    api.post(`/quant/strategy/custom/${encodeURIComponent(key)}/rollback`, null, {
+      params: version ? { version } : {},
+      timeout: 60000,
+    }),
+}
+
+// 量化服务（Python）启停开关
+export const quantServiceApi = {
+  status: () => api.get('/quant-service/status'),
+  start: () => api.post('/quant-service/start', {}, { timeout: 30000 }),
+  stop: () => api.post('/quant-service/stop', {}, { timeout: 20000 }),
 }

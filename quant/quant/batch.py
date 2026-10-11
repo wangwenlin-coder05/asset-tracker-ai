@@ -95,6 +95,11 @@ def run_grid(
     seen_params = {
         "t1_take_profit": _T1_PARAMS,
         "t1_confirmed": _T1_CONFIRMED_PARAMS,
+        "ma_cross": {"fast", "slow"},
+        "momentum": {"window"},
+        "bollinger": {"window", "k"},
+        "turtle": {"entry_n", "exit_n"},
+        "buy_and_hold": set(),
     }.get(strategy, set())
 
     for code in codes:

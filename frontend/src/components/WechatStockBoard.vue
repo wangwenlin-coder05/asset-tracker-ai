@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="w-full max-w-full min-w-0 overflow-x-hidden px-3 sm:px-4 lg:px-5 mt-3">
 
     <!-- 顶部行情条 -->
@@ -126,6 +126,23 @@
                 class="text-[10px] flex-shrink-0"
                 :class="categoryChanger.status.includes('失败') ? 'text-red-500' : 'text-emerald-600'"
               >{{ categoryChanger.status }}</span>
+            </div>
+            <!-- 记忆式学习：识别结果纠正入口 + 记忆命中标签 -->
+            <div class="flex items-center justify-between mt-2 gap-2">
+              <span
+                v-if="eventLearned[event.id] && eventLearned[event.id].hit"
+                class="text-[10px] px-1.5 py-0.5 rounded inline-flex items-center gap-1 font-semibold bg-violet-50 text-violet-600 border border-violet-100"
+                title="该消息已命中用户纠正过的记忆，采用纠正后的分类"
+              >
+                <Sparkles class="w-2.5 h-2.5" />已按记忆分类
+                <span v-if="eventLearned[event.id].hitCount > 1" class="text-violet-400"> · 已纠正 {{ eventLearned[event.id].hitCount }} 次</span>
+              </span>
+              <span v-else></span>
+              <button
+                @click.stop="openLearnDialog(event)"
+                class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-slate-200 text-[10px] font-semibold text-slate-500 hover:bg-slate-50 hover:text-slate-700 transition-colors"
+                title="纠正本次识别结果，系统将记住该认知（记忆式学习），下次不再误判"
+              ><Pencil class="w-2.5 h-2.5" />纠正</button>
             </div>
           </div>
         </div>
@@ -1131,6 +1148,61 @@
         <p v-if="categoryFeedback.statusText" class="mt-3 text-[11px] text-center" :class="categoryFeedback.statusText.includes('失败') ? 'text-red-500' : 'text-emerald-600'">
           {{ categoryFeedback.statusText }}
         </p>
+      </div>
+    </div>
+
+    <!-- 记住学习纠正：纠正识别结果弹窗 -->
+    <div v-if="learnDialog.show" class="fixed inset-0 z-[1002] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4" @mousedown.self="closeLearnDialog" @keydown.esc="closeLearnDialog" tabindex="-1">
+      <div class="bg-white rounded-2xl shadow-2xl w-[460px] max-w-[94vw] p-5 animate-[fadeIn_0.2s_ease]">
+        <div class="flex items-center justify-between mb-3">
+          <h4 class="text-base font-bold text-slate-800 flex items-center gap-2"><Sparkles class="w-4 h-4 text-violet-500" />纠正识别结果</h4>
+          <button @click="closeLearnDialog" class="text-slate-400 hover:text-slate-600"><X class="w-4 h-4" /></button>
+        </div>
+        <p class="text-[11px] text-slate-400 leading-5 mb-3">系统将记住本次纠正：下次遇到相同/相似的原文片段时直接采用纠正后的分类，不再被规则误判。</p>
+
+        <div class="rounded-xl bg-slate-50 p-3 mb-4 max-h-28 overflow-y-auto text-[11px] text-slate-600 whitespace-pre-wrap leading-5">{{ learnDialog.sourceText }}</div>
+
+        <div class="flex items-center gap-2 mb-4">
+          <span class="text-[11px] text-slate-500">当前分类：</span>
+          <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold" :class="categoryBadgeClass(learnDialog.wrongLabel)">{{ categoryLabel(learnDialog.wrongLabel) }}</span>
+        </div>
+
+        <div class="mb-4">
+          <p class="text-[11px] text-slate-500 mb-2">纠正为分类：</p>
+          <div class="grid grid-cols-3 gap-2">
+            <button
+              v-for="c in categoryOptions"
+              :key="c.value"
+              @click="learnDialog.correctLabel = c.value"
+              class="h-9 rounded-lg border text-[11px] font-semibold transition-colors"
+              :class="learnDialog.correctLabel === c.value ? c.activeClass : 'border-slate-200 text-slate-600 hover:bg-slate-50'"
+            >{{ c.label }}</button>
+          </div>
+        </div>
+
+        <div class="mb-4">
+          <p class="text-[11px] text-slate-500 mb-1.5">股票代码<span class="text-slate-300">（纠正为推票时必填，其他分类可留空）</span>：</p>
+          <input
+            v-model="learnDialog.correctCode"
+            maxlength="6"
+            placeholder="6 位股票代码，如 000001"
+            class="w-full h-9 px-3 rounded-lg border border-slate-200 text-[13px] text-slate-700 focus:outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100 placeholder:text-slate-300"
+          />
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button
+            @click="submitLearn"
+            :disabled="learnDialog.submitting || !learnDialog.correctLabel || (learnDialog.correctLabel === 'stock_pick' && !/^\d{6}$/.test(learnDialog.correctCode || ''))"
+            class="flex-1 h-10 rounded-xl bg-violet-500 text-white text-sm font-semibold hover:bg-violet-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 transition-all"
+          >{{ learnDialog.submitting ? '保存中...' : '记住纠正' }}</button>
+          <button
+            @click="closeLearnDialog"
+            class="h-10 px-3 rounded-xl border border-slate-200 text-slate-500 text-sm hover:bg-slate-50 transition-colors"
+          >取消</button>
+        </div>
+
+        <p v-if="learnDialog.status" class="mt-3 text-[11px] text-center" :class="learnDialog.status.includes('失败') ? 'text-red-500' : 'text-emerald-600'">{{ learnDialog.status }}</p>
       </div>
     </div>
 
@@ -2660,6 +2732,148 @@ async function submitDetailCategoryChange(newCategory) {
     }, 700)
   } catch (err) {
     detailCategoryChanger.status = '失败：' + (err.response?.data?.error || err.message)
+  }
+}
+
+// ============ 记忆式学习：识别结果纠正（extract_learn） ============
+// 纠正弹窗状态
+const learnDialog = reactive({
+  show: false,
+  eventId: '',
+  sourceText: '',
+  wrongLabel: '',
+  wrongCode: '',
+  correctLabel: '',
+  correctCode: '',
+  submitting: false,
+  status: '',
+})
+// 每条消息的记忆命中状态（key 为 event.id）：{ queried, hit, hitCount, correctLabel, correctCode }
+const eventLearned = reactive({})
+
+// 从消息里取一个通用原文片段作为记忆 key（去除首尾/多余空白后的开头 50 字符，保证 >=16 字符）
+function learnSourceText(text) {
+  const clean = String(text || '').trim()
+  return clean.length > 50 ? clean.slice(0, 50) : clean
+}
+
+function openLearnDialog(event) {
+  if (!event?.id) return
+  const text = event.usefulMessage || event.messageText || event.originalMessage || ''
+  const firstCode = Array.isArray(event.stocks) && event.stocks.length ? (event.stocks[0].code || '') : ''
+  learnDialog.show = true
+  learnDialog.eventId = event.id
+  learnDialog.sourceText = text
+  learnDialog.wrongLabel = event.category || 'market_news'
+  learnDialog.wrongCode = firstCode
+  learnDialog.correctLabel = event.category || 'market_news'
+  // 优先用已命中的记忆代码作为默认纠正代码
+  const learned = eventLearned[event.id]
+  learnDialog.correctCode = (learned && learned.hit && learned.correctCode) || firstCode || ''
+  learnDialog.submitting = false
+  learnDialog.status = ''
+}
+function closeLearnDialog() {
+  learnDialog.show = false
+  learnDialog.eventId = ''
+  learnDialog.sourceText = ''
+  learnDialog.wrongLabel = ''
+  learnDialog.wrongCode = ''
+  learnDialog.correctLabel = ''
+  learnDialog.correctCode = ''
+  learnDialog.submitting = false
+  learnDialog.status = ''
+}
+async function submitLearn() {
+  const eventId = learnDialog.eventId
+  const sourceText = learnSourceText(learnDialog.sourceText)
+  if (!eventId || !sourceText || !learnDialog.correctLabel) return
+  learnDialog.submitting = true
+  learnDialog.status = '保存中...'
+  try {
+    await wechatApi.submitExtractLearn({
+      source_text: sourceText,
+      wrong_label: learnDialog.wrongLabel,
+      correct_label: learnDialog.correctLabel,
+      wrong_code: learnDialog.wrongCode,
+      correct_code: learnDialog.correctCode,
+    })
+    // 记录本地记忆命中状态，卡片立即显示"已按记忆分类"
+    eventLearned[eventId] = {
+      queried: true,
+      hit: true,
+      hitCount: (eventLearned[eventId]?.hitCount || 0) + 1,
+      correctLabel: learnDialog.correctLabel,
+      correctCode: /^\d{6}$/.test(String(learnDialog.correctCode || '').trim()) ? learnDialog.correctCode.trim() : '',
+    }
+    // 同步更新该事件当前分类与代码
+    const e = events.value.find(x => x.id === eventId)
+    if (e) {
+      e.category = learnDialog.correctLabel
+      if (/^\d{6}$/.test(String(learnDialog.correctCode || '').trim())) {
+        e.stocks = [{ code: learnDialog.correctCode.trim(), name: '', logic: '' }]
+      } else if (learnDialog.correctLabel !== 'stock_pick') {
+        e.stocks = []
+      }
+    }
+    if (status.value.events && Array.isArray(status.value.events)) {
+      const me = status.value.events.find(x => x.id === eventId)
+      if (me) { me.category = learnDialog.correctLabel }
+      // 同步前端记忆命中覆盖到该事件实例
+      if (eventLearned[eventId].correctCode) {
+        me.stocks = [{ code: eventLearned[eventId].correctCode, name: '', logic: '' }]
+      } else if (learnDialog.correctLabel !== 'stock_pick') {
+        me.stocks = []
+      }
+    }
+    learnDialog.status = '✓ 已记住，下次遇到同样消息不再误判'
+    setTimeout(closeLearnDialog, 800)
+    // 轻提示 + 刷新追踪/分析
+    Promise.all([loadInvestorAnalysis(), loadTrackingStocks()]).catch(() => {})
+  } catch (err) {
+    learnDialog.status = '失败：' + (err.response?.data?.error || err.message)
+  } finally {
+    learnDialog.submitting = false
+  }
+}
+
+// 应用一条记忆记录到事件显示（记忆命中优先，覆盖规则结果）
+function applyEventLearnOverrides(ev, rec) {
+  if (!rec) return
+  if (rec.correct_label) ev.category = rec.correct_label
+  if (rec.correct_code && /^\d{6}$/.test(String(rec.correct_code).trim())) {
+    ev.stocks = [{ code: String(rec.correct_code).trim(), name: '', logic: '' }]
+  } else if (rec.correct_label && rec.correct_label !== 'stock_pick') {
+    ev.stocks = []
+  }
+}
+
+// 异步查询某条消息的记忆并应用到列表（只对新出现的事件查询一次，避免每次刷新都打接口）
+async function lookupEventLearn(ev) {
+  const id = ev?.id
+  if (!id || eventLearned[id]) return
+  eventLearned[id] = { queried: true, hit: false, hitCount: 0 }
+  const text = ev.usefulMessage || ev.messageText || ev.originalMessage || ''
+  if (!text) return
+  try {
+    const mem = await wechatApi.getExtractLearn(text)
+    if (Array.isArray(mem) && mem.length) {
+      const rec = mem[0]
+      eventLearned[id] = {
+        queried: true,
+        hit: true,
+        hitCount: rec.hit_count || 1,
+        correctLabel: rec.correct_label,
+        correctCode: rec.correct_code,
+      }
+      if (status.value.events && Array.isArray(status.value.events)) {
+        const e = status.value.events.find(x => x.id === id)
+        if (e) applyEventLearnOverrides(e, rec)
+      }
+    }
+  } catch (err) {
+    // 查询失败不阻断列表展示
+    eventLearned[id] = { queried: true, hit: false, hitCount: 0 }
   }
 }
 
@@ -5476,6 +5690,18 @@ async function refreshStatus() {
     if (knownEventIds && nextEvents.some(event => event.id && !knownEventIds.has(event.id))) schedulePanelRefresh()
     knownEventIds = new Set(nextEvents.map(event => event.id).filter(Boolean))
     status.value = nextStatus
+    // 记忆命中优先：对列表里的每条消息，若有已训练的记忆则覆盖其分类/代码显示；
+    // 未处理过的事件异步查一遍 memory（只查一次），命中的立即应用
+    if (nextEvents.length) {
+      for (const ev of nextEvents) {
+        const learned = ev.id ? eventLearned[ev.id] : null
+        if (learned && learned.queried) {
+          if (learned.hit) applyEventLearnOverrides(ev, { correct_label: learned.correctLabel, correct_code: learned.correctCode })
+        } else {
+          lookupEventLearn(ev) // 内部对每个 id 只查询一次
+        }
+      }
+    }
     pageError.value = ''
   } catch (error) {
     pageError.value = error.response?.data?.error || '获取监听状态失败'

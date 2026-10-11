@@ -1,5 +1,11 @@
 <template>
   <div>
+    <div class="px-5 mt-3">
+      <DepositReservoir
+        :current-amount="totalAmount"
+        :deposit-count="deposits.filter(d => !d.excludeTotal).length"
+      />
+    </div>
     <div id="depositPanel" class="mb-4 px-5">
       <div class="flex items-center justify-between mb-3">
         <h3 class="text-sm font-semibold text-slate-600 flex items-center gap-2">
@@ -15,7 +21,7 @@
         <div
           v-for="groupName in orderedGroupNames"
           :key="groupName"
-          :class="['bg-white rounded-xl p-4 card-shadow deposit-group', { 'deposit-excluded-group': groupName === excludedGroupName, 'deposit-group-preview-before': groupPreview.name === groupName && groupPreview.position === 'before', 'deposit-group-preview-after': groupPreview.name === groupName && groupPreview.position === 'after', 'deposit-item-group-target': itemPreview.groupName === groupName && !itemPreview.itemId }]"
+          :class="['bg-white rounded-xl p-4 card-shadow deposit-group', { 'deposit-excluded-group': groupName === excludedGroupName, 'deposit-group-preview-before': groupPreview.name === groupName && groupPreview.position === 'before', 'deposit-group-preview-after': groupPreview.name === groupName && groupPreview.position === 'after', 'deposit-group-preview-exclude': groupPreview.name === groupName && groupPreview.position === 'exclude', 'deposit-item-group-target': itemPreview.groupName === groupName && !itemPreview.itemId }]"
           @dragover.prevent="onGroupDragOver($event, groupName)"
           @drop="onDrop($event, groupName)"
         >
@@ -28,25 +34,40 @@
               <PlusCircle class="w-4 h-4" />
             </button>
           </div>
-          <div class="space-y-2 min-h-[40px]">
-            <DepositItem
-              v-for="item in groupedDeposits[groupName]"
-              :key="item.id"
-              :deposit-item="item"
-              :group-name="groupName"
-              :all-deposits="deposits"
-              :draggable="!draggedGroup"
-              :class="getItemDropClasses(item, groupName)"
-              @dragstart="onDragStart($event, item)"
-              @dragend="onDragEnd"
-              @dragover.prevent.stop="onItemDragOver($event, item, groupName)"
-              @drop.stop="onDropItem($event, item, groupName)"
-              @edit="openEditDepositDialog"
-              @delete="handleDeleteDeposit"
-              @update="handleUpdateDeposit"
-              @repay="handleRepaySuccess"
-              @float-panel="handleFloatPanel"
-            />
+          <div class="min-h-[40px]" :class="groupName === excludedGroupName ? 'deposit-excluded-clusters' : 'space-y-2'">
+            <div
+              v-for="cluster in clustersOf(groupName)"
+              :key="cluster.key"
+              class="deposit-cluster"
+              :class="groupName === excludedGroupName ? 'bg-white rounded-xl p-4 card-shadow' : ''"
+            >
+              <div v-if="cluster.name" class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-2">
+                  <h4 class="font-bold text-slate-700">{{ cluster.name }}</h4>
+                  <span class="text-xs text-slate-400 font-medium">{{ formatNumber(clusterTotal(cluster.items)) }}</span>
+                </div>
+              </div>
+              <div class="space-y-2 deposit-cluster-items">
+                <DepositItem
+                  v-for="item in cluster.items"
+                  :key="item.id"
+                  :deposit-item="item"
+                  :group-name="groupName"
+                  :all-deposits="deposits"
+                  :draggable="!draggedGroup"
+                  :class="getItemDropClasses(item, groupName)"
+                  @dragstart="onDragStart($event, item)"
+                  @dragend="onDragEnd"
+                  @dragover.prevent.stop="onItemDragOver($event, item, groupName)"
+                  @drop.stop="onDropItem($event, item, groupName)"
+                  @edit="openEditDepositDialog"
+                  @delete="handleDeleteDeposit"
+                  @update="handleUpdateDeposit"
+                  @repay="handleRepaySuccess"
+                  @float-panel="handleFloatPanel"
+                />
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -78,12 +99,13 @@ import DepositItem from './DepositItem.vue'
 import DepositItemDialog from './dialogs/DepositItemDialog.vue'
 import DepositFloatPanel from './DepositFloatPanel.vue'
 import { useDeposit } from '../composables/useDeposit'
+import DepositReservoir from './DepositReservoir.vue'
 import { useStock } from '../composables/useStock'
 import { useGold } from '../composables/useGold'
 import { depositApi, installmentApi } from '../utils/api'
 import { fmtNum, sumByFilter } from '../utils/formatter'
 
-const { deposits, groupedDeposits, loadDeposits, addDeposit, updateDeposit, deleteDeposit, getDeposit } = useDeposit()
+const { deposits, groupedDeposits, totalAmount, loadDeposits, addDeposit, updateDeposit, deleteDeposit, getDeposit } = useDeposit()
 const { stocks, holdingAmount, totalProfit, loadStocks, fetchStockPrices } = useStock()
 const { loadGoldItems, fetchGoldPrice } = useGold()
 const showDepositDialog = ref(false)
@@ -112,6 +134,24 @@ const orderedGroupNames = computed(() => Object.keys(groupedDeposits.value).sort
 function groupTotalAmount(groupName) {
   const items = groupedDeposits.value[groupName] || []
   return sumByFilter(items, item => groupName !== excludedGroupName && !item.excludeTotal, 'amount')
+}
+
+// 「不计入」栏内每个聚簇的小计（与存款分组卡片的金额展示位置一致）
+function clusterTotal(items) {
+  return sumByFilter(items, () => true, 'amount')
+}
+
+// 「不计入存款总额」按原分组聚簇展示，整组拖进来后不会被拆散
+function clustersOf(groupName) {
+  const items = groupedDeposits.value[groupName] || []
+  if (groupName !== excludedGroupName) return [{ key: groupName, name: '', items }]
+  const map = new Map()
+  for (const item of items) {
+    const g = item.groupName || '默认分组'
+    if (!map.has(g)) map.set(g, [])
+    map.get(g).push(item)
+  }
+  return Array.from(map, ([name, list]) => ({ key: name, name, items: list }))
 }
 
 function formatNumber(val) { return fmtNum(val) }
@@ -208,9 +248,34 @@ async function handleRepaySuccess() {
 }
 async function handleDeleteDeposit(id) { if (confirm('\u786e\u5b9a\u5220\u9664\u8be5\u5b58\u6b3e\u9879\uff1f')) await deleteDeposit(id) }
 function resetDragPreview() { groupPreview.value = { name: null, position: 'before' }; itemPreview.value = { groupName: null, itemId: null, position: 'after' } }
-function onDragStart(event, item) { draggedItem.value = item; draggedGroup.value = null; resetDragPreview(); event.dataTransfer.effectAllowed = 'move' }
-function onGroupDragStart(event, name) { if (name === excludedGroupName) return; draggedGroup.value = name; draggedItem.value = null; resetDragPreview(); event.dataTransfer.effectAllowed = 'move' }
-function onDragEnd() { draggedItem.value = null; draggedGroup.value = null; resetDragPreview() }
+
+// 原生 HTML5 拖拽期间浏览器会吞掉滚轮事件，指针靠近视口上下边缘时自动滚动，保证能把分组拖进「不计入」栏
+const AUTO_SCROLL_EDGE = 130
+let autoScrollTimer = null
+let dragPointerY = 0
+function onWindowDragOver(e) { dragPointerY = e.clientY }
+function startAutoScroll() {
+  if (autoScrollTimer) return
+  dragPointerY = 0
+  window.addEventListener('dragover', onWindowDragOver, true)
+  autoScrollTimer = setInterval(() => {
+    if (!dragPointerY) return
+    const vh = window.innerHeight
+    if (dragPointerY < AUTO_SCROLL_EDGE) {
+      window.scrollBy(0, -Math.max(4, Math.round((AUTO_SCROLL_EDGE - dragPointerY) / 4)))
+    } else if (dragPointerY > vh - AUTO_SCROLL_EDGE) {
+      window.scrollBy(0, Math.max(4, Math.round((dragPointerY - (vh - AUTO_SCROLL_EDGE)) / 4)))
+    }
+  }, 24)
+}
+function stopAutoScroll() {
+  if (autoScrollTimer) { clearInterval(autoScrollTimer); autoScrollTimer = null }
+  window.removeEventListener('dragover', onWindowDragOver, true)
+}
+
+function onDragStart(event, item) { draggedItem.value = item; draggedGroup.value = null; resetDragPreview(); event.dataTransfer.effectAllowed = 'move'; startAutoScroll() }
+function onGroupDragStart(event, name) { if (name === excludedGroupName) return; draggedGroup.value = name; draggedItem.value = null; resetDragPreview(); event.dataTransfer.effectAllowed = 'move'; startAutoScroll() }
+function onDragEnd() { draggedItem.value = null; draggedGroup.value = null; resetDragPreview(); stopAutoScroll() }
 function pointerPosition(event) {
   const rect = event.currentTarget.getBoundingClientRect()
   const verticalDistance = Math.abs(event.clientY - (rect.top + rect.height / 2))
@@ -234,8 +299,11 @@ function getItemDropClasses(item, groupName) {
 }
 function onGroupDragOver(event, groupName) {
   event.dataTransfer.dropEffect = 'move'
-  if (draggedGroup.value && groupName !== excludedGroupName && groupName !== draggedGroup.value) {
-    groupPreview.value = { name: groupName, position: pointerPosition(event) }
+  if (draggedGroup.value && groupName !== draggedGroup.value) {
+    // 拖到「不计入存款总额」一栏：整组标记为不计入
+    groupPreview.value = groupName === excludedGroupName
+      ? { name: excludedGroupName, position: 'exclude' }
+      : { name: groupName, position: pointerPosition(event) }
     itemPreview.value = { groupName: null, itemId: null, position: 'after' }
   } else if (draggedItem.value && event.target === event.currentTarget) {
     itemPreview.value = { groupName, itemId: null, position: 'after' }
@@ -243,7 +311,12 @@ function onGroupDragOver(event, groupName) {
 }
 function onItemDragOver(event, item, groupName) {
   if (draggedGroup.value) {
-    if (groupName !== excludedGroupName && groupName !== draggedGroup.value) {
+    if (groupName !== draggedGroup.value) {
+      if (groupName === excludedGroupName) {
+        groupPreview.value = { name: excludedGroupName, position: 'exclude' }
+        itemPreview.value = { groupName: null, itemId: null, position: 'after' }
+        return
+      }
       const groupEl = event.currentTarget.closest('.deposit-group')
       if (groupEl) {
         const rect = groupEl.getBoundingClientRect()
@@ -263,9 +336,17 @@ function onItemDragOver(event, item, groupName) {
   itemPreview.value = { groupName, itemId: item.id, position: event.clientY < rect.top + rect.height / 2 ? 'before' : 'after' }
 }
 async function onDrop(event, targetGroupName) {
-  if (draggedGroup.value && groupPreview.value.name) reorderGroup()
+  if (draggedGroup.value && groupPreview.value.name) {
+    if (groupPreview.value.position === 'exclude') await excludeGroupItems(draggedGroup.value)
+    else reorderGroup()
+  }
   else if (draggedItem.value) await moveItem(draggedItem.value, targetGroupName, null, 'after')
   onDragEnd()
+}
+// 将整组存款标记为「不计入存款总额」
+async function excludeGroupItems(groupName) {
+  const items = groupedDeposits.value[groupName] || []
+  await Promise.all(items.map(entry => updateDeposit(entry.id, { excludeTotal: true })))
 }
 function reorderGroup() {
   const target = groupPreview.value.name
@@ -278,7 +359,11 @@ function reorderGroup() {
   persistGroups()
 }
 async function onDropItem(event, targetItem, targetGroupName) {
-  if (draggedGroup.value && groupPreview.value.name) { reorderGroup(); onDragEnd(); return }
+  if (draggedGroup.value && groupPreview.value.name) {
+    if (groupPreview.value.position === 'exclude') await excludeGroupItems(draggedGroup.value)
+    else reorderGroup()
+    onDragEnd(); return
+  }
   if (draggedItem.value) await moveItem(draggedItem.value, targetGroupName, targetItem, itemPreview.value.position)
   onDragEnd()
 }

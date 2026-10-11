@@ -4,13 +4,15 @@
       <section
         v-if="visible"
         ref="panelRef"
-        class="deposit-float-panel fixed z-[120] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl"
+        class="deposit-float-panel fixed z-[120] overflow-hidden overscroll-contain rounded-lg border border-slate-200 bg-white shadow-2xl"
         :class="{ 'select-none': isDragging }"
         :style="panelStyle"
         role="dialog"
         :aria-label="title"
         @pointerdown.stop
         @click.stop
+        @wheel.stop
+        @touchmove.stop
       >
         <header
           class="flex h-9 touch-none items-center justify-between border-b border-slate-200 bg-slate-50 px-3 cursor-move"
@@ -25,7 +27,7 @@
           </button>
         </header>
 
-        <div v-if="type === 'installment'" class="max-h-[360px] overflow-y-auto">
+        <div v-if="type === 'installment'" class="max-h-[360px] overflow-y-auto overscroll-contain">
           <div class="flex items-center px-3 py-1.5 bg-slate-50 border-b border-slate-200 text-[10px] text-slate-400 font-medium">
             <span class="w-[80px]">期数</span>
             <span class="flex-1 text-center">日期</span>
@@ -49,7 +51,7 @@
           <div v-if="bills.length === 0" class="py-8 text-center text-xs text-slate-400">暂无账单</div>
         </div>
 
-        <div v-else class="max-h-[360px] overflow-auto">
+        <div v-else class="max-h-[360px] overflow-auto overscroll-contain">
           <table class="w-full table-fixed border-collapse text-left">
             <thead class="sticky top-0 z-10 bg-slate-50 text-[10px] font-medium text-slate-400">
               <tr>

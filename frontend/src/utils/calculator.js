@@ -1,3 +1,5 @@
+import { commissionOf, buyFeeParts, sellFeeParts, feeConfig } from './feeConfig'
+
 export const positionMap = {
   full: 1,
   half: 0.5,
@@ -42,9 +44,9 @@ export function calcStock(item) {
   const holdTotal = count > 0 ? remainingCostTotal : 0
   const sellTotal = sellPrice * tradeCount
 
-  const sellCommission = Math.max(sellTotal * 0.00023, 5.00)
-  const stampTax = sellTotal * 0.001
-  const transferFee = sellTotal * 0.00001
+  const sellCommission = commissionOf(sellTotal)
+  const stampTax = sellTotal * feeConfig.stampTaxRate
+  const transferFee = sellTotal * feeConfig.transferFeeRate
   const otherFee = transferFee
 
   let nextBuyFee = 0
@@ -57,8 +59,8 @@ export function calcStock(item) {
     nextBuyFee = buyCommission
   } else if (tradeCount > 0) {
     const buyTotal = sellPrice * tradeCount
-    buyCommission = Math.max(buyTotal * 0.00023, 5.00)
-    buyTransferFee = buyTotal * 0.00001
+    buyCommission = commissionOf(buyTotal)
+    buyTransferFee = buyTotal * feeConfig.transferFeeRate
     nextBuyFee = buyCommission + buyTransferFee
   }
 
@@ -70,9 +72,9 @@ export function calcStock(item) {
 
   if (sellRecords.length === 0 && item.isCleared && sellPrice > 0 && count > 0) {
     const estSellTotal = sellPrice * count
-    const estSellCommission = Math.max(estSellTotal * 0.00023, 5.00)
-    const estStampTax = estSellTotal * 0.001
-    const estTransferFee = estSellTotal * 0.00001
+    const estSellCommission = commissionOf(estSellTotal)
+    const estStampTax = estSellTotal * feeConfig.stampTaxRate
+    const estTransferFee = estSellTotal * feeConfig.transferFeeRate
     estimatedSellFee = estSellCommission + estStampTax + estTransferFee
   }
 
@@ -191,17 +193,23 @@ export function calcGold(item) {
 
 export function calcBuyFee(buyPrice, buyCount) {
   const totalAmount = buyPrice * buyCount
-  const commission = parseFloat(Math.max(totalAmount * 0.00023, 5.00).toFixed(2))
-  const transferFee = parseFloat((totalAmount * 0.00001).toFixed(2))
-  return { commission, transferFee, total: parseFloat((commission + transferFee).toFixed(2)) }
+  const { commission, transferFee, total } = buyFeeParts(totalAmount)
+  return {
+    commission: parseFloat(commission.toFixed(2)),
+    transferFee: parseFloat(transferFee.toFixed(2)),
+    total: parseFloat(total.toFixed(2))
+  }
 }
 
 export function calcSellFee(sellPrice, sellCount) {
   const totalAmount = sellPrice * sellCount
-  const commission = parseFloat(Math.max(totalAmount * 0.00023, 5.00).toFixed(2))
-  const stampTax = parseFloat((totalAmount * 0.001).toFixed(2))
-  const transferFee = parseFloat((totalAmount * 0.00001).toFixed(2))
-  return { commission, stampTax, transferFee, total: parseFloat((commission + stampTax + transferFee).toFixed(2)) }
+  const { commission, stampTax, transferFee, total } = sellFeeParts(totalAmount)
+  return {
+    commission: parseFloat(commission.toFixed(2)),
+    stampTax: parseFloat(stampTax.toFixed(2)),
+    transferFee: parseFloat(transferFee.toFixed(2)),
+    total: parseFloat(total.toFixed(2))
+  }
 }
 
 export const CRISIS_LEVELS = {

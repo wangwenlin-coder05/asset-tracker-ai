@@ -1,6 +1,6 @@
 <template>
   <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" :class="{ 'hidden': !visible }">
-    <div class="bg-white rounded-xl p-6 w-[420px] card-shadow dialog-enter">
+    <div class="bg-white rounded-xl p-6 w-[480px] max-w-[92vw] max-h-[90vh] overflow-y-auto card-shadow dialog-enter">
       <div class="flex justify-between items-center mb-4">
         <h3 class="text-lg font-bold text-slate-800 flex items-center gap-2">
           <TrendingDown class="w-5 h-5 text-red-500" />
@@ -69,7 +69,7 @@
               class="flex-1 min-w-0 border border-slate-200 rounded px-2 py-2 text-sm focus:input-focus"
             />
               <button
-                v-for="n in [100, 200, 400]"
+                v-for="n in [100, 200, 300, 400]"
                 :key="n"
                 @click="form.sellCount = n"
                 :class="[
@@ -94,12 +94,12 @@
         </div>
         <button
           @click="handleConfirm"
-          :disabled="!form.tType"
+          :disabled="!form.tType || submitting"
           :class="[
             'w-full py-2.5 text-white rounded-lg transition-all font-medium',
-            form.tType ? 'bg-red-500 hover:bg-red-600' : 'bg-slate-300 cursor-not-allowed'
+            form.tType && !submitting ? 'bg-red-500 hover:bg-red-600' : 'bg-slate-300 cursor-not-allowed'
           ]"
-        >确认卖出</button>
+        >{{ submitting ? '提交中...' : '确认卖出' }}</button>
       </div>
     </div>
   </div>
@@ -125,12 +125,12 @@ const props = defineProps({
 const emit = defineEmits(['close', 'confirm'])
 
 const visible = ref(true)
+const submitting = ref(false)
 
 const sellTypeOptions = [
   { value: '反T', label: '反T', activeClass: 'text-amber-600 bg-amber-50' },
   { value: '正T卖出', label: '正T卖出', activeClass: 'text-green-600 bg-green-50' },
-  { value: '止盈', label: '止盈', activeClass: 'text-emerald-600 bg-emerald-50' },
-  { value: '止损', label: '止损', activeClass: 'text-red-600 bg-red-50' }
+  { value: '卖出', label: '卖出', activeClass: 'text-emerald-600 bg-emerald-50' }
 ]
 
 const form = reactive({
@@ -169,6 +169,7 @@ function formatNumber(val, decimals = 2) {
 }
 
 async function handleConfirm() {
+  if (submitting.value) return
   if (!form.tType) {
     alert('请选择卖出类型')
     return
@@ -177,6 +178,7 @@ async function handleConfirm() {
     alert('请填写完整信息')
     return
   }
+  submitting.value = true
   emit('confirm', {
     sellDate: form.sellDate,
     sellPrice: form.sellPrice,

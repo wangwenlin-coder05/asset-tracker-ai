@@ -1,6 +1,6 @@
 <template>
   <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" :class="{ 'hidden': !visible }">
-    <div class="bg-white rounded-xl p-6 w-[420px] card-shadow dialog-enter">
+    <div class="bg-white rounded-xl p-6 w-[480px] max-w-[92vw] max-h-[90vh] overflow-y-auto card-shadow dialog-enter">
       <div class="flex justify-between items-center mb-4">
         <h3 class="text-lg font-bold text-slate-800 flex items-center gap-2">
           <PlusCircle class="w-5 h-5 text-green-500" />
@@ -69,7 +69,7 @@
               class="flex-1 min-w-0 border border-slate-200 rounded px-2 py-2 text-sm focus:input-focus"
             />
               <button
-                v-for="n in [100, 200, 400]"
+                v-for="n in [100, 200, 300, 400]"
                 :key="n"
                 @click="form.buyCount = n"
                 :class="[
@@ -93,12 +93,12 @@
         </div>
         <button
           @click="handleConfirm"
-          :disabled="!isFirstBuy && !form.tType"
+          :disabled="(!isFirstBuy && !form.tType) || submitting"
           :class="[
             'w-full py-2.5 text-white rounded-lg transition-all font-medium',
-            (isFirstBuy || form.tType) ? 'bg-green-500 hover:bg-green-600' : 'bg-slate-300 cursor-not-allowed'
+            (isFirstBuy || form.tType) && !submitting ? 'bg-green-500 hover:bg-green-600' : 'bg-slate-300 cursor-not-allowed'
           ]"
-        >确认买入</button>
+        >{{ submitting ? '提交中...' : '确认买入' }}</button>
       </div>
     </div>
   </div>
@@ -128,6 +128,7 @@ const props = defineProps({
 const emit = defineEmits(['close', 'confirm'])
 
 const visible = ref(true)
+const submitting = ref(false)
 
 const buyTypeOptions = [
   { value: '正T', label: '正T', activeClass: 'text-green-600 bg-green-50' },
@@ -171,6 +172,7 @@ function formatNumber(val, decimals = 2) {
 }
 
 async function handleConfirm() {
+  if (submitting.value) return
   if (!props.isFirstBuy && !form.tType) {
     alert('请选择买入类型')
     return
@@ -179,6 +181,7 @@ async function handleConfirm() {
     alert('请填写完整信息')
     return
   }
+  submitting.value = true
   emit('confirm', {
     buyDate: form.buyDate,
     buyPrice: form.buyPrice,

@@ -515,7 +515,7 @@ DEFAULT_SKIP_KEYWORDS = frozenset([
 ])
 
 # 后端 API 地址（可通过启动参数覆盖）
-SERVER_API_BASE = os.environ.get('WECHAT_MONITOR_API', 'http://localhost:3000')
+SERVER_API_BASE = os.environ.get('WECHAT_MONITOR_API', 'http://localhost:3300')
 SESSION_SKIP_RULES_URL = f'{SERVER_API_BASE}/api/wechat/session-skip-rules'
 
 # 动态缓存：从后端拉取的会话跳过关键词

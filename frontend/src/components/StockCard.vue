@@ -1,24 +1,25 @@
 <template>
-  <div class="bg-white rounded-lg card-shadow overflow-x-auto" :data-id="stock.id">
-    <table class="w-full min-w-[1530px] stock-card-table">
-      <colgroup>
-        <col style="width:70px"><col style="width:62px"><col style="width:100px"><col style="width:55px"><col style="width:62px">
-        <col style="width:150px"><col style="width:66px"><col style="width:72px"><col style="width:80px"><col style="width:65px">
-        <col style="width:60px"><col style="width:74px"><col style="width:78px"><col style="width:94px"><col style="width:54px">
-        <col style="width:78px"><col style="width:68px"><col style="width:54px"><col style="width:90px"><col style="width:90px">
-      </colgroup>
+  <div class="stock-card-wrap bg-white rounded-lg card-shadow" :data-id="stock.id">
+    <div ref="scrollContainer" class="stock-card-scroll overflow-x-auto">
+      <table class="w-full min-w-[1450px] stock-card-table">
+        <colgroup>
+          <col style="width:68px"><col style="width:54px"><col style="width:92px"><col style="width:56px"><col style="width:62px">
+          <col style="width:230px"><col style="width:56px"><col style="width:56px"><col style="width:64px"><col style="width:56px">
+          <col style="width:50px"><col style="width:62px"><col style="width:62px"><col style="width:104px"><col style="width:52px">
+          <col style="width:62px"><col style="width:58px"><col style="width:50px"><col style="width:68px"><col style="width:88px">
+        </colgroup>
       <thead>
         <tr class="bg-slate-50">
-          <th class="p-1.5 text-left text-xs font-medium text-neutral w-[80px]">股票名称</th>
-          <th class="p-1.5 text-left text-xs font-medium text-neutral w-[65px]">股票代码</th>
-          <th class="p-1.5 text-left text-xs font-medium text-neutral w-[58px]">买入日期</th>
-          <th class="p-1.5 text-left text-xs font-medium text-neutral w-[50px] whitespace-nowrap">持仓天数</th>
-          <th class="p-1.5 text-left text-xs font-medium text-neutral w-[70px]">首次买入价</th>
-          <th class="p-1.5 text-left text-xs font-medium w-[150px] stock-cost-head">持仓成本</th>
-          <th class="p-1.5 text-left text-xs font-medium w-[72px] stock-count-head">持仓股数</th>
-          <th class="p-1.5 text-left text-xs font-medium text-neutral w-[80px]">卖出仓位</th>
+          <th class="p-1.5 text-left text-xs font-medium text-neutral whitespace-nowrap">股票名称</th>
+          <th class="p-1.5 text-left text-xs font-medium text-neutral whitespace-nowrap">股票代码</th>
+          <th class="p-1.5 text-left text-xs font-medium text-neutral whitespace-nowrap">买入日期</th>
+          <th class="p-1.5 text-left text-xs font-medium text-neutral whitespace-nowrap">持仓天数</th>
+          <th class="p-1.5 text-left text-xs font-medium text-neutral whitespace-nowrap">首次买入价</th>
+          <th class="p-1.5 text-left text-xs font-medium stock-cost-head whitespace-nowrap">持仓成本</th>
+          <th class="p-1.5 text-left text-xs font-medium stock-count-head whitespace-nowrap">持仓股数</th>
+          <th class="p-1.5 text-left text-xs font-medium text-neutral whitespace-nowrap">卖出仓位</th>
           <th
-            class="p-1.5 text-left text-xs font-medium text-neutral w-[80px] group/sellprice relative cursor-pointer select-none"
+            class="p-1.5 text-left text-xs font-medium text-neutral whitespace-nowrap group/sellprice relative cursor-pointer select-none"
             :title="realtimePrice?.price ? `点击填入现价 ¥${formatNumber(realtimePrice.price, 3)}` : ''"
             @click="fillCurrentPrice"
           >
@@ -31,17 +32,17 @@
               填入现价
             </span>
           </th>
-          <th class="p-1.5 text-left text-xs font-medium text-neutral w-[65px]">目标盈利</th>
-          <th class="p-1.5 text-left text-xs font-medium text-neutral w-[55px]">卖出股数</th>
-          <th class="p-1.5 text-left text-xs font-medium text-neutral w-[70px]">卖出金额</th>
-          <th class="p-1.5 text-left text-xs font-medium text-neutral w-[80px]">下次手续费</th>
-          <th class="p-1.5 text-left text-xs font-medium text-neutral w-[90px]">净盈利/收益率</th>
-          <th class="p-1.5 text-left text-xs font-medium text-neutral w-[60px] whitespace-nowrap">盈亏比</th>
-          <th class="p-1.5 text-left text-xs font-medium text-neutral w-[75px] whitespace-nowrap">对应市价</th>
-          <th class="p-1.5 text-left text-xs font-medium text-neutral w-[65px] whitespace-nowrap">基准价</th>
-          <th class="p-1.5 text-left text-xs font-medium text-neutral w-[55px] whitespace-nowrap">涨幅%</th>
-          <th class="p-1.5 text-left text-xs font-medium text-emerald-600 w-[90px] whitespace-nowrap" title="历史换手衰减系数 = 1 ÷ (1 − 前十大流通股东占流通股比例)">✅ 计算公式</th>
-          <th class="p-1.5 text-center text-xs font-medium text-neutral w-[75px]">操作</th>
+          <th class="p-1.5 text-left text-xs font-medium text-neutral whitespace-nowrap">目标盈利</th>
+          <th class="p-1.5 text-left text-xs font-medium text-neutral whitespace-nowrap">卖出股数</th>
+          <th class="p-1.5 text-left text-xs font-medium text-neutral whitespace-nowrap">卖出金额</th>
+          <th class="p-1.5 text-left text-xs font-medium text-neutral whitespace-nowrap">下次手续费</th>
+          <th class="p-1.5 text-left text-xs font-medium text-neutral whitespace-nowrap">净盈利/收益率</th>
+          <th class="p-1.5 text-left text-xs font-medium text-neutral whitespace-nowrap cursor-help" :title="ratioTooltip">盈亏比</th>
+          <th class="p-1.5 text-left text-xs font-medium text-neutral whitespace-nowrap cursor-help" :title="ratioPriceTooltip">对应市价</th>
+          <th class="p-1.5 text-left text-xs font-medium text-neutral whitespace-nowrap cursor-help" :title="basePriceTooltip">基准价</th>
+          <th class="p-1.5 text-left text-xs font-medium text-neutral whitespace-nowrap cursor-help" :title="pricePctTooltip">涨幅%</th>
+          <th class="p-1.5 text-left text-xs font-medium text-emerald-600 whitespace-nowrap" title="历史换手衰减系数 = 1 ÷ (1 − 前十大流通股东占流通股比例)">✅ 计算公式</th>
+          <th class="p-1.5 text-center text-xs font-medium text-neutral whitespace-nowrap">操作</th>
         </tr>
       </thead>
       <tbody>
@@ -49,18 +50,20 @@
           <tr class="stock-summary-row">
             <td class="p-1.5"><input type="text" v-model="localStock.name" @blur="updateStockField('name')" class="w-full border border-slate-200 rounded px-1.5 py-0.5 text-xs focus:input-focus" /></td>
             <td class="p-1.5"><input type="text" v-model="localStock.code" @blur="updateStockField('code')" class="w-full border border-slate-200 rounded px-1.5 py-0.5 text-xs focus:input-focus" /></td>
-            <td class="p-1.5"><input type="date" v-model="localStock.buyDate" @change="updateStockField('buyDate')" class="w-full border border-slate-200 rounded px-0.5 py-0.5 text-xs focus:input-focus" /></td>
+            <td class="p-1.5"><input type="date" v-model="localStock.buyDate" @change="updateStockField('buyDate')" class="stock-date-input w-full border border-slate-200 rounded px-0.5 py-0.5 text-xs focus:input-focus" /></td>
             <td class="p-1.5 text-sm font-medium whitespace-nowrap">{{ holdingDays }}天</td>
             <td class="p-1.5 text-sm">{{ localStock.buyRecords && localStock.buyRecords.length > 0 ? formatNumber(localStock.buyRecords[0].buyPrice, 3) : '-' }}</td>
             <td class="p-1.5 stock-cost-cell">
               <template v-if="localStock.buyRecords && localStock.buyRecords.length > 0">
-                <div class="cost-board">
+                <div class="cost-board cost-board--compact">
                   <div class="cost-board__row">
                     <span class="cost-board__cost">{{ formatNumber(calcRes.avgCost, 3) }}</span>
-                    <span v-if="realtimePrice" class="cost-board__current" :class="realtimePrice.change >= 0 ? 'up' : 'down'">
+                  </div>
+                  <div v-if="realtimePrice" class="cost-board__row cost-board__row--price">
+                    <span class="cost-board__current" :class="realtimePrice.change >= 0 ? 'up' : 'down'">
                       ¥{{ formatNumber(realtimePrice.price, 2) }}
                     </span>
-                    <span v-if="realtimePrice" class="cost-board__pct" :class="realtimePrice.change >= 0 ? 'up' : 'down'">
+                    <span class="cost-board__pct" :class="realtimePrice.change >= 0 ? 'up' : 'down'">
                       {{ realtimePrice.change >= 0 ? '+' : '' }}{{ realtimePrice.changePercent }}%
                     </span>
                   </div>
@@ -75,19 +78,19 @@
             <td class="p-1.5 text-sm font-medium">{{ totalSellCount }}股</td>
             <td class="p-1.5 text-sm font-medium">¥{{ formatNumber(totalSellAmount) }}</td>
             <td class="p-1.5 text-sm">¥{{ formatNumber(totalSellFee) }}</td>
-            <td class="p-1.5 text-sm font-medium" :class="profitColorClass(displayProfit)">
+            <td class="p-1.5 text-sm font-medium stock-profit-cell" :class="profitColorClass(displayProfit)">
               ¥{{ formatNumber(displayProfit) }} ({{ totalBuyAmount > 0 ? ((displayProfit / totalBuyAmount) * 100).toFixed(2) : '0.00' }}%)
             </td>
-            <td class="p-1.5 text-sm">{{ localStock.profitLossRatio != null ? localStock.profitLossRatio + '%' : '' }}</td>
-            <td class="p-1.5 text-sm">{{ ratioPrice != null ? formatNumber(ratioPrice, 3) : '' }}</td>
-            <td class="p-1.5 text-sm">{{ localStock.basePrice != null ? formatNumber(localStock.basePrice, 3) : '' }}</td>
-            <td class="p-1.5 text-sm">{{ localStock.priceChangePercent != null ? localStock.priceChangePercent + '%' : '' }}</td>
+            <td class="p-1.5 text-sm cursor-help" :title="ratioTooltip">{{ localStock.profitLossRatio != null ? localStock.profitLossRatio + '%' : '' }}</td>
+            <td class="p-1.5 text-sm cursor-help" :title="ratioPriceTooltip">{{ ratioPrice != null ? formatNumber(ratioPrice, 3) : '' }}</td>
+            <td class="p-1.5 text-sm cursor-help" :title="basePriceTooltip">{{ localStock.basePrice != null ? formatNumber(localStock.basePrice, 3) : '' }}</td>
+            <td class="p-1.5 text-sm cursor-help" :title="pricePctTooltip">{{ localStock.priceChangePercent != null ? localStock.priceChangePercent + '%' : '' }}</td>
             <td class="p-1.5 text-sm font-medium text-emerald-600" :title="decayCoeffTooltip">{{ decayCoefficient != null ? formatNumber(decayCoefficient, 2) : '' }}</td>
             <td class="p-1.5 text-center">
               <div class="flex justify-center gap-1">
-                <button @click="toggleTransactions" class="text-neutral hover:text-slate-600 transition-all" title="展开/收起交易"><component :is="expanded ? ChevronDown : ChevronRight" class="w-4 h-4" /></button>
-                <button @click="$emit('buy', stock.id)" class="text-neutral hover:text-primary transition-all" title="重新买入"><PlusCircle class="w-4 h-4" /></button>
-                <button @click="$emit('delete', stock.id)" class="text-neutral hover:text-loss transition-all" title="删除"><Trash2 class="w-4 h-4" /></button>
+                <button @click="toggleTransactions" class="text-neutral hover:text-slate-600 transition-all" title="展开/收起交易"><component :is="expanded ? ChevronDown : ChevronRight" class="w-3.5 h-3.5" /></button>
+                <button @click="$emit('buy', stock.id)" class="text-neutral hover:text-primary transition-all" title="重新买入"><PlusCircle class="w-3.5 h-3.5" /></button>
+                <button @click="$emit('delete', stock.id)" class="text-neutral hover:text-loss transition-all" title="删除"><Trash2 class="w-3.5 h-3.5" /></button>
               </div>
             </td>
           </tr>
@@ -101,7 +104,7 @@
             <input type="text" v-model="localStock.code" @blur="updateStockField('code')" class="w-full border border-slate-200 rounded px-1.5 py-0.5 text-xs focus:input-focus" />
           </td>
           <td class="p-1.5">
-            <input type="date" v-model="localStock.buyDate" @change="updateStockField('buyDate')" class="w-full border border-slate-200 rounded px-0.5 py-0.5 text-xs focus:input-focus" />
+            <input type="date" v-model="localStock.buyDate" @change="updateStockField('buyDate')" class="stock-date-input w-full border border-slate-200 rounded px-0.5 py-0.5 text-xs focus:input-focus" />
           </td>
           <td class="p-1.5 text-sm font-medium whitespace-nowrap">{{ holdingDays }}天</td>
           <td class="p-1.5 text-sm">{{ localStock.buyRecords && localStock.buyRecords.length > 0 ? formatNumber(localStock.buyRecords[0].buyPrice, 3) : '-' }}</td>
@@ -110,10 +113,12 @@
               <div class="cost-board" :class="floatingProfit >= 0 ? 'is-profit' : 'is-loss'">
                 <div class="cost-board__row">
                   <span class="cost-board__cost">{{ formatNumber(calcRes.avgCost, 3) }}</span>
-                  <span v-if="realtimePrice" class="cost-board__current" :class="realtimePrice.change >= 0 ? 'up' : 'down'">
+                </div>
+                <div v-if="realtimePrice" class="cost-board__row cost-board__row--price">
+                  <span class="cost-board__current" :class="realtimePrice.change >= 0 ? 'up' : 'down'">
                     ¥{{ formatNumber(realtimePrice.price, 2) }}
                   </span>
-                  <span v-if="realtimePrice" class="cost-board__pct" :class="realtimePrice.change >= 0 ? 'up' : 'down'">
+                  <span class="cost-board__pct" :class="realtimePrice.change >= 0 ? 'up' : 'down'">
                     {{ realtimePrice.change >= 0 ? '+' : '' }}{{ realtimePrice.changePercent }}%
                   </span>
                 </div>
@@ -154,23 +159,23 @@
           <td class="p-1.5 text-sm">
             <span :title="`卖出佣金¥${formatNumber(calcRes.sellCommission)} 过户费¥${formatNumber(calcRes.transferFee)} 印花税¥${formatNumber(calcRes.stampTax)}`" class="cursor-help border-b border-dashed border-neutral/30 hover:border-neutral">¥{{ formatNumber(calcRes.nextTotalFee) }}</span>
           </td>
-          <td class="p-1.5 text-sm font-medium" :class="profitColorClass(displayProfit)">
+          <td class="p-1.5 text-sm font-medium stock-profit-cell" :class="profitColorClass(displayProfit)">
             ¥{{ formatNumber(displayProfit) }} ({{ totalBuyAmount > 0 ? ((displayProfit / totalBuyAmount) * 100).toFixed(2) : '0.00' }}%)
           </td>
           <td class="p-1.5">
-            <input type="number" step="0.01" v-model.number="localStock.profitLossRatio" @blur="updateStockField('profitLossRatio')" class="w-full border border-slate-200 rounded px-1.5 py-0.5 text-xs focus:input-focus" placeholder="%" />
+            <input type="number" step="0.01" v-model.number="localStock.profitLossRatio" @blur="updateStockField('profitLossRatio')" :title="ratioTooltip" class="w-full border border-slate-200 rounded px-1.5 py-0.5 text-xs focus:input-focus" placeholder="%" />
           </td>
-          <td class="p-1.5">
+          <td class="p-1.5 cursor-help" :title="ratioPriceTooltip">
             <div class="flex gap-1 items-center">
               <input type="number" step="0.001" :value="ratioPrice != null ? ratioPrice.toFixed(3) : ''" @change="applyRatioPrice" class="w-full border border-slate-200 rounded px-1.5 py-0.5 text-xs focus:input-focus" placeholder="市价" />
               <button @click="applyRatioPrice" class="text-neutral hover:text-primary transition-all whitespace-nowrap text-xs" title="写入目标卖出价"><ArrowRight class="w-3 h-3" /></button>
             </div>
           </td>
           <td class="p-1.5">
-            <input type="number" step="0.001" v-model.number="localStock.basePrice" @blur="updateStockField('basePrice')" class="w-full border border-slate-200 rounded px-1.5 py-0.5 text-xs focus:input-focus" placeholder="基准价" />
+            <input type="number" step="0.001" v-model.number="localStock.basePrice" @blur="updateStockField('basePrice')" :title="basePriceTooltip" class="w-full border border-slate-200 rounded px-1.5 py-0.5 text-xs focus:input-focus" placeholder="基准价" />
           </td>
           <td class="p-1.5">
-            <input type="number" step="0.01" v-model.number="localStock.priceChangePercent" @blur="updateStockField('priceChangePercent')" class="w-full border border-slate-200 rounded px-1.5 py-0.5 text-xs focus:input-focus" placeholder="%" />
+            <input type="number" step="0.01" v-model.number="localStock.priceChangePercent" @blur="updateStockField('priceChangePercent')" :title="pricePctTooltip" class="w-full border border-slate-200 rounded px-1.5 py-0.5 text-xs focus:input-focus" placeholder="%" />
           </td>
           <td class="p-1.5">
             <div v-if="!editingFormula"
@@ -193,11 +198,11 @@
           </td>
           <td class="p-1.5 text-center">
             <div class="flex justify-center gap-1">
-              <button @click="toggleTransactions" class="text-neutral hover:text-slate-600 transition-all" title="展开/收起交易"><component :is="expanded ? ChevronDown : ChevronRight" class="w-4 h-4" /></button>
-              <button @click="$emit('buy', stock.id)" class="text-neutral hover:text-primary transition-all" title="加仓"><PlusCircle class="w-4 h-4" /></button>
-              <button @click="$emit('sell', stock.id)" class="text-neutral hover:text-primary transition-all" title="记录卖出"><BookOpen class="w-4 h-4" /></button>
-              <button @click="$emit('clear', stock.id, stock.sellPrice, calcRes.tradeCount, calcRes.avgCost)" class="text-neutral hover:text-primary transition-all" title="清仓"><LogOut class="w-4 h-4" /></button>
-              <button @click="$emit('delete', stock.id)" class="text-neutral hover:text-loss transition-all" title="删除"><Trash2 class="w-4 h-4" /></button>
+              <button @click="toggleTransactions" class="text-neutral hover:text-slate-600 transition-all" title="展开/收起交易"><component :is="expanded ? ChevronDown : ChevronRight" class="w-3.5 h-3.5" /></button>
+              <button @click="$emit('buy', stock.id)" class="text-neutral hover:text-primary transition-all" title="加仓"><PlusCircle class="w-3.5 h-3.5" /></button>
+              <button @click="$emit('sell', stock.id)" class="text-neutral hover:text-primary transition-all" title="记录卖出"><BookOpen class="w-3.5 h-3.5" /></button>
+              <button @click="$emit('clear', stock.id, stock.sellPrice, calcRes.tradeCount, calcRes.avgCost)" class="text-neutral hover:text-primary transition-all" title="清仓"><LogOut class="w-3.5 h-3.5" /></button>
+              <button @click="$emit('delete', stock.id)" class="text-neutral hover:text-loss transition-all" title="删除"><Trash2 class="w-3.5 h-3.5" /></button>
             </div>
           </td>
         </tr>
@@ -262,8 +267,7 @@
                             </template>
                             <template v-else>
                               <option value="">清仓</option>
-                              <option value="止盈">止盈</option>
-                              <option value="止损">止损</option>
+                              <option value="卖出">卖出</option>
                               <option value="正T卖出">正T卖出</option>
                               <option value="反T">反T</option>
                             </template>
@@ -343,8 +347,7 @@
                                       </template>
                                       <template v-else>
                                         <option value="">清仓</option>
-                                        <option value="止盈">止盈</option>
-                                        <option value="止损">止损</option>
+                                        <option value="卖出">卖出</option>
                                         <option value="正T卖出">正T卖出</option>
                                         <option value="反T">反T</option>
                                       </template>
@@ -476,14 +479,19 @@
           </td>
         </tr>
       </tbody>
-    </table>
+      </table>
+    </div>
+    <!-- 滚动提示：左右渐变阴影，表示还有更多内容 -->
+    <div class="stock-card-scroll-hint is-left" :class="{ 'is-hidden': !showLeftHint }" aria-hidden="true"></div>
+    <div class="stock-card-scroll-hint is-right" :class="{ 'is-hidden': !showRightHint }" aria-hidden="true"></div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { ChevronRight, ChevronDown, PlusCircle, BookOpen, LogOut, Trash2, ArrowRight, History, Target, Zap } from 'lucide-vue-next'
 import { calcStock, calcRatioPrice } from '../utils/calculator'
+import { buyFeeParts, sellFeeParts } from '../utils/feeConfig'
 import { fmtNum, calculateHoldingDays, calculateHoldingDaysByRange } from '../utils/formatter'
 
 const props = defineProps({
@@ -502,6 +510,42 @@ const rebuySharesInput = ref(null)
 const activeInput = ref(null)
 const editingFormula = ref(false)
 const formulaInput = ref(null)
+
+// 横向滚动提示
+const scrollContainer = ref(null)
+const showLeftHint = ref(false)
+const showRightHint = ref(true)
+
+function updateScrollHints() {
+  const el = scrollContainer.value
+  if (!el) return
+  const { scrollLeft, scrollWidth, clientWidth } = el
+  showLeftHint.value = scrollLeft > 4
+  showRightHint.value = scrollLeft + clientWidth < scrollWidth - 4
+}
+
+function onScrollHandler() {
+  updateScrollHints()
+}
+
+onMounted(() => {
+  nextTick(() => {
+    updateScrollHints()
+  })
+  const el = scrollContainer.value
+  if (el) {
+    el.addEventListener('scroll', onScrollHandler, { passive: true })
+    window.addEventListener('resize', updateScrollHints)
+  }
+})
+
+onBeforeUnmount(() => {
+  const el = scrollContainer.value
+  if (el) {
+    el.removeEventListener('scroll', onScrollHandler)
+    window.removeEventListener('resize', updateScrollHints)
+  }
+})
 
 watch(() => props.stock, (newStock) => {
   activeInput.value = null
@@ -534,9 +578,7 @@ watch(() => localStock.value.targetProfit, (newVal) => {
   for (let i = 0; i < 50; i++) {
     const mid = (lo + hi) / 2
     const sellTotal = mid * tc
-    const commission = Math.max(sellTotal * 0.00023, 5)
-    const stampTax = sellTotal * 0.001
-    const transferFee = sellTotal * 0.00001
+    const { commission, stampTax, transferFee } = sellFeeParts(sellTotal)
     const profit = sellTotal - avgCost * tc - commission - stampTax - transferFee
     if (profit > newVal) hi = mid
     else lo = mid
@@ -588,6 +630,70 @@ const decayCoeffTooltip = computed(() => {
   if (r <= 0 || r >= 100) return `占比 ${r}% 无效，应在 0–100 之间`
   const denom = 1 - r / 100
   return `占比 ${r}% → 系数 = 1 ÷ (1 − ${r}%) = 1 ÷ ${denom.toFixed(4)} ≈ ${(1 / denom).toFixed(2)}`
+})
+
+// ---- 盈亏比 / 对应市价 / 基准价 / 涨幅% 的悬停说明 ----
+const hasNum = v => v !== '' && v != null && !isNaN(Number(v))
+
+const ratioTooltip = computed(() => {
+  const cost = Number(calcRes.value.avgCost) || 0
+  const raw = localStock.value.profitLossRatio
+  const lines = [
+    '盈亏比（%）—— 按「持仓成本」定目标价',
+    '对应市价 = 持仓成本 × (1 + 盈亏比 ÷ 100)',
+  ]
+  lines.push(hasNum(raw) && cost > 0
+    ? `当前：${cost.toFixed(3)} × (1 + ${Number(raw)} ÷ 100) = ${(cost * (1 + Number(raw) / 100)).toFixed(3)}`
+    : '例：持仓成本 20.718，填 5 → 对应市价 21.753')
+  lines.push('注意：只比价格、不含手续费，实际净收益率会低一点')
+  lines.push('用法：填好盈亏比 → 点「对应市价」右边的「→」写入目标卖出价')
+  return lines.join('\n')
+})
+
+const ratioPriceTooltip = computed(() => {
+  const cost = Number(calcRes.value.avgCost) || 0
+  const base = Number(localStock.value.basePrice) || 0
+  const rRaw = localStock.value.profitLossRatio
+  const pRaw = localStock.value.priceChangePercent
+  const lines = [
+    '对应市价 —— 换算出来的目标价（只读展示）',
+    '优先用「基准价 + 涨幅%」：基准价 × (1 + 涨幅% ÷ 100)',
+    '没填这两个时，才用「盈亏比」：持仓成本 × (1 + 盈亏比 ÷ 100)',
+  ]
+  if (base > 0 && hasNum(pRaw)) {
+    lines.push(`当前走基准价：${base.toFixed(3)} × (1 + ${Number(pRaw)} ÷ 100) = ${(base * (1 + Number(pRaw) / 100)).toFixed(3)}`)
+  } else if (hasNum(rRaw) && cost > 0) {
+    lines.push(`当前走盈亏比：${cost.toFixed(3)} × (1 + ${Number(rRaw)} ÷ 100) = ${(cost * (1 + Number(rRaw) / 100)).toFixed(3)}`)
+  }
+  lines.push('可手动改数字，点右边「→」才写入目标卖出价')
+  return lines.join('\n')
+})
+
+const basePriceTooltip = computed(() => {
+  const base = Number(localStock.value.basePrice) || 0
+  const lines = [
+    '基准价 —— 你设的参考锚点价',
+    '可填成本价、上一轮卖出价、前收盘价等',
+    '它本身不算出任何价格，只给「涨幅%」当分母',
+    '不填基准价，涨幅% 就没有意义',
+  ]
+  if (base > 0) lines.push(`当前基准价：${base.toFixed(3)}`)
+  return lines.join('\n')
+})
+
+const pricePctTooltip = computed(() => {
+  const base = Number(localStock.value.basePrice) || 0
+  const pRaw = localStock.value.priceChangePercent
+  const lines = [
+    '涨幅%（%）—— 相对「基准价」的涨跌幅，双向联动',
+    '改涨幅% → 目标卖出价 = 基准价 × (1 + 涨幅% ÷ 100)，自动写入，不用点按钮',
+    '改目标卖出价 → 涨幅% = (目标卖出价 ÷ 基准价 − 1) × 100',
+  ]
+  if (base > 0 && hasNum(pRaw)) {
+    lines.push(`当前：${base.toFixed(3)} × (1 + ${Number(pRaw)} ÷ 100) = ${(base * (1 + Number(pRaw) / 100)).toFixed(3)}`)
+  }
+  lines.push('需要先填「基准价」才有意义')
+  return lines.join('\n')
 })
 
 // 浮动盈亏：基于现价与持仓成本的差额 × 剩余股数
@@ -722,12 +828,17 @@ const transactionGroups = computed(() => {
   }))
 
   const mixedItems = [...sortedGroups, ...sortedUngrouped].sort((a, b) => {
-    const ca = a.firstCreatedAt || a.createdAt || 0
-    const cb = b.firstCreatedAt || b.createdAt || 0
-    if (ca && cb && ca !== cb) return ca - cb
+    // 优先按业务日期（买入/卖出日期）排序，保证录入靠早日期也能自动归位
     const dateA = a.firstDate || a.date || ''
     const dateB = b.firstDate || b.date || ''
-    return dateA.localeCompare(dateB)
+    if (dateA && dateB) {
+      const cmp = dateA.localeCompare(dateB)
+      if (cmp !== 0) return cmp
+    }
+    // 日期缺失或相同时，退回按录入时间排序
+    const ca = a.firstCreatedAt || a.createdAt || 0
+    const cb = b.firstCreatedAt || b.createdAt || 0
+    return ca - cb
   })
 
   // 按时间顺序处理每个项目
@@ -752,10 +863,11 @@ const transactionGroups = computed(() => {
         const isLastSell = isCleared && lastSellRecord && t.id === lastSellRecord.id
         if (isLastSell) {
           typeLabel = '<span class="px-1 py-px bg-purple-100 text-purple-700 rounded text-sm font-medium">清仓</span>'
-        } else if (t.tType === '止盈') {
-          typeLabel = '<span class="px-1 py-px bg-emerald-100 text-emerald-700 rounded text-sm font-medium">止盈</span>'
-        } else if (t.tType === '止损') {
-          typeLabel = '<span class="px-1 py-px bg-red-100 text-red-700 rounded text-sm font-medium">止损</span>'
+        } else if (t.tType === '卖出') {
+          typeLabel = '<span class="px-1 py-px bg-emerald-100 text-emerald-700 rounded text-sm font-medium">卖出</span>'
+        } else if (t.tType === '止盈' || t.tType === '止损') {
+          // 历史数据兼容：止盈/止损 统一展示为 卖出
+          typeLabel = '<span class="px-1 py-px bg-emerald-100 text-emerald-700 rounded text-sm font-medium">卖出</span>'
         } else {
           typeLabel = '<span class="px-1 py-px bg-red-100 text-red-700 rounded text-sm font-medium">卖</span>'
         }
@@ -846,9 +958,7 @@ const transactionGroups = computed(() => {
           for (let i = 0; i < 50; i++) {
             const mid = (lo + hi) / 2
             const amt = mid * firstTx.buyCount
-            const comm = Math.max(amt * 0.00023, 5)
-            const stamp = amt * 0.001
-            const tf = amt * 0.00001
+            const { commission: comm, stampTax: stamp, transferFee: tf } = sellFeeParts(amt)
             if (amt - comm - stamp - tf > buyCost) hi = mid
             else lo = mid
           }
@@ -861,8 +971,7 @@ const transactionGroups = computed(() => {
           for (let i = 0; i < 50; i++) {
             const mid = (lo + hi) / 2
             const amt = mid * firstTx.sellCount
-            const comm = Math.max(amt * 0.00023, 5)
-            const tf = amt * 0.00001
+            const { commission: comm, transferFee: tf } = buyFeeParts(amt)
             if (amt + comm + tf > sellNet) hi = mid
             else lo = mid
           }
@@ -1070,7 +1179,7 @@ const rebuyRecommendation = computed(() => {
   const realizedPnl = Number(currentCycleProfit) || 0
   const buyFeeAt = price => {
     const gross = price * shares
-    return Math.max(gross * 0.00023, 5) + gross * 0.00001
+    return buyFeeParts(gross).total
   }
 
   // First fold the completed trade P/L into the cleared-position reference cost.
@@ -1114,9 +1223,7 @@ function previewProfit(groupItem) {
     // 正T：已有买入，预览卖出利润
     const buyCost = firstTx.buyPrice * firstTx.buyCount + (firstTx.commission || 0) + (firstTx.transferFee || 0)
     const sellAmt = price * firstTx.buyCount
-    const comm = Math.max(sellAmt * 0.00023, 5)
-    const stamp = sellAmt * 0.001
-    const tf = sellAmt * 0.00001
+    const { commission: comm, stampTax: stamp, transferFee: tf } = sellFeeParts(sellAmt)
     return sellAmt - comm - stamp - tf - buyCost
   } else {
     // 反T：已有卖出，预览买入承接利润
@@ -1124,8 +1231,7 @@ function previewProfit(groupItem) {
     const sellFees = (firstTx.sellCommission || 0) + (firstTx.sellTransferFee || 0) + (firstTx.stampTax || 0)
     const sellNet = sellAmt - sellFees
     const buyAmt = price * firstTx.sellCount
-    const comm = Math.max(buyAmt * 0.00023, 5)
-    const tf = buyAmt * 0.00001
+    const { commission: comm, transferFee: tf } = buyFeeParts(buyAmt)
     return sellNet - buyAmt - comm - tf
   }
 }
@@ -1221,7 +1327,7 @@ function txSelectClass(tx) {
     return 'bg-blue-100 text-blue-700 font-medium'
   }
   // sell
-  if (tx.tType === '止盈') return 'bg-emerald-100 text-emerald-700 font-medium'
+  if (tx.tType === '卖出' || tx.tType === '止盈' || tx.tType === '止损') return 'bg-emerald-100 text-emerald-700 font-medium'
   if (tx.tType === '正T卖出' || tx.tType === '反T') return 'bg-amber-100 text-amber-700 font-medium'
   return 'bg-red-100 text-red-700 font-medium'
 }

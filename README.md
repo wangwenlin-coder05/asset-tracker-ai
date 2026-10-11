@@ -105,7 +105,7 @@ git clone https://github.com/wangwenlin-coder05/asset-tracker-ai.git
 npm install
 cp .env.example .env   # 配置数据库等
 npm start
-cd frontend && npm install && npm run dev   # 默认 http://localhost:5173
+cd frontend && npm install && npm run dev   # 默认 http://localhost:5273
 
 # —— 量化服务（Python）——
 cd quant

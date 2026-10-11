@@ -1,16 +1,48 @@
 <template>
-  <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" :class="{ 'hidden': !visible }">
-    <div class="bg-white rounded-xl p-6 w-[420px] card-shadow dialog-enter">
+  <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" :class="{ 'hidden': !visible }" @keydown="handleShortcut">
+    <div class="bg-white rounded-xl p-6 w-[760px] h-[720px] max-w-[95vw] max-h-[90vh] flex flex-col card-shadow dialog-enter" role="dialog" aria-modal="true" aria-label="新增买入">
       <div class="flex justify-between items-center mb-4">
         <h3 class="text-lg font-bold text-slate-800 flex items-center gap-2">
           <PlusCircle class="w-5 h-5 text-primary" />
           新增买入
         </h3>
-        <button @click="$emit('close')" class="text-neutral hover:text-slate-800">
+        <button @click="$emit('close')" :disabled="batchSubmitting" class="text-neutral hover:text-slate-800 disabled:opacity-40">
           <X class="w-5 h-5" />
         </button>
       </div>
-      <div class="space-y-3">
+      <div class="flex gap-2 mb-4 rounded-lg bg-slate-100 p-1">
+        <button v-for="mode in [{ value: false, label: '单只买入' }, { value: true, label: '批量买入' }]" :key="String(mode.value)" :disabled="batchSubmitting" @click="batchMode = mode.value" class="flex-1 rounded-md py-2 text-sm font-medium transition-colors" :class="batchMode === mode.value ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500'">{{ mode.label }}</button>
+      </div>
+      <p class="mb-3 text-xs text-slate-400">Ctrl / ⌘ + Enter 提交 · Esc 关闭 · Alt + 1 / 2 切换模式<span v-if="batchMode"> · Alt + N 新增一行</span></p>
+      <div v-if="batchMode" class="buy-form-scroll space-y-3 flex-1 min-h-0 overflow-y-auto pr-1">
+        <div class="rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-xs leading-5 text-emerald-800">一次录入多只股票的买入记录；已有持仓自动追加补仓，不会重复新建标的。支持每行不同日期、价格和股数。</div>
+        <textarea v-model="pasteText" :disabled="batchSubmitting" placeholder="粘贴股票代码和名称，每行一只，例如：002438 江苏神通" class="w-full h-20 rounded-lg border border-slate-200 px-3 py-2 text-xs"></textarea>
+        <div class="flex items-center justify-between gap-2">
+          <button @click="importBatchStocks" :disabled="batchSubmitting || !parsedPastedStocks.length" class="rounded-lg border border-emerald-200 px-3 py-1.5 text-xs text-emerald-700 disabled:opacity-40">导入识别结果（{{ parsedPastedStocks.length }}）</button>
+          <button @click="addBatchRow" :disabled="batchSubmitting" class="rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-600 disabled:opacity-40">＋ 添加一行</button>
+        </div>
+        <div v-for="(row, index) in batchRows" :key="row.key" class="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+          <div class="flex items-center justify-between text-xs text-slate-500"><span>买入 {{ index + 1 }}</span><button @click="batchRows.splice(index, 1)" :disabled="batchSubmitting || batchRows.length === 1" class="text-rose-500 disabled:opacity-40">移除</button></div>
+          <div class="grid grid-cols-2 sm:grid-cols-5 gap-2">
+            <label class="text-xs text-slate-500">代码<input v-model="row.code" @change="resolveBatchName(row)" :disabled="batchSubmitting" placeholder="6 位代码" class="mt-1 w-full rounded border border-slate-200 px-2 py-2 text-slate-800" /></label>
+            <label class="text-xs text-slate-500">名称<input v-model="row.name" :disabled="batchSubmitting" placeholder="股票名称" class="mt-1 w-full rounded border border-slate-200 px-2 py-2 text-slate-800" /></label>
+            <label class="text-xs text-slate-500">买入日期<input v-model="row.buyDate" :disabled="batchSubmitting" type="date" class="mt-1 w-full rounded border border-slate-200 px-2 py-2 text-slate-800" /></label>
+            <label class="text-xs text-slate-500">买入价<input v-model.number="row.buyPrice" :disabled="batchSubmitting" type="number" min="0.001" step="0.001" placeholder="元" class="mt-1 w-full rounded border border-slate-200 px-2 py-2 text-slate-800" /></label>
+            <label class="text-xs text-slate-500">股数<input v-model.number="row.buyCount" :disabled="batchSubmitting" type="number" min="1" step="1" class="mt-1 w-full rounded border border-slate-200 px-2 py-2 text-slate-800" /></label>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 text-xs">
+            <span class="text-slate-400">日期</span>
+            <button v-for="offset in [0, -1, -2]" :key="offset" @click="setBatchDate(row, offset)" :disabled="batchSubmitting" class="rounded border border-slate-200 px-2 py-1 text-slate-500 hover:border-emerald-300 disabled:opacity-40">{{ offset === 0 ? '今天' : offset === -1 ? '昨天' : '前天' }}</button>
+            <span class="ml-2 text-slate-400">股数</span>
+            <button v-for="count in [100, 200, 300, 400]" :key="count" @click="row.buyCount = count" :disabled="batchSubmitting" class="rounded border px-2 py-1 disabled:opacity-40" :class="row.buyCount === count ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-slate-200 text-slate-500 hover:border-emerald-300'">{{ count }}</button>
+          </div>
+          <p class="text-xs text-slate-500">成交额 ¥{{ formatNumber((row.buyPrice || 0) * (row.buyCount || 0)) }} · 手续费 ¥{{ formatNumber(calcBuyFee(row.buyPrice, row.buyCount).total) }}</p>
+        </div>
+        <div class="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">共 {{ batchRows.length }} 笔 · 总支出（含费用）¥{{ formatNumber(batchTotal) }}</div>
+        <p v-if="batchMessage" role="status" class="text-xs leading-5 text-amber-700">{{ batchMessage }}</p>
+        <button @click="submitBatch" :disabled="batchSubmitting || !batchRows.length" class="w-full rounded-lg bg-emerald-600 py-2.5 font-medium text-white hover:bg-emerald-700 disabled:opacity-50">{{ batchSubmitting ? '提交中…' : '确认批量买入' }}</button>
+      </div>
+      <div v-else class="buy-form-scroll space-y-3 flex-1 min-h-0 overflow-y-auto pr-1">
         <!-- 快速粘贴提取 -->
         <div>
           <label class="block text-sm font-medium text-neutral mb-1">快速粘贴（自动提取代码/名称）</label>
@@ -94,7 +126,7 @@
                 class="flex-1 min-w-0 border border-slate-200 rounded px-2 py-2 text-sm focus:input-focus"
               />
               <button
-                v-for="n in [100, 200, 400]"
+                v-for="n in [100, 200, 300, 400]"
                 :key="n"
                 @click="form.buyCount = n"
                 :class="[
@@ -122,7 +154,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { PlusCircle, X } from 'lucide-vue-next'
 import { calcBuyFee } from '../../utils/calculator'
 import { fmtNum } from '../../utils/formatter'
@@ -131,11 +163,94 @@ import { wechatApi } from '../../utils/api'
 
 const emit = defineEmits(['close', 'confirm'])
 
-const { stocks } = useStock()
+const props = defineProps({
+  prefill: { type: Object, default: () => ({}) }
+})
+
+const { stocks, addStock, addBuyRecord, refreshStock } = useStock()
 
 const visible = ref(true)
 
 const pasteText = ref('')
+const batchMode = ref(false)
+const batchSubmitting = ref(false)
+const batchMessage = ref('')
+let batchRowKey = 0
+function createBatchRow(stock = {}) {
+  const now = new Date()
+  const buyDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  return { key: ++batchRowKey, code: stock.code || '', name: stock.name || '', buyDate, buyPrice: null, buyCount: 100 }
+}
+const batchRows = ref([createBatchRow(), createBatchRow()])
+const batchTotal = computed(() => batchRows.value.reduce((sum, row) => sum + (row.buyPrice || 0) * (row.buyCount || 0) + calcBuyFee(row.buyPrice, row.buyCount).total, 0))
+
+function addBatchRow() {
+  batchRows.value.push(createBatchRow())
+}
+
+function setBatchDate(row, offset) {
+  const date = new Date()
+  date.setDate(date.getDate() + offset)
+  row.buyDate = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+async function resolveBatchName(row) {
+  const code = row.code.trim()
+  const known = allKnownStocks.value.find(stock => stock.code === code)
+  if (known) { row.name = known.name; return }
+  if (!/^\d{6}$/.test(code)) return
+  try {
+    const response = await fetch(`/api/stock/name/${code}`)
+    const data = await response.json()
+    if (row.code.trim() === code && !batchSubmitting.value && data.name) row.name = data.name
+  } catch (_) {}
+}
+
+function importBatchStocks() {
+  const imported = parsedPastedStocks.value.filter(stock => stock.code && !batchRows.value.some(row => row.code === stock.code))
+  batchRows.value = batchRows.value.filter(row => row.code || row.name || row.buyPrice)
+  for (const stock of imported) {
+    const row = createBatchRow(stock)
+    batchRows.value.push(row)
+    if (!row.name) resolveBatchName(row)
+  }
+  if (!batchRows.value.length) addBatchRow()
+  pasteText.value = ''
+}
+
+async function submitBatch() {
+  if (batchSubmitting.value) return
+  for (const [index, row] of batchRows.value.entries()) {
+    if (!/^\d{6}$/.test(row.code.trim()) || !row.name.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(row.buyDate)
+      || !Number.isFinite(row.buyPrice) || row.buyPrice <= 0 || !Number.isInteger(row.buyCount) || row.buyCount <= 0) {
+      batchMessage.value = `第 ${index + 1} 行请填写有效的代码、名称、日期、正数价格和整数股数。`
+      return
+    }
+  }
+  batchSubmitting.value = true
+  batchMessage.value = ''
+  const rows = [...batchRows.value]
+  let completed = 0
+  try {
+    for (const row of rows) {
+      batchMessage.value = `正在录入 ${completed + 1}/${rows.length}：${row.name}`
+      const code = row.code.trim()
+      const existing = stocks.value.find(stock => stock.code === code && !stock.isCleared)
+      const stock = row.stockId ? stocks.value.find(stock => stock.id === row.stockId) : existing || await addStock({ name: row.name.trim(), code, buyDate: row.buyDate, buyPrice: row.buyPrice, cost: row.buyPrice, count: row.buyCount })
+      row.stockId = stock.id
+      const buyFee = calcBuyFee(row.buyPrice, row.buyCount)
+      await addBuyRecord(stock.id, { buyDate: row.buyDate, buyPrice: row.buyPrice, buyCount: row.buyCount, commission: buyFee.commission, transferFee: buyFee.transferFee, tType: existing ? '补仓' : '' })
+      batchRows.value = batchRows.value.filter(pending => pending.key !== row.key)
+      completed++
+      await refreshStock(stock.id)
+    }
+    emit('confirm', { batchCompleted: true })
+  } catch (error) {
+    batchMessage.value = `已成功 ${completed} 笔，其余保留，可检查后重试。${error.message || '录入失败'}`
+  } finally {
+    batchSubmitting.value = false
+  }
+}
 
 // 微信推票列表里的股票（去重后的 code→name 映射）
 const wechatTrackingStocks = ref([])
@@ -168,7 +283,38 @@ const allKnownStocks = computed(() => {
   return merged
 })
 watch(visible, v => { if (v) loadWechatTracking() })
-onMounted(() => loadWechatTracking())
+onMounted(async () => {
+  loadWechatTracking()
+  await nextTick()
+  document.querySelector('[aria-label="新增买入"] textarea')?.focus()
+})
+onBeforeUnmount(() => {
+  clearTimeout(_nameQueryTimer.t)
+  clearTimeout(_codeQueryTimer.t)
+})
+
+function handleShortcut(event) {
+  if (event.isComposing || event.repeat) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    if (!batchSubmitting.value) emit('close')
+    return
+  }
+  if (batchSubmitting.value) return
+  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+    event.preventDefault()
+    event.stopPropagation()
+    if (batchMode.value) submitBatch()
+    else handleConfirm()
+  } else if (event.altKey && ['1', '2'].includes(event.key)) {
+    event.preventDefault()
+    batchMode.value = event.key === '2'
+  } else if (event.altKey && event.key.toLowerCase() === 'n' && batchMode.value) {
+    event.preventDefault()
+    addBatchRow()
+  }
+}
 
 // 解析粘贴的股票文本，格式与 WechatStockBoard 一致
 // 支持格式: 002438 江苏神通：核电 + 半导体 / 002674 兴业科技 机器人 600666 奥瑞德 算力 / 002428（纯代码）/ #AI智能体（智度股份）：NFTG概念
@@ -276,8 +422,8 @@ async function applyParsedStock(stock) {
 }
 
 const form = reactive({
-  name: '',
-  code: '',
+  name: props.prefill?.name || '',
+  code: props.prefill?.code || '',
   buyDate: new Date().toISOString().split('T')[0],
   buyPrice: null,
   buyCount: 100
@@ -365,3 +511,13 @@ async function handleConfirm() {
   })
 }
 </script>
+
+<style scoped>
+.buy-form-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.buy-form-scroll::-webkit-scrollbar {
+  display: none;
+}
+</style>

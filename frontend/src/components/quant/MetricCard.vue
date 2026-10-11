@@ -1,7 +1,11 @@
 <template>
   <div class="px-2 py-1.5 rounded-xl border flex flex-col justify-center"
-    :class="positive ? 'bg-profit/5 border-emerald-100' : warn ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-100'">
-    <span class="text-[10px] text-slate-400">{{ label }}</span>
+    :class="positive ? 'bg-profit/5 border-emerald-100' : warn ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-100'"
+    :title="hint || undefined">
+    <span class="text-[10px] text-slate-400 flex items-center gap-1">
+      {{ label }}
+      <HelpCircle v-if="hint" class="w-3 h-3 text-slate-300 flex-shrink-0" />
+    </span>
     <span class="text-lg font-bold leading-tight" :class="value === null ? 'text-slate-300' : (warn ? 'text-red-500' : (positive ? 'text-emerald-600' : 'text-slate-700'))">
       <template v-if="value !== null && value !== undefined">
         {{ prefix }}{{ formatNumber(value) }}{{ suffix }}
@@ -12,7 +16,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { HelpCircle } from 'lucide-vue-next'
 
 const props = defineProps({
   label: String,
@@ -21,6 +25,7 @@ const props = defineProps({
   prefix: { type: String, default: '' },
   positive: { type: Boolean, default: false },
   warn: { type: Boolean, default: false },
+  hint: { type: String, default: '' },
 })
 
 function formatNumber(v) {

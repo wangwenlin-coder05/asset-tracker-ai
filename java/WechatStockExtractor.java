@@ -25,6 +25,109 @@ public final class WechatStockExtractor {
     private static final Pattern SENDER_TIME_PATTERN = Pattern.compile("^(.{1,40}?)\\s+(?:上午|下午)?\\s*\\d{1,2}:\\d{2}$");
     private static final Pattern SENDER_INLINE_PATTERN = Pattern.compile("^([^【】\\[\\]：:]{1,30})[:：]\\s*(.+)$");
 
+    // === A股股票代码有效性验证 ===
+    // 编码规律：
+    //   600/601/603/605 沪主板(10%) | 68x 科创板(20%) | 900 沪B股
+    //   000/001/002 深主板(10%)   | 30x 创业板(20%)
+    //   8xx/92x 北交所(30%)
+    //   11/12 开头：可转债
+    //   7开头：新股申购代码（需排除）
+    //   5/15/16 开头：基金/REITs（需排除）
+    //
+    // strict 模式说明：
+    //   strict=false (默认) — 宽泛匹配：普通股 + 可转债 + B股 + 北交所
+    //   strict=true        — 严格匹配：只算A股普通股，排除可转债/B股/基金/申购代码
+    private static boolean isValidStockCode(String code) {
+        return isValidStockCode(code, false);
+    }
+
+    private static boolean isValidStockCode(String code, boolean strict) {
+        if (code == null || code.length() != 6) return false;
+        // 必须全是数字
+        for (int i = 0; i < code.length(); i++) {
+            if (!Character.isDigit(code.charAt(i))) return false;
+        }
+        String prefix1 = code.substring(0, 1);
+        String prefix2 = code.substring(0, 2);
+        String prefix3 = code.substring(0, 3);
+
+        // 先排除新股申购代码（7开头）
+        if (isSubscriptionCode(code)) return false;
+
+        // 排除基金代码（5/15/16开头等）
+        if (prefix1.equals("5")) return false;
+        if (prefix2.equals("15") || prefix2.equals("16")) return false;
+
+        // 沪市主板
+        if (prefix3.equals("600") || prefix3.equals("601") || prefix3.equals("603") || prefix3.equals("605")) return true;
+        // 科创板
+        if (prefix2.equals("68")) return true;
+
+        // 深市主板/原中小板
+        if (prefix3.equals("000") || prefix3.equals("001") || prefix3.equals("002")) return true;
+        // 创业板
+        if (prefix2.equals("30")) return true;
+
+        // 北交所（8开头、92开头）
+        if (prefix2.equals("92") || prefix1.equals("8")) return true;
+
+        // 沪B股 — 严格模式排除
+        if (prefix3.equals("900")) return !strict;
+
+        // 可转债 — 严格模式排除
+        if (prefix2.equals("11") || prefix2.equals("12")) return !strict;
+
+        return false;
+    }
+
+    // 判断是否为新股申购代码（7开头）
+    private static boolean isSubscriptionCode(String code) {
+        if (code == null || code.length() != 6) return false;
+        for (int i = 0; i < code.length(); i++) {
+            if (!Character.isDigit(code.charAt(i))) return false;
+        }
+        // 所有7开头都视为申购/配号类代码
+        return code.charAt(0) == '7';
+    }
+
+    // 从文本中提取所有符合A股编码规律的6位股票代码
+    private static java.util.List<String> extractValidStockCodes(String text) {
+        return extractValidStockCodes(text, false);
+    }
+
+    private static java.util.List<String> extractValidStockCodes(String text, boolean strict) {
+        java.util.List<String> codes = new java.util.ArrayList<>();
+        if (text == null || text.isEmpty()) return codes;
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?<!\\d)(\\d{6})(?!\\d)").matcher(text);
+        while (m.find()) {
+            String code = m.group(1);
+            if (isValidStockCode(code, strict) && !codes.contains(code)) {
+                codes.add(code);
+            }
+        }
+        return codes;
+    }
+
+    // 根据股票代码判断所属板块
+    private static String getStockBoard(String code) {
+        if (code == null || code.length() != 6) return "其他";
+        String prefix1 = code.substring(0, 1);
+        String prefix2 = code.substring(0, 2);
+        String prefix3 = code.substring(0, 3);
+
+        if (prefix3.equals("600") || prefix3.equals("601") || prefix3.equals("603") || prefix3.equals("605")) return "沪主板";
+        if (prefix2.equals("68")) return "科创板";
+        if (prefix3.equals("900")) return "沪B股";
+        if (prefix3.equals("000") || prefix3.equals("001") || prefix3.equals("002")) return "深主板";
+        if (prefix2.equals("30")) return "创业板";
+        if (prefix2.equals("92") || prefix1.equals("8")) return "北交所";
+        if (prefix2.equals("11")) return "沪转债";
+        if (prefix2.equals("12")) return "深转债";
+        if (isSubscriptionCode(code)) return "申购代码";
+        if (prefix1.equals("5") || prefix2.equals("15") || prefix2.equals("16")) return "基金";
+        return "其他";
+    }
+
     // Non-stock name blacklist - these should NOT be treated as stock names
     private static final String[] NON_STOCK_NAMES = {
         "风险提示", "风险提示：", "风险提示:",
@@ -159,7 +262,7 @@ public final class WechatStockExtractor {
             while (stockMatcher.find()) {
                 String name = stockMatcher.group(1).replaceAll("\\s+", "").replaceAll("^[⭕🔥\\[\\]红包]+", "");
                 String code = stockMatcher.group(2);
-                if (!name.isEmpty() && !isNonStockName(name)) {
+                if (!name.isEmpty() && !isNonStockName(name) && isValidStockCode(code)) {
                     int existingIndex = findStock(stocks, code);
                     if (existingIndex < 0) {
                         String logic = extractLogic(line, code);
@@ -178,7 +281,7 @@ public final class WechatStockExtractor {
             while (bracketMatcher.find()) {
                 String name = bracketMatcher.group(1).replaceAll("\\s+", "").replaceAll("^[⭕🔥\\[\\]红包]+", "");
                 String code = bracketMatcher.group(2);
-                if (!name.isEmpty() && !isNonStockName(name)) {
+                if (!name.isEmpty() && !isNonStockName(name) && isValidStockCode(code)) {
                     int existingIndex = findStock(stocks, code);
                     if (existingIndex < 0) {
                         String logic = extractLogic(line, code);
@@ -200,8 +303,9 @@ public final class WechatStockExtractor {
                 String code = bareMatcher.group(2);
                 int codeStart = bareMatcher.start(2);
                 
-                // Skip if name is in blacklist or code is part of a longer number
-                if (!name.isEmpty() && !isNonStockName(name) && !codeIsPartOfLongerNumber(line, codeStart, code)) {
+                // Skip if name is in blacklist or code is part of a longer number or not a valid A-share code
+                if (!name.isEmpty() && !isNonStockName(name) && !codeIsPartOfLongerNumber(line, codeStart, code)
+                        && isValidStockCode(code)) {
                     int existingIndex = findStock(stocks, code);
                     if (existingIndex < 0) {
                         String logic = extractLogic(line, code);
@@ -264,18 +368,18 @@ public final class WechatStockExtractor {
             int year = cn.group(1) == null ? now.getYear() : Integer.parseInt(cn.group(1));
             int month = Integer.parseInt(cn.group(2));
             int day = Integer.parseInt(cn.group(3));
-            String candidate = safeDate(year, month, day);
-            if (candidate != null && !isDateTooOld(LocalDate.of(year, month, day), now, 14)) {
-                return candidate;
+            LocalDate parsed = parseDate(year, month, day);
+            if (parsed != null && !isDateTooOld(parsed, now, 14)) {
+                return parsed.toString();
             }
         }
         Matcher dot = DATE_DOT_PATTERN.matcher(head);
         if (dot.find()) {
             int month = Integer.parseInt(dot.group(1));
             int day = Integer.parseInt(dot.group(2));
-            String candidate = safeDate(now.getYear(), month, day);
-            if (candidate != null && !isDateTooOld(LocalDate.of(now.getYear(), month, day), now, 14)) {
-                return candidate;
+            LocalDate parsed = parseDate(now.getYear(), month, day);
+            if (parsed != null && !isDateTooOld(parsed, now, 14)) {
+                return parsed.toString();
             }
         }
         return "";
@@ -285,11 +389,11 @@ public final class WechatStockExtractor {
         return Math.abs(java.time.temporal.ChronoUnit.DAYS.between(candidate, now)) > maxDays;
     }
 
-    private static String safeDate(int year, int month, int day) {
+    private static LocalDate parseDate(int year, int month, int day) {
         try {
-            return LocalDate.of(year, month, day).toString();
+            return LocalDate.of(year, month, day);
         } catch (Exception ignored) {
-            return "";
+            return null;
         }
     }
 

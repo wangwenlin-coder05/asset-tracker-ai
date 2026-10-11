@@ -1,5 +1,7 @@
 <template>
   <div class="px-5 mt-6">
+    <TCalcPanel />
+
     <div class="bg-white rounded-xl p-4 card-shadow">
       <div class="flex items-center justify-between mb-3">
         <h3 class="text-sm font-bold text-slate-700 flex items-center gap-2">
@@ -91,6 +93,7 @@
 import { computed, markRaw, onMounted, reactive, ref } from 'vue'
 import { Plus, Pencil, Trash2, TriangleAlert, ExternalLink, Wrench, Globe, Phone, Smartphone, CreditCard, ShoppingBag, Wallet, Calculator, BookOpen, Settings, Zap, Star, Link, ChevronRight } from 'lucide-vue-next'
 import NewToolDialog from './dialogs/NewToolDialog.vue'
+import TCalcPanel from './TCalcPanel.vue'
 import { useTool } from '../composables/useTool'
 
 const { tools, categories, loading, loadTools, loadCategories, addTool, updateTool, deleteTool, reorderTools } = useTool()

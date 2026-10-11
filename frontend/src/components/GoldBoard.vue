@@ -1,9 +1,5 @@
 <template>
-  <div class="gold-board-shell" :style="focusStyle" @pointermove="updateGoldFocus" @pointerleave="resetGoldFocus">
-    <div class="gold-tech-grid" aria-hidden="true"></div>
-    <div class="gold-particles" aria-hidden="true"><span v-for="particle in 40" :key="particle" :style="particleStyle(particle)"></span></div>
-    <div class="gold-cursor-field" aria-hidden="true"></div>
-    <div class="gold-circuit-layer" aria-hidden="true"><span v-for="line in 8" :key="line" :style="circuitStyle(line)"></span></div>
+  <div class="gold-board-shell">
     <GoldPreviewPanel
       v-if="showPreviewPanel"
       :gold-items="goldItems"
@@ -96,7 +92,6 @@ const showNewGoldDialog = ref(false)
 const showBuyDialog = ref(false)
 const showSellDialog = ref(false)
 const currentGoldId = ref(null)
-const focusStyle = ref({ '--focus-x': '50vw', '--focus-y': '42vh', '--focus-alpha': 0 })
 
 const currentGold = computed(() => getGold(currentGoldId.value))
 
@@ -150,35 +145,6 @@ async function handleAddSellRecord(data) {
   } catch (error) {
     const message = error?.response?.data?.error || error?.message || '\u4fdd\u5b58\u5356\u51fa\u8bb0\u5f55\u5931\u8d25'
     alert(message)
-  }
-}
-
-function updateGoldFocus(event) {
-  focusStyle.value = { '--focus-x': event.clientX + 'px', '--focus-y': event.clientY + 'px', '--focus-alpha': 1 }
-}
-
-function resetGoldFocus() {
-  focusStyle.value = { ...focusStyle.value, '--focus-alpha': 0 }
-}
-
-function circuitStyle(index) {
-  return {
-    '--circuit-y': (8 + ((index * 13) % 82)) + '%',
-    '--circuit-width': (18 + (index % 4) * 9) + '%',
-    '--circuit-delay': (-((index * 1.3) % 8)) + 's',
-    '--circuit-duration': (5 + (index % 5) * 1.4) + 's'
-  }
-}
-
-function particleStyle(index) {
-  const hue = index % 5 === 0 ? 195 : index % 7 === 0 ? 30 : 42
-  return {
-    '--x': `${(index * 17 + index % 7 * 11) % 100}%`,
-    '--delay': `${-((index * 1.3) % 18)}s`,
-    '--duration': `${8 + (index % 9) * 1.8}s`,
-    '--size': `${1 + (index % 4) * 0.8}px`,
-    '--drift': `${(index % 3 === 0 ? '' : '-')}${4 + (index % 7) * 2}px`,
-    '--hue': hue
   }
 }
 

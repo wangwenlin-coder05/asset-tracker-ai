@@ -15,11 +15,7 @@
         <div>
           <label class="block text-sm font-medium text-slate-700 mb-1">买入日期</label>
           <div class="flex gap-2 items-center">
-            <input
-              type="date"
-              v-model="form.buyDate"
-              class="flex-1 border border-slate-200 rounded px-3 py-2 text-sm text-slate-800 focus:input-focus"
-            />
+            <DatePicker v-model="form.buyDate" class="flex-1" />
             <button type="button" @click="setDate(1)" class="px-2.5 py-2 text-xs rounded border" :class="isDateActive(1) ? 'border-amber-400 bg-amber-50 text-amber-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'">昨天</button>
             <button type="button" @click="setDate(2)" class="px-2.5 py-2 text-xs rounded border" :class="isDateActive(2) ? 'border-amber-400 bg-amber-50 text-amber-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'">前天</button>
           </div>
@@ -64,7 +60,7 @@
           <p class="gold-fee-hint text-xs text-slate-400 mt-1">{{ feeHint }}</p>
         </div>
         <div class="bg-amber-50 p-3 rounded-lg text-xs text-slate-700">
-          <div class="mb-1">买入价 (元/克): ¥{{ formatNumber(form.buyPrice) }}</div>
+          <div class="mb-1">买入价 (元/克): ¥{{ formatNumber(effectiveBuyPrice) }}</div>
           <div class="mb-1">买入金额: ¥{{ formatNumber(buyAmount.value) }}</div>
           <div class="font-medium text-slate-800">合计(含手续费): ¥{{ formatNumber(totalAmount.value) }}</div>
         </div>
@@ -87,6 +83,7 @@ import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { PlusCircle, X } from 'lucide-vue-next'
 import { fmtNum } from '../../utils/formatter'
 import { calcGold } from '../../utils/calculator'
+import DatePicker from './DatePicker.vue'
 
 const props = defineProps({
   goldId: { type: String, required: true },
@@ -105,24 +102,36 @@ const form = reactive({
   fee: 0
 })
 
+// 金额模式下独立保存用户输入的总额，避免克数/单价变化时实时重算覆盖用户输入
+const amountInput = ref(0)
+
 const inputValue = computed({
   get() {
     if (inputMode.value === 'price') {
       return form.buyPrice
     }
-    return (form.buyPrice || 0) * (form.buyCount || 0)
+    return amountInput.value
   },
   set(val) {
     if (inputMode.value === 'price') {
       form.buyPrice = val || 0
     } else {
-      const count = form.buyCount || 1
-      form.buyPrice = (val || 0) / count
+      amountInput.value = val || 0
     }
   }
 })
 
+// 当前生效的单价：金额模式下按 总额/克数 反推
+const effectiveBuyPrice = computed(() => {
+  if (inputMode.value === 'amount') {
+    const count = form.buyCount || 0
+    return count > 0 ? (amountInput.value || 0) / count : 0
+  }
+  return form.buyPrice || 0
+})
+
 const buyAmount = computed(() => {
+  if (inputMode.value === 'amount') return amountInput.value || 0
   return (form.buyPrice || 0) * (form.buyCount || 0)
 })
 
@@ -133,7 +142,7 @@ const previewAvg = computed(() => {
   const goldInfo = calcGold(props.goldItem)
   const currentGrams = goldInfo.totalGrams || 0
   const currentTotal = goldInfo.totalAmount || 0
-  const buyPrice = form.buyPrice || 0
+  const buyPrice = effectiveBuyPrice.value
   const buyCount = form.buyCount || 0
   const buyFee = form.fee || 0
   if (buyPrice <= 0 || buyCount <= 0) return null
@@ -194,13 +203,14 @@ onMounted(() => {
 })
 
 async function handleConfirm() {
-  if (!form.buyPrice || !form.buyCount) {
+  const buyPrice = effectiveBuyPrice.value
+  if (!buyPrice || !form.buyCount) {
     alert('请填写完整信息')
     return
   }
   emit('confirm', {
     buyDate: form.buyDate,
-    buyPrice: form.buyPrice,
+    buyPrice,
     buyCount: form.buyCount,
     commission: form.fee
   })

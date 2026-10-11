@@ -89,9 +89,26 @@ const MARKETING_KEYWORDS = [
   '风险提示', '不构成', '投资建议',
 ];
 
-function categorizeMessage(text, stocksJson) {
+// 记忆命中查找：传入可选的记忆记录（单条或数组，即已查到的 extract_learn 记录），
+// 若原文包含某条 source_text 则返回该条。未命中返回 null。用于"记忆式学习"中用户纠正结果的强覆盖。
+function findMemoryHit(text, memory) {
+  if (!text || typeof text !== 'string' || !memory) return null;
+  const list = Array.isArray(memory) ? memory : [memory];
+  for (const rec of list) {
+    if (!rec || !rec.source_text) continue;
+    if (String(text).includes(String(rec.source_text))) return rec;
+  }
+  return null;
+}
+
+function categorizeMessage(text, stocksJson, memory = null) {
   try {
     if (!text || typeof text !== 'string' || !text.trim()) return 'market_news';
+    // 记忆命中优先：用户纠正过该原文片段 → 直接采用纠正后的分类，不再走规则误判
+    const memHit = findMemoryHit(text, memory);
+    if (memHit && memHit.correct_label && ['marketing', 'stock_pick', 'market_news'].includes(memHit.correct_label)) {
+      return memHit.correct_label;
+    }
     const cleanText = text.replace(/\s+/g, '');
 
     // === 优先级：股票检测 > 营销检测 > 行情检测 ===
@@ -608,25 +625,38 @@ function ensureJavaCompiled() {
   }
   return tools;
 }
-function extractWechatStocks(rawText, senderHint = '') {
-  if (!javaAvailable()) return extractWithJavascript(rawText, senderHint);
-  try {
-    const tools = ensureJavaCompiled();
-    const senderArg = Buffer.from(String(senderHint || ''), 'utf8').toString('base64');
-    const executed = spawnSync(tools.java, ['-cp', javaBuildDir, 'WechatStockExtractor', senderArg], {
-      input: String(rawText || ''),
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 10000,
-      maxBuffer: 5 * 1024 * 1024,
-    });
-    if (executed.error || executed.status !== 0) {
-      throw new Error((executed.stderr || executed.stdout || executed.error?.message || 'Java 执行失败').trim());
+function extractWechatStocks(rawText, senderHint = '', memory = null) {
+  let result;
+  if (!javaAvailable()) {
+    result = extractWithJavascript(rawText, senderHint);
+  } else {
+    try {
+      const tools = ensureJavaCompiled();
+      const senderArg = Buffer.from(String(senderHint || ''), 'utf8').toString('base64');
+      const executed = spawnSync(tools.java, ['-cp', javaBuildDir, 'WechatStockExtractor', senderArg], {
+        input: String(rawText || ''),
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 10000,
+        maxBuffer: 5 * 1024 * 1024,
+      });
+      if (executed.error || executed.status !== 0) {
+        throw new Error((executed.stderr || executed.stdout || executed.error?.message || 'Java 执行失败').trim());
+      }
+      result = { ...JSON.parse(executed.stdout), engine: 'java' };
+    } catch (error) {
+      result = { ...extractWithJavascript(rawText, senderHint), javaError: error.message };
     }
-    return { ...JSON.parse(executed.stdout), engine: 'java' };
-  } catch (error) {
-    return { ...extractWithJavascript(rawText, senderHint), javaError: error.message };
   }
+  // 记忆命中优先：用户纠正过该原文片段 → 用记忆覆盖规则提取的股票代码
+  const memHit = findMemoryHit(rawText, memory);
+  if (memHit && memHit.correct_code && /^\d{6}$/.test(String(memHit.correct_code).trim())) {
+    result = { ...result, stocks: [{ code: memHit.correct_code, name: '', logic: '' }] };
+  } else if (memHit && memHit.correct_label && memHit.correct_label !== 'stock_pick') {
+    // 纠正为非推票（且未提供纠正代码）→ 清空股票代码
+    result = { ...result, stocks: [] };
+  }
+  return result;
 }
 
 // 允许 server.js 注册带学习的分类器（未注册则退回本地简单分类）
@@ -1138,6 +1168,8 @@ module.exports = {
   updateWechatEventCategoryInMemory,
   setCategoryClassifierHook,
   setAutoFillLogicHook,
+  categorizeMessage,
+  findMemoryHit,
   EVENTS_LIMIT,
   monitorState,
 };

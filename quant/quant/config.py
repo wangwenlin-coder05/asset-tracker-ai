@@ -15,6 +15,13 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 # SQLite 行情存储
 DB_PATH = Path(os.environ.get("QUANT_DB_PATH", DATA_DIR / "market.db"))
 
+# 自定义策略（AI 生成）存放目录：每个策略一个 .py + 一个 .meta.json，历史版本在 versions/
+CUSTOM_STRATEGY_DIR = Path(
+    os.environ.get("QUANT_CUSTOM_STRATEGY_DIR", QUANT_DIR / "custom_strategies")
+)
+CUSTOM_STRATEGY_DIR.mkdir(parents=True, exist_ok=True)
+(CUSTOM_STRATEGY_DIR / "versions").mkdir(parents=True, exist_ok=True)
+
 # baostock 登录退避参数（指数退避重试）
 BAOSTOCK_RETRIES = 3
 BAOSTOCK_BACKOFF_BASE_S = 1.0
