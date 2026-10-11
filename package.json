@@ -1,6 +1,6 @@
 {
   "name": "stock-calculator-backend",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "股票止盈计算器后端服务",
   "main": "server.js",
   "scripts": {
