@@ -12,8 +12,8 @@
 <p align="center">
   <img alt="Vue" src="https://img.shields.io/badge/Vue-3-42b883?style=flat-square&logo=vuedotjs&logoColor=white">
   <img alt="Tailwind" src="https://img.shields.io/badge/Tailwind_CSS-3-06B6D4?style=flat-square&logo=tailwindcss&logoColor=white">
-  <img alt="Node" src="https://img.shields.io/badge/Node.js-20-339933?style=flat-square&logo=nodejs&logoColor=white">
-  <img alt="Express" src="https://img.shields.io/badge/Express-5-000000?style=flat-square&logo=express">
+  <img alt="Java" src="https://img.shields.io/badge/Java-17-ED8B00?style=flat-square&logo=openjdk&logoColor=white">
+  <img alt="Spring Boot" src="https://img.shields.io/badge/Spring_Boot-3.5-6DB33F?style=flat-square&logo=springboot&logoColor=white">
   <img alt="MySQL" src="https://img.shields.io/badge/MySQL-8-4479A1?style=flat-square&logo=mysql&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10-blue?style=flat-square&logo=python&logoColor=white">
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-0.1-009688?style=flat-square&logo=fastapi&logoColor=white">
@@ -39,7 +39,7 @@ flowchart TB
         Q["策略回测看板 / 批量回测"]
     end
 
-    subgraph Backend["⚙️ Node.js / Express"]
+    subgraph Backend["⚙️ Spring Boot 3 (Java 17)"]
         API["REST 代理"]
         WX["微信消息提取"]
         AI["AI 逻辑抽取"]
@@ -105,11 +105,15 @@ flowchart LR
 ```bash
 git clone https://github.com/wangwenlin-coder05/asset-tracker-ai.git
 
-# —— 主应用（Node + MySQL）——
-npm install
+# —— 主应用（Spring Boot 3 + MySQL）——
 cp .env.example .env   # 配置数据库等
-npm start
-cd frontend && npm install && npm run dev   # 默认 http://localhost:5273
+cd springboot
+mvn -DskipTests package
+java -jar target/stock-springboot-1.0.0.jar   # 后端 3300，并直接托管前端构建产物
+# 开发模式：前端另起 Vite（热更新）
+cd ../frontend && npm install && npm run dev   # 默认 http://localhost:5273
+
+# Windows 一键启动：双击「启动股票计算器.bat」（Spring jar + Vite，自动打开页面）
 
 # —— 量化服务（Python）——
 cd quant
@@ -119,7 +123,7 @@ pip install -r requirements.txt
 python -m uvicorn quant.api:app --host 127.0.0.1 --port 8000
 ```
 
-前端「策略回测」板块经 Node 代理 `/api/quant/*` → 8000 端口。详细用法见 [quant/README.md](quant/README.md)。
+前端「策略回测」板块经 Spring Boot 代理 `/api/quant/*` → 8000 端口。详细用法见 [quant/README.md](quant/README.md)。
 
 ---
 
@@ -127,8 +131,9 @@ python -m uvicorn quant.api:app --host 127.0.0.1 --port 8000
 
 ```
 asset-tracker-ai/
-├─ server.js               # Node 后端入口（Express + 代理）
-├─ wechat-extractor.js     # 微信消息提取 / 分类
+├─ springboot/             # Spring Boot 3 后端（Java 17 + Maven + MyBatis-Plus）
+│   └─ src/main/java/com/wangwenlin/stock/   # 鉴权/多租户/业务接口/量化代理
+├─ wechat-extractor.js     # 微信消息提取 / 分类（本地工具）
 ├─ wechat_monitor.py       # Python 微信监控服务
 ├─ frontend/               # Vue3 前端
 │   ├─ src/components/     # 行情/面板/画布/回测组件
@@ -137,6 +142,7 @@ asset-tracker-ai/
 │   ├─ quant/             # 引擎/策略/Agent/数据同步/API
 │   └─ tests/              # 引擎与 API 用例
 ├─ docs/                   # GitHub Pages 展示页
+├─ launcher.ps1            # 一键启动（Spring jar + Vite）
 └─ .env.example            # 环境变量示例
 ```
 
@@ -149,12 +155,12 @@ asset-tracker-ai/
 - 敏感配置（数据库、API 密钥）请放在 `.env` 中，**不要提交到仓库**。
 # Phase 1 多用户版本
 
-已增加注册/登录、分账户数据隔离与用户自带 AI Key。详细改造方案及迁移步骤见 `docs/phase1-saas.md`，逐接口清单见 `docs/phase1-api-inventory.md`。
+已实现注册/登录、分账户数据隔离与用户自带 AI Key，改造逻辑已随迁移并入 Spring Boot 后端。详细方案见 `docs/phase1-saas.md`，逐接口清单见 `docs/phase1-api-inventory.md`。
 
-本机已有数据需要先停旧服务，再运行 `npm run migrate:phase1 -- --apply`；此工作区已执行并备份。所有者登录信息保存在未跟踪的 `.launcher/phase1-credentials.json`。普通用户自行注册及填写官网 Token；平台不共享 `.env` 中的模型 Key。
+多租户由 Spring 侧统一处理：会话表 `user_sessions` 前后端共用，SQL 层自动注入 `user_id` 完成数据隔离。所有者登录信息保存在未跟踪的 `.launcher/phase1-credentials.json`。普通用户自行注册并填写自己的官网 Token；平台不共享 `.env` 中的模型 Key。
 
-运行 `npm run test:phase1`、`npm run test:phase1:integration` 验证隔离。微信/共享量化及任意 URL 抓取在 Phase 1 仅限本机所有者；公网发布还需完成后续部署和安全配置。
+微信/共享量化及任意 URL 抓取仅限本机所有者；公网发布还需完成后续部署与安全配置。
 
 侧栏底部「设置」中的「账号安全」支持修改邮箱账号、修改密码和退出登录；修改凭据需要当前密码，成功后保留数据并撤销旧会话。
 
-Vercel + Railway + TiDB 的执行说明见 `docs/deployment-plan-b.md`。`npm run import:cloud` 默认只读预检，明确确认后才加 `-- --apply`；取得真实后端域名后运行 `npm run configure:vercel -- https://真实后端域名` 生成同源代理配置。云库凭据和部署 Token 仅存于被忽略的 `.env.cloud.local`，不提交到仓库。
+云部署说明见 `docs/deployment-plan-b.md`（Vercel + Railway + TiDB，Node 版已归档）；云库凭据与部署 Token 仅存于被忽略的 `.env.cloud.local`，不提交到仓库。
