@@ -1,0 +1,48 @@
+server:
+  # Node 端退役后 Spring 直接接管 3300，前端入口保持不变（迁移期临时用 SERVER_PORT=8088 做双侧比对）
+  port: ${SERVER_PORT:3300}
+  forward-headers-strategy: native
+
+spring:
+  application:
+    name: stock-springboot
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:stock_calculator}?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true&tinyInt1isBit=false
+    username: ${DB_USER:root}
+    # 本地开发由 .env 注入，默认值留空避免把本机密码写进仓库
+    password: ${DB_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      pool-name: stock-springboot-pool
+  mvc:
+    throw-exception-if-no-handler-found: true
+  web:
+    resources:
+      add-mappings: false
+  servlet:
+    multipart:
+      # 上限取 Node 端最大的 multer 限制（board = 20MB），各业务在 service 内自行压回自己的上限
+      max-file-size: 20MB
+      max-request-size: 22MB
+
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml
+  type-aliases-package: com.wangwenlin.stock
+  configuration:
+    map-underscore-to-camel-case: true
+    call-setters-on-nulls: true
+    jdbc-type-for-null: NULL
+
+app:
+  # 与 Node 端 backend/auth.js 的 allowedOrigins() 保持一致，额外放行 8088 自身
+  allowed-origins: ${ALLOWED_ORIGINS:http://localhost:3300,http://127.0.0.1:3300,http://localhost:5173,http://127.0.0.1:5173,http://localhost:5273,http://127.0.0.1:5273,http://localhost:8088,http://127.0.0.1:8088}
+  cookie-secure: ${COOKIE_SECURE:false}
+  registration-open: ${REGISTRATION_OPEN:false}
+  enable-local-features: ${ENABLE_LOCAL_FEATURES:false}
+
+logging:
+  level:
+    root: info
+    com.wangwenlin.stock: info

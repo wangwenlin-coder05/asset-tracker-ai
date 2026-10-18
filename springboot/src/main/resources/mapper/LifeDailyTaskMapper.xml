@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.LifeDailyTaskMapper">
+
+  <!-- 对齐 listLifeTasks：date 为单日过滤，from / to 为区间过滤；三者互不覆盖，谁传用谁 -->
+  <select id="selectTasks" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_daily_tasks
+    <where>
+      <if test="date != null and date != ''">AND task_date = #{date}</if>
+      <if test="from != null and from != ''">AND task_date &gt;= #{from}</if>
+      <if test="to != null and to != ''">AND task_date &lt;= #{to}</if>
+    </where>
+    ORDER BY task_date ASC, sort_order ASC, created_at ASC
+  </select>
+
+  <select id="selectById" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_daily_tasks WHERE id = #{id} LIMIT 1
+  </select>
+
+  <insert id="insertTask">
+    INSERT INTO life_daily_tasks
+      (id, task_date, title, est_minutes, priority, status, pre_task, blocker, support, node_id, repeat_type, sort_order, created_at, updated_at)
+    VALUES
+      (#{id}, #{task_date}, #{title}, #{est_minutes}, #{priority}, #{status}, #{pre_task}, #{blocker}, #{support}, #{node_id}, #{repeat_type}, #{sort_order}, #{created_at}, #{updated_at})
+  </insert>
+
+  <delete id="deleteById">
+    DELETE FROM life_daily_tasks WHERE id = #{id}
+  </delete>
+
+  <update id="updateStatusByNodeId">
+    UPDATE life_daily_tasks SET status = #{status}, updated_at = #{updatedAt} WHERE node_id = #{nodeId}
+  </update>
+
+  <!-- 等价 server.js 9681：DELETE 前取 title -->
+  <select id="selectTitleById" resultType="java.util.LinkedHashMap">
+    SELECT title FROM life_daily_tasks WHERE id = #{id} LIMIT 1
+  </select>
+
+  <!-- 等价 server.js 9652：delay 顺延的候选集 -->
+  <select id="selectLaterTasks" resultType="java.util.LinkedHashMap">
+    SELECT id, task_date FROM life_daily_tasks WHERE task_date &gt;= #{base} AND id &lt;&gt; #{id}
+  </select>
+
+  <!-- 等价 server.js 9421 的 PUT 动态更新：SET 子句顺序与 JS 的 Object.keys 顺序一致 -->
+  <update id="updateTaskFields">
+    UPDATE life_daily_tasks
+    <set>
+      <if test="_parameter.containsKey('task_date')">task_date = #{task_date},</if>
+      <if test="_parameter.containsKey('title')">title = #{title},</if>
+      <if test="_parameter.containsKey('est_minutes')">est_minutes = #{est_minutes},</if>
+      <if test="_parameter.containsKey('priority')">priority = #{priority},</if>
+      <if test="_parameter.containsKey('pre_task')">pre_task = #{pre_task},</if>
+      <if test="_parameter.containsKey('blocker')">blocker = #{blocker},</if>
+      <if test="_parameter.containsKey('support')">support = #{support},</if>
+      <if test="_parameter.containsKey('node_id')">node_id = #{node_id},</if>
+      <if test="_parameter.containsKey('repeat_type')">repeat_type = #{repeat_type},</if>
+      <if test="_parameter.containsKey('sort_order')">sort_order = #{sort_order},</if>
+      updated_at = #{updated_at}
+    </set>
+    WHERE id = #{id}
+  </update>
+
+  <update id="updateTaskDate">
+    UPDATE life_daily_tasks SET task_date = #{taskDate}, updated_at = #{updatedAt} WHERE id = #{id}
+  </update>
+
+  <update id="updateStatusAndDate">
+    UPDATE life_daily_tasks SET status = #{status}, task_date = #{taskDate}, updated_at = #{updatedAt} WHERE id = #{id}
+  </update>
+
+  <update id="updateStatus">
+    UPDATE life_daily_tasks SET status = #{status}, updated_at = #{updatedAt} WHERE id = #{id}
+  </update>
+
+</mapper>

@@ -180,6 +180,26 @@ def _scan_hardcoded_numbers(ob_node: ast.FunctionDef) -> list[str]:
     return [f"逻辑里写死了数值 {nums}，建议改成可调参数（PARAMS）让用户自己调"]
 
 
+# 前视偏差高危写法（策略里引用"未来数据"的信号，会虚增回测收益）
+# 注意：on_bar 每次只拿到当前 bar + position（引擎刻意隐藏历史），
+# 所以能写出的"前视"只有这些明确危险的模式：
+_LOOKAHEAD_PATTERNS = [
+    ("bar.next", "引用 bar.next（引擎不提供，等于假设看见未来）"),
+    ("self._next", "self._next 缓存的'下一根'数据"),
+    ("bars[", "直接引用 bars 序列（引擎未暴露历史序列）"),
+]
+
+
+def _scan_lookahead(ob_node: ast.FunctionDef) -> list[str]:
+    """静态检查前视偏差高危写法，返回 warning 列表。"""
+    src = ast.unparse(ob_node)
+    out = []
+    for pat, msg in _LOOKAHEAD_PATTERNS:
+        if pat in src:
+            out.append(f"前视偏差风险：{msg}（{pat}）——该字段/用法在真实盘中不可得，会虚增收益")
+    return out
+
+
 def validate_code(code: str) -> dict:
     """静态校验策略代码。返回 {ok, errors, warnings, class_name, params}。"""
     empty = {"ok": False, "errors": [], "warnings": [], "class_name": None, "params": []}
@@ -204,6 +224,7 @@ def validate_code(code: str) -> dict:
         if not any(isinstance(n, ast.FunctionDef) and n.name == "reset" for n in cls_node.body):
             warnings.append("未实现 reset()：若策略有内部状态，跨回测可能残留（建议用 self._hist 之外的变量时补上）")
         warnings.extend(_scan_hardcoded_numbers(ob))
+        warnings.extend(_scan_lookahead(ob))
     return {
         "ok": not errors,
         "errors": errors,

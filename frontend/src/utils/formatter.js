@@ -1,3 +1,5 @@
+import { boardKindOf, BOARD_CN } from './stockBoard'
+
 export function fmtFee(val) {
   const n = parseFloat(val) || 0
   return Number.isInteger(n) ? n.toFixed(0) : n.toFixed(2)
@@ -171,66 +173,62 @@ export function extractValidStockCodes(text, strict = false) {
   return [...codes]
 }
 
-// 根据股票代码判断所属板块
+// 根据股票代码判断所属板块（判定规则统一收敛到 utils/stockBoard.js）
 export function getStockBoard(code) {
   if (!code) return 'unknown'
-  const c = String(code).trim()
-  const prefix3 = c.slice(0, 3)
-  const prefix2 = c.slice(0, 2)
-  const prefix1 = c.slice(0, 1)
-
-  if (['600', '601', '603', '605'].includes(prefix3)) return '沪主板'
-  if (prefix2 === '68') return '科创板'
-  if (prefix3 === '900') return '沪B股'
-  if (['000', '001', '002'].includes(prefix3)) return '深主板'
-  if (prefix2 === '30') return '创业板'
-  if (prefix2 === '92' || prefix1 === '8') return '北交所'
-  if (prefix2 === '11') return '沪转债'
-  if (prefix2 === '12') return '深转债'
-  if (isSubscriptionCode(c)) return '申购代码'
-  if (prefix1 === '5' || prefix2 === '15' || prefix2 === '16') return '基金'
-  return '其他'
+  return BOARD_CN[boardKindOf(code)] || '其他'
 }
 
 // 根据股票代码+名称判断涨跌幅限制
 // 注意：ST/*ST 股票涨跌幅为5%（科创板/创业板ST为20%不变），需要结合名称判断
 export function getPriceLimit(code, stockName = '') {
   if (!code) return 10
-  const c = String(code).trim()
-  const prefix3 = c.slice(0, 3)
-  const prefix2 = c.slice(0, 2)
-  const prefix1 = c.slice(0, 1)
-  const name = stockName || ''
-
   // 判断是否ST（名称前缀）
-  const isST = /^(ST|\*ST|SST|S\*ST)/.test(name)
+  const isST = /^(ST|\*ST|SST|S\*ST)/.test(stockName || '')
 
-  // 主板10%，ST后5%
-  if (['600', '601', '603', '605', '000', '001', '002'].includes(prefix3)) {
-    return isST ? 5 : 10
+  switch (boardKindOf(code)) {
+    // 主板10%，ST后5%
+    case 'shmain':
+    case 'szmain':
+      return isST ? 5 : 10
+    // 科创板/创业板20%，ST后仍为20%（注册制板块ST不改变涨跌幅）
+    case 'star':
+    case 'gem':
+      return 20
+    // 北交所30%
+    case 'bj':
+      return 30
+    // 可转债无涨跌幅限制（首日），日常20%
+    case 'cbSh':
+    case 'cbSz':
+      return 20
+    default:
+      return isST ? 5 : 10
   }
-  // 科创板/创业板20%，ST后仍为20%（注册制板块ST不改变涨跌幅）
-  if (prefix2 === '68' || prefix2 === '30') return 20
-  // 北交所30%
-  if (prefix2 === '92' || prefix1 === '8') return 30
-  // 可转债无涨跌幅限制（首日），日常20%
-  if (prefix2 === '11' || prefix2 === '12') return 20
-
-  return isST ? 5 : 10
 }
 
 // 判断股票类型：stock / bond / fund / subscription / bshare
 export function getStockType(code) {
   if (!code) return 'unknown'
-  const c = String(code).trim()
-  const prefix3 = c.slice(0, 3)
-  const prefix2 = c.slice(0, 2)
-  const prefix1 = c.slice(0, 1)
+  if (!/^\d{6}$/.test(String(code).trim())) return 'unknown'
 
-  if (isSubscriptionCode(c)) return 'subscription'
-  if (prefix1 === '5' || prefix2 === '15' || prefix2 === '16') return 'fund'
-  if (prefix2 === '11' || prefix2 === '12') return 'bond'
-  if (prefix3 === '900') return 'bshare'
-  if (isValidStockCode(c, true)) return 'stock'
-  return 'unknown'
+  switch (boardKindOf(code)) {
+    case 'subscription':
+      return 'subscription'
+    case 'fund':
+      return 'fund'
+    case 'cbSh':
+    case 'cbSz':
+      return 'bond'
+    case 'bshare':
+      return 'bshare'
+    case 'shmain':
+    case 'szmain':
+    case 'star':
+    case 'gem':
+    case 'bj':
+      return 'stock'
+    default:
+      return 'unknown'
+  }
 }

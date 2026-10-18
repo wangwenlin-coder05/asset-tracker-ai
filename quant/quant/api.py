@@ -56,6 +56,10 @@ class BacktestRequest(BaseModel):
     initial_cash: float = 100_000.0
     initial_shares: int | None = None   # 首次建仓股数（None=满仓）
     max_adds: int | None = None       # 最大加仓次数（None=用策略默认；0或负数表示不限）
+    slippage: float = 0.0            # 滑点比例（如 0.001 = 0.1%），默认 0 与旧行为一致
+    liquidity_slippage: bool = False # True 时按当日成交额分档滑点
+    risk_free_rate: float = 0.0      # 无风险年利率（夏普扣减用，默认 0 与旧口径一致）
+    execution_mode: str = "next_open"  # next_open（次日开盘，T+1）/ signal_close（信号根收盘价，模拟盘中）
     compare_benchmark: bool = False
     benchmark_code: str = "sh.000300"
 
@@ -78,6 +82,10 @@ class GridRequest(BaseModel):
     end: str | None = None
     initial_cash: float = 100_000.0
     best_key: str = "sharpe_ratio"
+    slippage: float = 0.0            # 滑点比例（如 0.001 = 0.1%）
+    execution_mode: str = "next_open"  # next_open / signal_close
+    train_end: str | None = None      # 训练/验证切分日期（给定则输出训练段指标）
+    survivorship: bool = False        # True 时把本地登记的退市股并入扫描池做对照
 
 
 @app.get("/api/ping")
@@ -194,7 +202,15 @@ def _backtest_impl(code: str, params: dict) -> dict:
 
 def _finish_backtest(strat, bars: list[Bar], req: BacktestRequest) -> dict:
     """跑引擎 + 出报告 + 可选基准（内置与自定义策略共用）。"""
-    config = EngineConfig(initial_cash=req.initial_cash, initial_shares=req.initial_shares, max_adds=req.max_adds)
+    config = EngineConfig(
+        initial_cash=req.initial_cash,
+        initial_shares=req.initial_shares,
+        max_adds=req.max_adds,
+        slippage=req.slippage,
+        liquidity_slippage=req.liquidity_slippage,
+        risk_free_rate=req.risk_free_rate,
+        execution_mode=req.execution_mode,
+    )
     engine = BacktestEngine(strat, config)
     try:
         result = engine.run(bars)
@@ -210,9 +226,17 @@ def _finish_backtest(strat, bars: list[Bar], req: BacktestRequest) -> dict:
     )
 
     if req.compare_benchmark:
-        report["benchmark"] = _run_benchmark(
-            req.benchmark_code, req.start, req.end, req.initial_cash, default_store
+        # 基准按「回测实际覆盖区间」取数，避免与用户填的起止日期错位导致超额收益失真
+        bm = _run_benchmark(
+            req.benchmark_code, bars[0].date, bars[-1].date,
+            req.initial_cash, default_store,
         )
+        report["benchmark"] = bm
+        if bm is None:
+            report["benchmark_note"] = (
+                f"基准 {req.benchmark_code} 本地无该区间行情，"
+                "请先在左侧同步沪深300指数（代码 sh.000300）后再对比。"
+            )
 
     return report
 
@@ -230,12 +254,128 @@ def run_grid_endpoint(req: GridRequest):
             start=req.start,
             end=req.end,
             initial_cash=req.initial_cash,
+            slippage=req.slippage,
+            execution_mode=req.execution_mode,
+            train_end=req.train_end,
+            survivorship=req.survivorship,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     out["best"] = best_row(out["rows"], key=req.best_key)
+    # 多目标帕累托前沿：夏普/收益/回撤不被其他组合全面支配的点
+    from .batch import pareto_frontier
+    out["pareto"] = pareto_frontier(out["rows"])
     return out
+
+
+# ========== 幸存者偏差对照组管理 ==========
+
+class WatchRequest(BaseModel):
+    code: str
+    name: str | None = None
+    delisted: bool = True
+    last_bar_date: str | None = None
+    note: str = ""
+
+
+@app.get("/api/survivorship/watch")
+def survivorship_watch_list():
+    """本地登记的退市/长停股（幸存者偏差对照组）。"""
+    return {"watch": default_store.list_survivorship_watch()}
+
+
+@app.post("/api/survivorship/watch")
+def survivorship_watch_add(req: WatchRequest):
+    default_store.upsert_survivorship_watch(
+        req.code, req.name, delisted=req.delisted,
+        last_bar_date=req.last_bar_date, note=req.note,
+    )
+    return {"ok": True, "code": req.code}
+
+
+@app.delete("/api/survivorship/watch/{code}")
+def survivorship_watch_remove(code: str):
+    if not default_store.drop_survivorship_watch(code):
+        raise HTTPException(404, "未登记该股票")
+    return {"ok": True}
+
+
+# ========== 回测报告导出（Excel / CSV） ==========
+
+import base64
+import csv as _csv
+import io
+
+
+@app.post("/api/backtest/export/{fmt}")
+def export_report(req: GridRequest, fmt: str = "csv"):
+    """把一次批量扫描导出成文件。
+
+    - csv：UTF-8 BOM 单个 CSV，Excel 直接可开
+    - xlsx：需服务端 openpyxl；缺库自动降级 csv
+    返回 {filename, mime, content_base64, rows, note?}，前端下载。
+    """
+    from .batch import run_grid
+
+    try:
+        out = run_grid(
+            codes=req.codes, strategy=req.strategy, param_ranges=req.params,
+            start=req.start, end=req.end, initial_cash=req.initial_cash,
+            slippage=req.slippage, execution_mode=req.execution_mode,
+            train_end=req.train_end, survivorship=req.survivorship,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    rows = out["rows"]
+    fields = ["code", "name", "survivor",
+              "total_return", "annualized_return", "max_drawdown",
+              "sharpe_ratio", "win_rate", "profit_loss_ratio", "trade_count",
+              "final_equity",
+              "train_total_return", "train_max_drawdown", "train_sharpe_ratio"]
+    fields = [f for f in fields
+              if f in ("code", "name") or any(f in r for r in rows)]
+    pct_cols = {"total_return", "annualized_return", "max_drawdown", "win_rate",
+                "train_total_return", "train_max_drawdown"}
+
+    def row_vals(r: dict) -> list:
+        return [None if r.get(f) is None
+                else (round(r[f] * 100, 4) if f in pct_cols else r[f])
+                for f in fields]
+
+    note = None
+    if fmt == "xlsx":
+        try:
+            from openpyxl import Workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "backtest"
+            ws.append(fields)
+            for r in rows:
+                ws.append(row_vals(r))
+            buf = io.BytesIO()
+            wb.save(buf)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            return {"filename": "backtest_grid.xlsx",
+                    "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "content_base64": b64, "rows": len(rows), "note": None}
+        except Exception:
+            note = "服务端未装 openpyxl，已降级为 CSV"
+            fmt = "csv"
+
+    # CSV 路径
+    text = io.StringIO()
+    w = _csv.DictWriter(text, fieldnames=fields, extrasaction="ignore")
+    w.writeheader()
+    for r in rows:
+        w.writerow({f: (None if r.get(f) is None
+                        else (round(r[f] * 100, 4) if f in pct_cols else r[f]))
+                    for f in fields})
+    # UTF-8 BOM：Excel 直接打开中文不乱码
+    b64 = base64.b64encode(("\ufeff" + text.getvalue()).encode("utf-8")).decode("ascii")
+    return {"filename": "backtest_grid.csv", "mime": "text/csv; charset=utf-8",
+            "content_base64": b64, "rows": len(rows), "note": note}
 
 
 def _run_benchmark(code: str, start, end, initial_cash, store):

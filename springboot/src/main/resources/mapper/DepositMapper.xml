@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.DepositMapper">
+
+  <select id="listItemsWithPlan" resultType="java.util.LinkedHashMap">
+    SELECT d.id, d.group_name, d.name, d.amount, d.rate, d.note, d.sort_order, d.created_at, d.icon,
+           d.bind_type, d.exclude_total, d.item_type, d.repayment_day, d.payment_account_id, d.repayment_mode,
+           p.id as plan_id, p.total_principal, p.total_interest, p.installments, p.monthly_day, p.start_date,
+           COALESCE((SELECT SUM(ib.total) FROM installment_bills ib WHERE ib.plan_id = p.id AND ib.status = 'pending'), 0) as installment_remaining
+    FROM deposit_items d
+    LEFT JOIN installment_plans p ON d.id = p.deposit_item_id
+    ORDER BY d.group_name, d.sort_order, d.created_at
+  </select>
+
+  <select id="findItem" resultType="java.util.Map">
+    SELECT id, amount FROM deposit_items WHERE id = #{id}
+  </select>
+
+  <select id="lockDebt" resultType="java.util.Map">
+    SELECT id, name, amount, payment_account_id, item_type FROM deposit_items WHERE id = #{id} FOR UPDATE
+  </select>
+
+  <select id="lockAccount" resultType="java.util.Map">
+    SELECT id, name, amount FROM deposit_items WHERE id = #{id} FOR UPDATE
+  </select>
+
+  <select id="lockAmount" resultType="java.util.Map">
+    SELECT amount FROM deposit_items WHERE id = #{id} FOR UPDATE
+  </select>
+
+  <select id="lockItemId" resultType="java.lang.String">
+    SELECT id FROM deposit_items WHERE id = #{id} FOR UPDATE
+  </select>
+
+  <insert id="insertItem">
+    INSERT INTO deposit_items
+      (id, group_name, name, amount, rate, note, sort_order, created_at, icon, bind_type, exclude_total, item_type, repayment_day, payment_account_id, repayment_mode)
+    VALUES
+      (#{id}, #{groupName}, #{name}, #{amount}, #{rate}, #{note}, #{sortOrder}, #{createdAt}, #{icon}, #{bindType}, #{excludeTotal}, #{itemType}, #{repaymentDay}, #{paymentAccountId}, #{repaymentMode})
+  </insert>
+
+  <!-- 字段顺序与 Node 端的 if 链一致；只更新请求里实际出现过的字段 -->
+  <update id="updateFields">
+    UPDATE deposit_items
+    <set>
+      <if test="_parameter.containsKey('groupName')">group_name = #{groupName},</if>
+      <if test="_parameter.containsKey('name')">name = #{name},</if>
+      <if test="_parameter.containsKey('amount')">amount = #{amount},</if>
+      <if test="_parameter.containsKey('rate')">rate = #{rate},</if>
+      <if test="_parameter.containsKey('note')">note = #{note},</if>
+      <if test="_parameter.containsKey('sortOrder')">sort_order = #{sortOrder},</if>
+      <if test="_parameter.containsKey('icon')">icon = #{icon},</if>
+      <if test="_parameter.containsKey('bindType')">bind_type = #{bindType},</if>
+      <if test="_parameter.containsKey('excludeTotal')">exclude_total = #{excludeTotal},</if>
+      <if test="_parameter.containsKey('itemType')">item_type = #{itemType},</if>
+      <if test="_parameter.containsKey('repaymentDay')">repayment_day = #{repaymentDay},</if>
+      <if test="_parameter.containsKey('paymentAccountId')">payment_account_id = #{paymentAccountId},</if>
+      <if test="_parameter.containsKey('repaymentMode')">repayment_mode = #{repaymentMode},</if>
+    </set>
+    WHERE id = #{id}
+  </update>
+
+  <update id="updateAmount">
+    UPDATE deposit_items SET amount = #{amount} WHERE id = #{id}
+  </update>
+
+  <update id="updateItemTypeAndAmount">
+    UPDATE deposit_items SET item_type = 'installment', amount = #{amount} WHERE id = #{id}
+  </update>
+
+  <update id="zeroAmount">
+    UPDATE deposit_items SET amount = 0 WHERE id = #{id}
+  </update>
+
+  <update id="moveItem">
+    UPDATE deposit_items SET group_name = #{groupName}, sort_order = #{sortOrder} WHERE id = #{id}
+  </update>
+
+  <delete id="deleteItem">
+    DELETE FROM deposit_items WHERE id = #{id}
+  </delete>
+
+  <!-- 显式列名 + CAST：mysql2 的 DECIMAL 以原始字符串返回，CAST 成 CHAR 复刻同一串（含两位小数） -->
+  <select id="listTransactions" resultType="java.util.Map">
+    SELECT id as id, deposit_item_id as deposit_item_id, wool_item_id as wool_item_id, type as type,
+           CAST(amount AS CHAR) as amount, CAST(balance_before AS CHAR) as balance_before,
+           CAST(balance_after AS CHAR) as balance_after, note as note, created_at as created_at,
+           user_id as user_id
+    FROM deposit_transactions WHERE deposit_item_id = #{depositItemId} ORDER BY created_at DESC
+  </select>
+
+  <insert id="insertTransaction">
+    INSERT INTO deposit_transactions
+      (id, deposit_item_id, type, amount, balance_before, balance_after, note, created_at)
+    VALUES
+      (#{id}, #{depositItemId}, #{type}, #{amount}, #{balanceBefore}, #{balanceAfter}, #{note}, #{createdAt})
+  </insert>
+
+  <select id="listAutoDebtItems" resultType="java.util.Map">
+    SELECT id, name, amount, payment_account_id FROM deposit_items
+    WHERE item_type = 'debt' AND repayment_mode = 'auto' AND repayment_day = #{repaymentDay}
+      AND payment_account_id IS NOT NULL AND payment_account_id != ''
+  </select>
+
+  <select id="findAutoRepayTransaction" resultType="java.lang.String">
+    SELECT id FROM deposit_transactions
+    WHERE deposit_item_id = #{depositItemId} AND note = '自动还款' AND created_at &gt; #{since}
+  </select>
+
+</mapper>

@@ -43,7 +43,7 @@
             >
               <div v-if="cluster.name" class="flex items-center justify-between mb-3">
                 <div class="flex items-center gap-2">
-                  <h4 class="font-bold text-slate-700">{{ cluster.name }}</h4>
+                  <h4 class="font-bold text-sl ate-700">{{ cluster.name }}</h4>
                   <span class="text-xs text-slate-400 font-medium">{{ formatNumber(clusterTotal(cluster.items)) }}</span>
                 </div>
               </div>
@@ -250,28 +250,37 @@ async function handleRepaySuccess() {
 async function handleDeleteDeposit(id) { if (confirm('\u786e\u5b9a\u5220\u9664\u8be5\u5b58\u6b3e\u9879\uff1f')) await deleteDeposit(id) }
 function resetDragPreview() { groupPreview.value = { name: null, position: 'before' }; itemPreview.value = { groupName: null, itemId: null, position: 'after' } }
 
-// 原生 HTML5 拖拽期间浏览器会吞掉滚轮事件，指针靠近视口上下边缘时自动滚动，保证能把分组拖进「不计入」栏
-const AUTO_SCROLL_EDGE = 130
+// 原生 HTML5 拖拽期间浏览器会吞掉滚轮事件，这里主动接管滚轮并手动滚动页面，
+// 指针靠近视口上下边缘时也会自动滚动，保证能把分组拖到页面上任意位置（含「不计入」栏）
+const AUTO_SCROLL_EDGE = 200
+const AUTO_SCROLL_STEP_MAX = 46
 let autoScrollTimer = null
 let dragPointerY = 0
 function onWindowDragOver(e) { dragPointerY = e.clientY }
+function onWindowWheelDuringDrag(e) {
+  // 拖动中浏览器不会滚动页面，手动滚动；preventDefault 避免与默认行为叠加
+  e.preventDefault()
+  if (e.deltaY) window.scrollBy(0, e.deltaY)
+}
 function startAutoScroll() {
   if (autoScrollTimer) return
   dragPointerY = 0
   window.addEventListener('dragover', onWindowDragOver, true)
+  window.addEventListener('wheel', onWindowWheelDuringDrag, { capture: true, passive: false })
   autoScrollTimer = setInterval(() => {
     if (!dragPointerY) return
     const vh = window.innerHeight
     if (dragPointerY < AUTO_SCROLL_EDGE) {
-      window.scrollBy(0, -Math.max(4, Math.round((AUTO_SCROLL_EDGE - dragPointerY) / 4)))
+      window.scrollBy(0, -Math.max(6, Math.min(AUTO_SCROLL_STEP_MAX, Math.round((AUTO_SCROLL_EDGE - dragPointerY) / 3))))
     } else if (dragPointerY > vh - AUTO_SCROLL_EDGE) {
-      window.scrollBy(0, Math.max(4, Math.round((dragPointerY - (vh - AUTO_SCROLL_EDGE)) / 4)))
+      window.scrollBy(0, Math.max(6, Math.min(AUTO_SCROLL_STEP_MAX, Math.round((dragPointerY - (vh - AUTO_SCROLL_EDGE)) / 3))))
     }
-  }, 24)
+  }, 16)
 }
 function stopAutoScroll() {
   if (autoScrollTimer) { clearInterval(autoScrollTimer); autoScrollTimer = null }
   window.removeEventListener('dragover', onWindowDragOver, true)
+  window.removeEventListener('wheel', onWindowWheelDuringDrag, true)
 }
 
 function onDragStart(event, item) { draggedItem.value = item; draggedGroup.value = null; resetDragPreview(); event.dataTransfer.effectAllowed = 'move'; startAutoScroll() }

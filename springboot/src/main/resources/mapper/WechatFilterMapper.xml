@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.WechatFilterMapper">
+
+    <!-- ==================== wechat_blacklist ==================== -->
+
+    <select id="listBlacklist" resultType="java.util.LinkedHashMap">
+        SELECT * FROM wechat_blacklist ORDER BY created_at DESC
+    </select>
+
+    <select id="findBlacklistByTypeValue" resultType="java.util.LinkedHashMap">
+        SELECT * FROM wechat_blacklist WHERE type = #{type} AND value = #{value}
+    </select>
+
+    <insert id="insertBlacklist" parameterType="java.util.Map">
+        INSERT INTO wechat_blacklist (id, type, value, note, enabled, created_at)
+        VALUES (#{id}, #{type}, #{value}, #{note}, 1, #{createdAt})
+        ON DUPLICATE KEY UPDATE note = VALUES(note), enabled = 1
+    </insert>
+
+    <delete id="deleteBlacklist">
+        DELETE FROM wechat_blacklist WHERE id = #{id}
+    </delete>
+
+    <update id="updateBlacklistNote">
+        UPDATE wechat_blacklist SET note = #{note} WHERE id = #{id}
+    </update>
+
+    <update id="updateBlacklistEnabled">
+        UPDATE wechat_blacklist SET enabled = #{enabled} WHERE id = #{id}
+    </update>
+
+    <select id="listSessionSkipRules" resultType="java.util.LinkedHashMap">
+        SELECT id, value, note, enabled FROM wechat_blacklist
+        WHERE type = 'session_keyword' AND enabled = 1
+    </select>
+
+    <!-- ==================== wechat_whitelist ==================== -->
+
+    <select id="listWhitelist" resultType="java.util.LinkedHashMap">
+        SELECT * FROM wechat_whitelist ORDER BY created_at DESC
+    </select>
+
+    <select id="findWhitelistByNickname" resultType="java.util.LinkedHashMap">
+        SELECT * FROM wechat_whitelist WHERE nickname = #{nickname}
+    </select>
+
+    <select id="listEnabledWhitelistNicknames" resultType="java.util.LinkedHashMap">
+        SELECT nickname FROM wechat_whitelist WHERE enabled = 1
+    </select>
+
+    <insert id="insertWhitelist" parameterType="java.util.Map">
+        INSERT INTO wechat_whitelist (id, nickname, note, enabled, created_at)
+        VALUES (#{id}, #{nickname}, #{note}, 1, #{createdAt})
+        ON DUPLICATE KEY UPDATE note = VALUES(note), enabled = 1
+    </insert>
+
+    <delete id="deleteWhitelist">
+        DELETE FROM wechat_whitelist WHERE id = #{id}
+    </delete>
+
+    <update id="updateWhitelistNote">
+        UPDATE wechat_whitelist SET note = #{note} WHERE id = #{id}
+    </update>
+
+    <update id="updateWhitelistEnabled">
+        UPDATE wechat_whitelist SET enabled = #{enabled} WHERE id = #{id}
+    </update>
+
+</mapper>

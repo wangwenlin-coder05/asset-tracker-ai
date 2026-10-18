@@ -1,0 +1,380 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.LifeAiMapper">
+
+    <!-- ================= life_plan_nodes ================= -->
+    <select id="selectIdTitleAll" resultType="java.util.LinkedHashMap">
+        SELECT id, title FROM life_plan_nodes
+    </select>
+
+    <select id="selectIdTitleAsc" resultType="java.util.LinkedHashMap">
+        SELECT id, title FROM life_plan_nodes ORDER BY created_at ASC
+    </select>
+
+    <select id="selectAiIdTitle" resultType="java.util.LinkedHashMap">
+        SELECT id, title FROM life_plan_nodes WHERE source = 'ai'
+    </select>
+
+    <select id="selectRecentBrief" resultType="java.util.LinkedHashMap">
+        SELECT id, kind, series, title FROM life_plan_nodes ORDER BY created_at DESC LIMIT #{limit}
+    </select>
+
+    <select id="selectFirstSelfIdTitle" resultType="java.util.LinkedHashMap">
+        SELECT id, title FROM life_plan_nodes WHERE kind = 'self' ORDER BY created_at ASC LIMIT 1
+    </select>
+
+    <select id="selectCleanupRows" resultType="java.util.LinkedHashMap">
+        SELECT id, title, status, source, kind FROM life_plan_nodes
+    </select>
+
+    <select id="selectNodeDetailById" resultType="java.util.LinkedHashMap">
+        SELECT id, detail FROM life_plan_nodes WHERE id = #{id} LIMIT 1
+    </select>
+
+    <select id="selectIdTitleDetailAll" resultType="java.util.LinkedHashMap">
+        SELECT id, title, detail FROM life_plan_nodes
+    </select>
+
+    <select id="selectSourceKindById" resultType="java.util.LinkedHashMap">
+        SELECT id, source, kind FROM life_plan_nodes WHERE id = #{id} LIMIT 1
+    </select>
+
+    <select id="selectIdById" resultType="java.util.LinkedHashMap">
+        SELECT id FROM life_plan_nodes WHERE id = #{id} LIMIT 1
+    </select>
+
+    <select id="selectNodeIdByTitleExact" resultType="java.util.LinkedHashMap">
+        SELECT id FROM life_plan_nodes WHERE title = #{title} LIMIT 1
+    </select>
+
+    <select id="selectNodeLegacyIntents" resultType="java.util.LinkedHashMap">
+        SELECT id, title, detail FROM life_plan_nodes
+        WHERE detail LIKE '%搜索关键词%' OR detail LIKE '%待检索%'
+    </select>
+
+    <select id="selectTaskLegacyIntents" resultType="java.util.LinkedHashMap">
+        SELECT id, title, support FROM life_daily_tasks
+        WHERE support LIKE '%搜索关键词%' OR support LIKE '%待检索%'
+    </select>
+
+    <select id="selectNodeStatusById" resultType="java.util.LinkedHashMap">
+        SELECT status FROM life_plan_nodes WHERE id = #{id} LIMIT 1
+    </select>
+
+    <insert id="insertNodeAi" parameterType="java.util.Map">
+        INSERT INTO life_plan_nodes (
+            id, parent_id, kind, domain, title, detail, risk, priority, series, status, horizon, start_date,
+            weight, time_group, step_no, content_type, content_body, progress_note, is_shared, source,
+            sort_order, created_at, updated_at
+        ) VALUES (
+            #{id}, #{parentId}, #{kind}, #{domain}, #{title}, #{detail}, #{risk}, #{priority}, #{series}, #{status}, #{horizon}, #{startDate},
+            #{weight}, #{timeGroup}, #{stepNo}, #{contentType}, #{contentBody}, #{progressNote}, #{isShared}, #{source},
+            #{sortOrder}, #{createdAt}, #{updatedAt}
+        )
+    </insert>
+
+    <insert id="insertNodeRegen" parameterType="java.util.Map">
+        INSERT INTO life_plan_nodes (
+            id, parent_id, kind, domain, title, detail, risk, priority, series, status, horizon, weight,
+            time_group, step_no, content_type, content_body, start_date, is_shared, source, sort_order,
+            created_at, updated_at
+        ) VALUES (
+            #{id}, #{parentId}, #{kind}, #{domain}, #{title}, #{detail}, #{risk}, #{priority}, #{series}, #{status}, #{horizon}, #{weight},
+            #{timeGroup}, #{stepNo}, #{contentType}, #{contentBody}, #{startDate}, #{isShared}, #{source}, #{sortOrder},
+            #{createdAt}, #{updatedAt}
+        )
+    </insert>
+
+    <insert id="insertNodeSelf" parameterType="java.util.Map">
+        INSERT INTO life_plan_nodes (
+            id, parent_id, kind, domain, title, detail, status, horizon, weight, content_type, source, sort_order, created_at, updated_at
+        ) VALUES (
+            #{id}, '', 'self', #{domain}, #{title}, #{detail}, 'doing', '', 100, 'text', 'ai', 0, #{createdAt}, #{updatedAt}
+        )
+    </insert>
+
+    <update id="updateNodeRegenRow" parameterType="java.util.Map">
+        UPDATE life_plan_nodes
+        <set>
+            kind = #{kind},
+            domain = #{domain},
+            title = #{title},
+            detail = #{detail},
+            risk = #{risk},
+            priority = #{priority},
+            series = #{series},
+            <if test="status != null">status = #{status},</if>
+            horizon = #{horizon},
+            weight = #{weight},
+            time_group = #{timeGroup},
+            step_no = #{stepNo},
+            content_type = #{contentType},
+            content_body = #{contentBody},
+            <if test="startDate != null">start_date = #{startDate},</if>
+            is_shared = #{isShared},
+            updated_at = #{updatedAt}
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateNodeFieldsFull" parameterType="java.util.Map">
+        UPDATE life_plan_nodes
+        <set>
+            <if test="_parameter.containsKey('title')">title = #{title},</if>
+            <if test="_parameter.containsKey('detail')">detail = #{detail},</if>
+            <if test="_parameter.containsKey('risk')">risk = #{risk},</if>
+            <if test="_parameter.containsKey('priority')">priority = #{priority},</if>
+            <if test="_parameter.containsKey('series')">series = #{series},</if>
+            <if test="_parameter.containsKey('horizon')">horizon = #{horizon},</if>
+            <if test="_parameter.containsKey('startDate')">start_date = #{startDate},</if>
+            <if test="_parameter.containsKey('parentId')">parent_id = #{parentId},</if>
+            <if test="_parameter.containsKey('weight')">weight = #{weight},</if>
+            <if test="_parameter.containsKey('status')">status = #{status},</if>
+            <if test="_parameter.containsKey('domain')">domain = #{domain},</if>
+            <if test="_parameter.containsKey('timeGroup')">time_group = #{timeGroup},</if>
+            <if test="_parameter.containsKey('stepNo')">step_no = #{stepNo},</if>
+            <if test="_parameter.containsKey('deps')">deps = #{deps},</if>
+            <if test="_parameter.containsKey('referenceIds')">reference_ids = #{referenceIds},</if>
+            <if test="_parameter.containsKey('isShared')">is_shared = #{isShared},</if>
+            <if test="_parameter.containsKey('progressNote')">progress_note = #{progressNote},</if>
+            updated_at = #{updatedAt}
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateNodeParentRefsToSelf">
+        UPDATE life_plan_nodes
+        SET parent_id = #{selfId}, updated_at = #{updatedAt}
+        WHERE kind &lt;&gt; 'self' AND (parent_id IS NULL OR parent_id = '')
+    </update>
+
+    <update id="updateNodeParentRefsToSelfPlain">
+        UPDATE life_plan_nodes
+        SET parent_id = #{selfId}
+        WHERE kind &lt;&gt; 'self' AND (parent_id IS NULL OR parent_id = '')
+    </update>
+
+    <update id="updateNodeSelfRow">
+        UPDATE life_plan_nodes
+        SET title = #{title}, detail = #{detail}, domain = #{domain}, updated_at = #{updatedAt}
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateNodeDetailRow">
+        UPDATE life_plan_nodes SET detail = #{detail}, updated_at = #{updatedAt} WHERE id = #{id}
+    </update>
+
+    <delete id="deleteNodeByTitle">
+        DELETE FROM life_plan_nodes WHERE title = #{title}
+    </delete>
+
+    <delete id="deleteNodeById">
+        DELETE FROM life_plan_nodes WHERE id = #{id}
+    </delete>
+
+    <update id="updateNodeParentOnly">
+        UPDATE life_plan_nodes SET parent_id = #{parentId} WHERE id = #{id}
+    </update>
+
+    <update id="updateNodeDepsOnly">
+        UPDATE life_plan_nodes SET deps = #{deps} WHERE id = #{id}
+    </update>
+
+    <update id="updateNodeReferenceOnly">
+        UPDATE life_plan_nodes SET reference_ids = #{referenceIds} WHERE id = #{id}
+    </update>
+
+    <!-- ================= life_chat_messages ================= -->
+    <select id="countChatMessages" resultType="java.util.LinkedHashMap">
+        SELECT COUNT(*) AS total FROM life_chat_messages
+    </select>
+
+    <!-- ================= life_daily_tasks ================= -->
+    <select id="selectTaskIdTitleByDate" resultType="java.util.LinkedHashMap">
+        SELECT id, title FROM life_daily_tasks WHERE task_date = #{date}
+    </select>
+
+    <select id="selectTaskIdTitleSupportAll" resultType="java.util.LinkedHashMap">
+        SELECT id, title, support FROM life_daily_tasks
+    </select>
+
+    <insert id="insertDailyTask" parameterType="java.util.Map">
+        INSERT INTO life_daily_tasks (
+            id, task_date, title, est_minutes, priority, status, pre_task, blocker, support,
+            node_id, repeat_type, sort_order, created_at, updated_at
+        ) VALUES (
+            #{id}, #{taskDate}, #{title}, #{estMinutes}, #{priority}, #{status}, #{preTask}, #{blocker}, #{support},
+            #{nodeId}, #{repeatType}, #{sortOrder}, #{createdAt}, #{updatedAt}
+        )
+    </insert>
+
+    <select id="selectTaskSupportByTitle" resultType="java.util.LinkedHashMap">
+        SELECT id, support FROM life_daily_tasks WHERE title = #{title} LIMIT #{limit}
+    </select>
+
+    <update id="updateDailyTaskRow" parameterType="java.util.Map">
+        UPDATE life_daily_tasks
+        <set>
+            est_minutes = #{estMinutes},
+            priority = #{priority},
+            status = #{status},
+            pre_task = #{preTask},
+            blocker = #{blocker},
+            support = #{support},
+            repeat_type = #{repeatType},
+            updated_at = #{updatedAt}
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateTaskSupport">
+        UPDATE life_daily_tasks SET support = #{support}, updated_at = #{updatedAt} WHERE id = #{id}
+    </update>
+
+    <select id="selectOrphanTaskIdTitle" resultType="java.util.LinkedHashMap">
+        SELECT id, title FROM life_daily_tasks WHERE node_id IS NULL OR node_id = ''
+    </select>
+
+    <update id="updateTaskNodeId">
+        UPDATE life_daily_tasks SET node_id = #{nodeId} WHERE id = #{id}
+    </update>
+
+    <!-- ================= life_skill_profile ================= -->
+    <select id="selectSkillIdByName" resultType="java.util.LinkedHashMap">
+        SELECT id FROM life_skill_profile WHERE name = #{name} LIMIT 1
+    </select>
+
+    <insert id="insertSkillRow" parameterType="java.util.Map">
+        INSERT INTO life_skill_profile (id, category, name, level, note, sort_order, created_at, updated_at)
+        VALUES (#{id}, #{category}, #{name}, #{level}, #{note}, #{sortOrder}, #{createdAt}, #{updatedAt})
+    </insert>
+
+    <update id="updateSkillRow">
+        UPDATE life_skill_profile SET category = #{category}, level = #{level}, note = #{note}, updated_at = #{updatedAt}
+        WHERE id = #{id}
+    </update>
+
+    <!-- ================= life_energy_logs ================= -->
+    <select id="selectEnergyIdByDate" resultType="java.util.LinkedHashMap">
+        SELECT id FROM life_energy_logs WHERE log_date = #{logDate} LIMIT 1
+    </select>
+
+    <insert id="insertEnergyRow" parameterType="java.util.Map">
+        INSERT INTO life_energy_logs (
+            id, log_date, planned_minutes, capacity_minutes, overload, distractions, sleep_hours, health, note, created_at
+        ) VALUES (
+            #{id}, #{logDate}, #{plannedMinutes}, #{capacityMinutes}, #{overload}, #{distractions}, #{sleepHours}, #{health}, #{note}, #{createdAt}
+        )
+    </insert>
+
+    <update id="updateEnergyRow">
+        UPDATE life_energy_logs
+        SET planned_minutes = #{plannedMinutes}, capacity_minutes = #{capacityMinutes}, overload = #{overload},
+            distractions = #{distractions}, sleep_hours = #{sleepHours}, health = #{health}, note = #{note}
+        WHERE id = #{id}
+    </update>
+
+    <!-- ================= life_knowledge ================= -->
+    <select id="selectKnowledgeIdByTopic" resultType="java.util.LinkedHashMap">
+        SELECT id FROM life_knowledge WHERE topic = #{topic} LIMIT 1
+    </select>
+
+    <insert id="insertKnowledgeRow" parameterType="java.util.Map">
+        INSERT INTO life_knowledge (
+            id, subject, topic, content, wrong_questions, tags, review_stage, next_review_date, source, created_at, updated_at
+        ) VALUES (
+            #{id}, #{subject}, #{topic}, #{content}, #{wrongQuestions}, #{tags}, #{reviewStage}, #{nextReviewDate}, #{source}, #{createdAt}, #{updatedAt}
+        )
+    </insert>
+
+    <update id="updateKnowledgeRow">
+        UPDATE life_knowledge
+        SET subject = #{subject}, content = #{content}, wrong_questions = #{wrongQuestions}, tags = #{tags}, updated_at = #{updatedAt}
+        WHERE id = #{id}
+    </update>
+
+    <!-- ================= life_calendar_events ================= -->
+    <select id="selectEventIdByTitle" resultType="java.util.LinkedHashMap">
+        SELECT id FROM life_calendar_events WHERE title = #{title} LIMIT 1
+    </select>
+
+    <insert id="insertEventRow" parameterType="java.util.Map">
+        INSERT INTO life_calendar_events (
+            id, title, event_date, category, level, remind_days, status, note, created_at, updated_at
+        ) VALUES (
+            #{id}, #{title}, #{eventDate}, #{category}, #{level}, #{remindDays}, #{status}, #{note}, #{createdAt}, #{updatedAt}
+        )
+    </insert>
+
+    <update id="updateEventRow">
+        UPDATE life_calendar_events
+        SET event_date = #{eventDate}, category = #{category}, level = #{level}, remind_days = #{remindDays},
+            note = #{note}, updated_at = #{updatedAt}
+        WHERE id = #{id}
+    </update>
+
+    <!-- ================= life_future_paths ================= -->
+    <select id="selectPathIdByName" resultType="java.util.LinkedHashMap">
+        SELECT id FROM life_future_paths WHERE name = #{name} LIMIT 1
+    </select>
+
+    <insert id="insertPathRow" parameterType="java.util.Map">
+        INSERT INTO life_future_paths (
+            id, name, advantages, risks, prerequisites, evolution, score, node_id, source, sort_order, created_at, updated_at
+        ) VALUES (
+            #{id}, #{name}, #{advantages}, #{risks}, #{prerequisites}, #{evolution}, #{score}, #{nodeId}, #{source}, #{sortOrder}, #{createdAt}, #{updatedAt}
+        )
+    </insert>
+
+    <update id="updatePathRow">
+        UPDATE life_future_paths
+        SET advantages = #{advantages}, risks = #{risks}, prerequisites = #{prerequisites}, evolution = #{evolution},
+            score = #{score}, node_id = #{nodeId}, updated_at = #{updatedAt}
+        WHERE id = #{id}
+    </update>
+
+    <!-- ================= life_change_logs ================= -->
+    <insert id="insertChangeLogRow" parameterType="java.util.Map">
+        INSERT INTO life_change_logs (id, module, content, reason, snapshot_id, created_at)
+        VALUES (#{id}, #{module}, #{content}, #{reason}, #{snapshotId}, #{createdAt})
+    </insert>
+
+    <!-- ================= life_persona ================= -->
+    <select id="selectPersonaRow" resultType="java.util.LinkedHashMap">
+        SELECT * FROM life_persona ORDER BY updated_at DESC LIMIT 1
+    </select>
+
+    <insert id="insertPersonaEmpty" parameterType="java.util.Map">
+        INSERT INTO life_persona (id, hard_skills, time_habits, traits, resources, values_pref, risks, source, created_at, updated_at)
+        VALUES (#{id}, '', '', '', '', '', '', 'ai', #{createdAt}, #{updatedAt})
+    </insert>
+
+    <update id="updatePersonaFields" parameterType="java.util.Map">
+        UPDATE life_persona
+        <set>
+            <if test="_parameter.containsKey('hard_skills')">hard_skills = #{hard_skills},</if>
+            <if test="_parameter.containsKey('time_habits')">time_habits = #{time_habits},</if>
+            <if test="_parameter.containsKey('traits')">traits = #{traits},</if>
+            <if test="_parameter.containsKey('resources')">resources = #{resources},</if>
+            <if test="_parameter.containsKey('values_pref')">values_pref = #{values_pref},</if>
+            <if test="_parameter.containsKey('risks')">risks = #{risks},</if>
+            source = 'ai',
+            updated_at = #{updatedAt}
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <!-- ================= life_retrieval_queue ================= -->
+    <update id="updateQueueDone">
+        UPDATE life_retrieval_queue
+        SET status = 'done', result = #{result}, from_cache = #{fromCache}, updated_at = #{updatedAt}
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateQueueFailed">
+        UPDATE life_retrieval_queue
+        SET status = 'failed', result = #{result}, updated_at = #{updatedAt}
+        WHERE id = #{id}
+    </update>
+
+</mapper>

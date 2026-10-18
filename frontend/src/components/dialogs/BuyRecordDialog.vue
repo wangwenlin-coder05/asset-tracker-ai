@@ -131,8 +131,7 @@ const visible = ref(true)
 const submitting = ref(false)
 
 const buyTypeOptions = [
-  { value: '正T', label: '正T', activeClass: 'text-green-600 bg-green-50' },
-  { value: '反T承接', label: '反T承接', activeClass: 'text-amber-600 bg-amber-50' },
+  { value: 'T入', label: 'T入', activeClass: 'text-green-600 bg-green-50' },
   { value: '补仓', label: '补仓', activeClass: 'text-blue-600 bg-blue-50' }
 ]
 
@@ -140,7 +139,8 @@ const form = reactive({
   buyDate: new Date().toISOString().split('T')[0],
   buyPrice: null,
   buyCount: 100,
-  tType: ''
+  // 买入类型默认选中「T入」（首次买入无此选项，提交时会被忽略）
+  tType: 'T入'
 })
 
 const fee = computed(() => calcBuyFee(form.buyPrice, form.buyCount))

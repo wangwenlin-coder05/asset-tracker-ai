@@ -30,7 +30,9 @@ function logTx(action, stock, beforeCount, detail = {}) {
 }
 
 const stocks = ref([])
-const loading = ref(false)
+// 加载态按看板隔离：board -> boolean，避免不同看板互相触发加载骨架
+const loadingByBoard = ref({})
+let loadStocksPromise = null
 const { stockPrices, fetchStockPrices } = useStockPrice()
 const stockPrincipal = ref(parseFloat(localStorage.getItem('stockPrincipal')) || 0)
 
@@ -189,17 +191,23 @@ export function useStock() {
   })
 
   async function loadStocks(board = 'stock') {
-    loading.value = true
-    try {
-      const data = await stockApi.getStocks(board)
-      stocks.value = data
-      const codes = data.filter(s => !s.isCleared && s.code).map(s => s.code)
-      if (codes.length) await fetchStockPrices(codes, true)
-    } catch (error) {
-      console.error('Failed to load stocks:', error)
-    } finally {
-      loading.value = false
-    }
+    // 同一时刻只允许一个请求：切换看板时的统一刷新与看板自身 onMounted 的加载会合并为一次
+    if (loadStocksPromise) return loadStocksPromise
+    loadingByBoard.value[board] = true
+    loadStocksPromise = (async () => {
+      try {
+        const data = await stockApi.getStocks(board)
+        stocks.value = data
+        const codes = data.filter(s => !s.isCleared && s.code).map(s => s.code)
+        if (codes.length) await fetchStockPrices(codes, true)
+      } catch (error) {
+        console.error('Failed to load stocks:', error)
+      } finally {
+        loadingByBoard.value[board] = false
+        loadStocksPromise = null
+      }
+    })()
+    return loadStocksPromise
   }
 
   function getStock(id) {
@@ -495,7 +503,7 @@ export function useStock() {
 
   return {
     stocks,
-    loading,
+    loadingByBoard,
     stockList,
     clearedList,
     totalCost,

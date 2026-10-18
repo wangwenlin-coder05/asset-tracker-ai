@@ -5,8 +5,13 @@ const { databaseConfig } = require('./config');
 const parser = new Parser();
 const BUSINESS_TABLES = new Set([
   'ai_articles', 'ai_logs', 'ai_settings', 'ai_usage', 'buy_records', 'daily_notes',
-  'daily_plans', 'deposit_items', 'deposit_transactions', 'extract_learn',
-  'installment_bills', 'installment_plans', 'plan_completions', 'quiz_answers',
+  'daily_plans', 'daily_tasks', 'daily_task_states', 'deposit_items', 'deposit_transactions', 'extract_learn',
+  'installment_bills', 'installment_plans', 'life_calendar_events', 'life_change_logs', 'life_chat_messages',
+  'life_daily_tasks', 'life_energy_logs', 'life_future_paths', 'life_knowledge', 'life_persona',
+  'life_persona_derived',
+  'life_plan_nodes', 'life_plan_rejects', 'life_plan_snapshots', 'life_retrieval_batches',
+  'life_retrieval_cache', 'life_retrieval_logs', 'life_retrieval_queue',
+  'life_skill_profile', 'plan_completions', 'quiz_answers',
   'quiz_questions', 'sell_records', 'stock_daily_analysis', 'stock_daily_summary',
   'stock_notes', 'stock_watchlist', 'stocks', 'tools', 'tx_logs', 'wechat_blacklist',
   'wechat_category_feedback', 'wechat_category_rules', 'wechat_category_system_rules',
@@ -14,6 +19,7 @@ const BUSINESS_TABLES = new Set([
   'wechat_whitelist', 'wool_daily_amounts', 'wool_items', 'wool_notes',
 ]);
 const RELATIONS = {
+  daily_task_states: { task_id: 'daily_tasks' },
   deposit_items: { payment_account_id: 'deposit_items' },
   wool_items: { deposit_item_id: 'deposit_items', deposit_transaction_id: 'deposit_transactions' },
   buy_records: { stock_id: 'stocks' }, sell_records: { stock_id: 'stocks' },

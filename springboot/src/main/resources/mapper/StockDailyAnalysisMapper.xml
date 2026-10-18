@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.StockDailyAnalysisMapper">
+
+  <select id="listByWatchIds" resultType="com.wangwenlin.stock.model.StockDailyAnalysisRow">
+    SELECT id, watch_id, `date`, action_type, sentiment,
+           target_buy_price, target_buy_price_high, target_sell_price, target_sell_price_high,
+           stop_loss_price, stop_loss_price_high, buy_share_count, sell_share_count, loss_share_count,
+           note, next_day_note, review_result, review_note, created_at, updated_at
+    FROM stock_daily_analysis
+    WHERE watch_id IN
+    <foreach collection="watchIds" item="watchId" open="(" separator="," close=")">
+      #{watchId}
+    </foreach>
+    ORDER BY `date` DESC
+  </select>
+
+  <select id="findIdsByWatchAndDate" resultType="java.util.Map">
+    SELECT id FROM stock_daily_analysis WHERE watch_id = #{watchId} AND `date` = #{date}
+  </select>
+
+  <insert id="insert">
+    INSERT INTO stock_daily_analysis (id, watch_id, code, `date`, action_type, sentiment,
+      target_buy_price, target_buy_price_high, target_sell_price, target_sell_price_high,
+      stop_loss_price, stop_loss_price_high, buy_share_count, sell_share_count, loss_share_count,
+      note, next_day_note, review_result, review_note, created_at, updated_at)
+    VALUES (#{id}, #{watchId}, #{code}, #{date}, #{actionType}, #{sentiment},
+      #{targetBuyPrice}, #{targetBuyPriceHigh}, #{targetSellPrice}, #{targetSellPriceHigh},
+      #{stopLossPrice}, #{stopLossPriceHigh}, #{buyShareCount}, #{sellShareCount}, #{lossShareCount},
+      #{note}, #{nextDayNote}, #{reviewResult}, #{reviewNote}, #{createdAt}, #{updatedAt})
+  </insert>
+
+  <update id="updateFields">
+    UPDATE stock_daily_analysis
+    <set>
+      <if test="_parameter.containsKey('actionType')">action_type = #{actionType},</if>
+      <if test="_parameter.containsKey('sentiment')">sentiment = #{sentiment},</if>
+      <if test="_parameter.containsKey('targetBuyPrice')">target_buy_price = #{targetBuyPrice},</if>
+      <if test="_parameter.containsKey('targetBuyPriceHigh')">target_buy_price_high = #{targetBuyPriceHigh},</if>
+      <if test="_parameter.containsKey('targetSellPrice')">target_sell_price = #{targetSellPrice},</if>
+      <if test="_parameter.containsKey('targetSellPriceHigh')">target_sell_price_high = #{targetSellPriceHigh},</if>
+      <if test="_parameter.containsKey('stopLossPrice')">stop_loss_price = #{stopLossPrice},</if>
+      <if test="_parameter.containsKey('stopLossPriceHigh')">stop_loss_price_high = #{stopLossPriceHigh},</if>
+      <if test="_parameter.containsKey('buyShareCount')">buy_share_count = #{buyShareCount},</if>
+      <if test="_parameter.containsKey('sellShareCount')">sell_share_count = #{sellShareCount},</if>
+      <if test="_parameter.containsKey('lossShareCount')">loss_share_count = #{lossShareCount},</if>
+      <if test="_parameter.containsKey('note')">note = #{note},</if>
+      <if test="_parameter.containsKey('nextDayNote')">next_day_note = #{nextDayNote},</if>
+      <if test="_parameter.containsKey('reviewResult')">review_result = #{reviewResult},</if>
+      <if test="_parameter.containsKey('reviewNote')">review_note = #{reviewNote},</if>
+      updated_at = #{updatedAt}
+    </set>
+    WHERE id = #{id}
+  </update>
+
+  <delete id="deleteByWatchId">
+    DELETE FROM stock_daily_analysis WHERE watch_id = #{watchId}
+  </delete>
+
+  <delete id="deleteByWatchIdAndDate">
+    DELETE FROM stock_daily_analysis WHERE watch_id = #{watchId} AND `date` = #{date}
+  </delete>
+
+</mapper>

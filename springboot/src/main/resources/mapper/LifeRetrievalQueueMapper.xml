@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.LifeRetrievalQueueMapper">
+
+  <insert id="insertQueue">
+    INSERT INTO life_retrieval_queue
+      (id, batch_id, node_id, series, title, query, priority, est_cost, status, result, from_cache, created_at, decided_at, updated_at)
+    VALUES
+      (#{id}, #{batch_id}, #{node_id}, #{series}, #{title}, #{query}, #{priority}, #{est_cost}, #{status}, #{result}, #{from_cache}, #{created_at}, #{decided_at}, #{updated_at})
+  </insert>
+
+  <select id="selectAll" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_retrieval_queue ORDER BY created_at DESC
+  </select>
+
+  <select id="selectRecent" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_retrieval_queue ORDER BY created_at DESC LIMIT #{limit}
+  </select>
+
+  <select id="listByStatus" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_retrieval_queue WHERE status = #{status} ORDER BY created_at DESC
+  </select>
+
+  <select id="listPendingUnbatched" resultType="java.util.LinkedHashMap">
+    SELECT id, est_cost FROM life_retrieval_queue
+    WHERE status = 'pending' AND (batch_id IS NULL OR batch_id = '')
+    ORDER BY created_at ASC
+  </select>
+
+  <select id="selectBatchPairs" resultType="java.util.LinkedHashMap">
+    SELECT id, batch_id FROM life_retrieval_queue WHERE batch_id &lt;&gt; ''
+  </select>
+
+  <select id="listPendingByBatch" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_retrieval_queue WHERE batch_id = #{batchId} AND status = 'pending'
+  </select>
+
+  <select id="countByStatus" resultType="java.util.LinkedHashMap">
+    SELECT COUNT(*) AS n FROM life_retrieval_queue WHERE status = #{status}
+  </select>
+
+  <update id="attachBatch">
+    UPDATE life_retrieval_queue SET batch_id = #{batchId}, updated_at = #{updatedAt}
+    WHERE id IN
+    <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+  </update>
+
+  <update id="rejectPendingByBatch">
+    UPDATE life_retrieval_queue SET status = 'rejected', updated_at = #{updatedAt}
+    WHERE batch_id = #{batchId} AND status = 'pending'
+  </update>
+
+  <update id="detachFromBatch">
+    UPDATE life_retrieval_queue SET batch_id = '', updated_at = #{updatedAt}
+    WHERE id IN
+    <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+  </update>
+
+  <update id="markDone">
+    UPDATE life_retrieval_queue SET result = #{result}, status = 'done', from_cache = #{fromCache}, updated_at = #{updatedAt}
+    WHERE id = #{id}
+  </update>
+
+  <update id="markFailed">
+    UPDATE life_retrieval_queue SET status = 'failed', result = #{result}, updated_at = #{updatedAt}
+    WHERE id = #{id}
+  </update>
+
+</mapper>

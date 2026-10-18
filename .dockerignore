@@ -1,0 +1,12 @@
+*
+!Dockerfile
+!package.json
+!package-lock.json
+!server.js
+!wechat-extractor.js
+!backend/
+!backend/**
+.env
+.env.*
+**/.env
+**/.env.*

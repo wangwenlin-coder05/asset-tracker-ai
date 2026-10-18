@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.LifePersonaDerivedMapper">
+
+  <!-- 七维列顺序与 LIFE_PERSONA_DERIVED_DIMS 一致：state / abilities / habits / traits / resources / future / advantage -->
+  <sql id="derivedColumns">
+    state = #{state},
+    abilities = #{abilities},
+    habits = #{habits},
+    traits = #{traits},
+    resources = #{resources},
+    future = #{future},
+    advantage = #{advantage},
+    progress_json = #{progressJson},
+    signature = #{signature},
+    updated_at = #{updatedAt}
+  </sql>
+
+  <select id="selectLatest" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_persona_derived
+    ORDER BY updated_at DESC
+    LIMIT 1
+  </select>
+
+  <update id="updateDerived">
+    UPDATE life_persona_derived
+    SET <include refid="derivedColumns"/>
+    WHERE id = #{id}
+  </update>
+
+  <insert id="insertDerived">
+    INSERT INTO life_persona_derived
+      (id, state, abilities, habits, traits, resources, future, advantage, progress_json, signature, updated_at)
+    VALUES
+      (#{id}, #{state}, #{abilities}, #{habits}, #{traits}, #{resources}, #{future}, #{advantage}, #{progressJson}, #{signature}, #{updatedAt})
+  </insert>
+
+</mapper>

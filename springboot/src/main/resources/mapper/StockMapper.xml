@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.StockMapper">
+
+  <sql id="stockColumns">
+    id, name, code, cost, count, sell_price, position, target_profit,
+    profit_loss_ratio, ratio_price, base_price, price_change_percent,
+    is_cleared, buy_price, board, notes, frozen_holding_days, top_ten_float_ratio,
+    DATE_FORMAT(buy_date, '%Y-%m-%d') AS buy_date_str,
+    DATE_FORMAT(sell_date, '%Y-%m-%d') AS sell_date_str
+  </sql>
+
+  <select id="listByBoard" resultType="com.wangwenlin.stock.model.StockRow">
+    SELECT <include refid="stockColumns"/>
+    FROM stocks WHERE board = #{board} ORDER BY is_cleared, created_at
+  </select>
+
+  <select id="findById" resultType="com.wangwenlin.stock.model.StockRow">
+    SELECT <include refid="stockColumns"/>
+    FROM stocks WHERE id = #{id} LIMIT 1
+  </select>
+
+  <select id="findReusableByCode" resultType="java.util.Map">
+    SELECT id, name, code, is_cleared FROM stocks
+    WHERE code = #{code} AND board = #{board}
+    ORDER BY created_at DESC LIMIT 1
+  </select>
+
+  <select id="lockById" resultType="java.util.Map">
+    SELECT id FROM stocks WHERE id = #{id} FOR UPDATE
+  </select>
+
+  <select id="existsById" resultType="java.lang.String">
+    SELECT id FROM stocks WHERE id = #{id} LIMIT 1
+  </select>
+
+  <insert id="insertStock">
+    INSERT INTO stocks (id, name, code, cost, count, sell_price, position, buy_date, buy_price, board, target_profit)
+    VALUES (#{id}, #{name}, #{code}, #{cost}, #{count}, #{sellPrice}, #{position}, #{buyDate}, #{buyPrice}, #{board}, #{targetProfit})
+  </insert>
+
+  <!-- 动态部分更新：仅包含请求里出现过的字段（用 containsKey 区分“显式传 null”与“未传”），对齐 Node 端 allowed 白名单逻辑 -->
+  <update id="updateFields">
+    UPDATE stocks
+    <set>
+      <if test="_parameter.containsKey('name')">name = #{name},</if>
+      <if test="_parameter.containsKey('code')">code = #{code},</if>
+      <if test="_parameter.containsKey('buyDate')">buy_date = #{buyDate},</if>
+      <if test="_parameter.containsKey('sellDate')">sell_date = #{sellDate},</if>
+      <if test="_parameter.containsKey('buyPrice')">buy_price = #{buyPrice},</if>
+      <if test="_parameter.containsKey('cost')">cost = #{cost},</if>
+      <if test="_parameter.containsKey('count')">count = #{count},</if>
+      <if test="_parameter.containsKey('sellPrice')">sell_price = #{sellPrice},</if>
+      <if test="_parameter.containsKey('position')">position = #{position},</if>
+      <if test="_parameter.containsKey('targetProfit')">target_profit = #{targetProfit},</if>
+      <if test="_parameter.containsKey('profitLossRatio')">profit_loss_ratio = #{profitLossRatio},</if>
+      <if test="_parameter.containsKey('ratioPrice')">ratio_price = #{ratioPrice},</if>
+      <if test="_parameter.containsKey('basePrice')">base_price = #{basePrice},</if>
+      <if test="_parameter.containsKey('priceChangePercent')">price_change_percent = #{priceChangePercent},</if>
+      <if test="_parameter.containsKey('isCleared')">is_cleared = #{isCleared},</if>
+      <if test="_parameter.containsKey('notes')">notes = #{notes},</if>
+      <if test="_parameter.containsKey('frozenHoldingDays')">frozen_holding_days = #{frozenHoldingDays},</if>
+      <if test="_parameter.containsKey('topTenFloatRatio')">top_ten_float_ratio = #{topTenFloatRatio},</if>
+    </set>
+    WHERE id = #{id}
+  </update>
+
+  <update id="clearStock">
+    UPDATE stocks SET is_cleared = 1, position = 'full', sell_date = NOW() WHERE id = #{id}
+  </update>
+
+  <update id="reactivate">
+    UPDATE stocks SET is_cleared = 0, position = #{position}, sell_date = NULL WHERE id = #{id}
+  </update>
+
+  <update id="updateName">
+    UPDATE stocks SET name = #{name} WHERE id = #{id}
+  </update>
+
+  <update id="reactivateForBuy">
+    UPDATE stocks SET is_cleared = 0, sell_date = NULL WHERE id = #{id} AND is_cleared = 1
+  </update>
+
+  <delete id="deleteById">
+    DELETE FROM stocks WHERE id = #{id}
+  </delete>
+
+</mapper>

@@ -12,8 +12,25 @@ api.interceptors.request.use(config => {
   return config
 })
 
+// 跨标签页数据同步：任一标签页发生写操作（非 GET）后，广播通知其他标签页刷新。
+// 同一 BroadcastChannel 实例不会收到自己发出的消息，因此当前写入的标签页不会自触发。
+export const syncChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('stock-sync') : null
+
+function broadcastDataChange(config) {
+  const method = (config?.method || 'get').toLowerCase()
+  if (method === 'get') return
+  const at = Date.now()
+  try {
+    if (syncChannel) syncChannel.postMessage({ type: 'data-changed', at })
+    else localStorage.setItem('stock-sync-tick', String(at))
+  } catch (e) { /* 忽略 */ }
+}
+
 api.interceptors.response.use(
-  response => response.data,
+  response => {
+    broadcastDataChange(response.config)
+    return response.data
+  },
   error => {
     if (error.response?.status === 401 && auth.user) window.location.reload()
     console.error('API Error:', error.response?.data || error)
@@ -93,20 +110,168 @@ export const toolApi = {
   reorderTools: (order) => api.post('/tools/reorder', { order }),
 }
 
+export const dailyTaskApi = {
+  list: (date) => api.get('/daily-tasks', { params: { date } }),
+  create: (task) => api.post('/daily-tasks', task),
+  update: (id, task) => api.put(`/daily-tasks/${id}`, task),
+  state: (id, date, status) => api.put(`/daily-tasks/${id}/state`, { date, status }),
+  remove: (id) => api.delete(`/daily-tasks/${id}`),
+}
+
+export const researchApi = {
+  charts: (code) => api.get('/ai/charts', { params: { code }, timeout: 65000 }),
+  news: (code) => api.get(`/stock/news/${encodeURIComponent(code)}`, { timeout: 65000 }),
+  sentiment: (code) => api.get(`/stock/sentiment/${encodeURIComponent(code)}`, { timeout: 65000 }),
+}
+
 export const planApi = {
   getPlans: () => api.get('/plans'),
   createPlan: (data) => api.post('/plans', data),
   updatePlan: (id, data) => api.put(`/plans/${id}`, data),
   deletePlan: (id) => api.delete(`/plans/${id}`),
-  togglePlan: (id) => api.put(`/plans/${id}/toggle`),
+  getCompletions: (date) => api.get(`/plans/completions/${date}`),
+  togglePlan: (id, date) => api.post(`/plans/${id}/toggle`, { date }),
+}
+
+export const lifeApi = {
+  getPlan: () => api.get('/life/plan'),
+  getChat: () => api.get('/life/chat'),
+  // 规划对话里包含联网检索 + 推演，动辄一两分钟；原本 90s 比后端还短，会在生成中途被掐断
+  send: (message, mode = 'auto') => api.post('/life/chat', { message, mode }, { timeout: 300000 }),
+  // 流式对话：逐条接收「阶段进度 / 模型思考 / 检索关键词与资料」事件（NDJSON）
+  // mode 传 auto 或不传，由后端按对话上下文自动决定输出详略
+  sendStream: async (message, onEvent, mode = 'auto') => {
+    const response = await fetch('/api/life/chat/stream', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': auth.csrfToken },
+      body: JSON.stringify({ message, mode })
+    })
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}))
+      throw new Error(data.error || `请求失败 (${response.status})`)
+    }
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let finalEvent = null
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let index
+      while ((index = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, index).trim()
+        buffer = buffer.slice(index + 1)
+        if (!line) continue
+        let event
+        try { event = JSON.parse(line) } catch (_) { continue }
+        if (event.type === 'error') throw new Error(event.error || 'AI 暂时不可用')
+        if (event.type === 'done') finalEvent = event
+        onEvent(event)
+      }
+    }
+    if (!finalEvent) throw new Error('AI 没有返回内容')
+    broadcastDataChange({ method: 'post' })
+    return finalEvent
+  },
+  extract: () => api.post('/life/plan/extract', {}, { timeout: 200000 }),
+  // 后端单次模型调用超时就是 180s，输出被截断时还会补一次「精简重出」，
+  // 前端超时必须比后端宽（原来 90s 比后端还短，规划还在生成就被前端掐断 → "aborted due to timeout"）
+  regenerate: () => api.post('/life/plan/regenerate', {}, { timeout: 400000 }),
+  createNode: (data) => api.post('/life/plan/nodes', data),
+  updateNode: (id, data) => api.put(`/life/plan/nodes/${id}`, data),
+  deleteNode: (id) => api.delete(`/life/plan/nodes/${id}`),
+  clearPlan: () => api.delete('/life/plan'),
+  clearChat: () => api.delete('/life/chat'),
+  // 彻底重置人生规划模块（含对话、人物画像、路径库、技能/知识/事件、快照与检索记录）
+  clearAllLifeData: () => api.delete('/life/data'),
+
+  // 重点提醒区
+  getAlerts: () => api.get('/life/alerts'),
+
+  // 资料检索审批：待检索队列 / 手动归集 / 批次审批 / 账单
+  // 单次提问最多 3 次联网检索，超出上限的检索需求会写进待检索队列，在这里归集成批并人工审批
+  getRetrievalQueue: () => api.get('/life/retrieval/queue'),
+  collectRetrieval: () => api.post('/life/retrieval/collect', {}),
+  getRetrievalBatches: () => api.get('/life/retrieval/batches'),
+  decideRetrievalBatch: (id, mode, ids = []) => api.post(`/life/retrieval/batches/${id}/decide`, { mode, ids }),
+  getRetrievalBill: () => api.get('/life/retrieval/bill'),
+
+  // 模块2 每日细分任务表
+  getTasks: (params = {}) => api.get('/life/tasks', { params }),
+  createTask: (data) => api.post('/life/tasks', data),
+  updateTask: (id, data) => api.put(`/life/tasks/${id}`, data),
+  setTaskState: (id, status) => api.post(`/life/tasks/${id}/state`, { status }),
+  deleteTask: (id) => api.delete(`/life/tasks/${id}`),
+
+  // 全局人物画像（用户模型）：6 大维度 + 未来可选发展路径库
+  getPersona: () => api.get('/life/persona'),
+  savePersona: (data) => api.put('/life/persona', data),
+  // 动态人物画像：按右侧规划节点的完成度实时推导（状态/能力/习惯/性格/资源/未来可做之事）
+  refreshPersonaDerived: (reason = '面板刷新') => api.post('/life/persona/derived/refresh', { reason }, { timeout: 200000 }),
+  getPaths: () => api.get('/life/paths'),
+  createPath: (data) => api.post('/life/paths', data),
+  updatePath: (id, data) => api.put(`/life/paths/${id}`, data),
+  deletePath: (id) => api.delete(`/life/paths/${id}`),
+
+  // 模块15 任务进度快照
+  getSnapshots: () => api.get('/life/snapshots'),
+
+  // 资料检索审批（付费管控：待检索队列 / 批次归集 / 三种审批 / 账单）
+  getRetrievalQueue: () => api.get('/life/retrieval/queue'),
+  collectRetrieval: () => api.post('/life/retrieval/collect', {}, { timeout: 30000 }),
+  getRetrievalBatches: () => api.get('/life/retrieval/batches'),
+  decideRetrieval: (id, mode, ids = []) => api.post(`/life/retrieval/batches/${id}/decide`, { mode, ids }, { timeout: 180000 }),
+  getRetrievalBill: () => api.get('/life/retrieval/bill'),
+  createSnapshot: (reason = '') => api.post('/life/snapshots', { reason }),
+  getSnapshot: (id) => api.get(`/life/snapshots/${id}`),
+  // 回退到该快照存档的规划版本（还原规划节点）
+  restoreSnapshot: (id) => api.post(`/life/snapshots/${id}/restore`),
+
+  // 模块16 精力负荷评估表
+  getEnergy: () => api.get('/life/energy'),
+  createEnergy: (data) => api.post('/life/energy', data),
+
+  // 模块3 个人技能档案表
+  getSkills: () => api.get('/life/skills'),
+  createSkill: (data) => api.post('/life/skills', data),
+  updateSkill: (id, data) => api.put(`/life/skills/${id}`, data),
+  deleteSkill: (id) => api.delete(`/life/skills/${id}`),
+
+  // 模块18 个人学习知识库
+  getKnowledge: () => api.get('/life/knowledge'),
+  createKnowledge: (data) => api.post('/life/knowledge', data),
+  updateKnowledge: (id, data) => api.put(`/life/knowledge/${id}`, data),
+  deleteKnowledge: (id) => api.delete(`/life/knowledge/${id}`),
+  reviewKnowledge: (id) => api.post(`/life/knowledge/${id}/review`),
+
+  // 模块19 外部事件日历
+  getEvents: () => api.get('/life/events'),
+  createEvent: (data) => api.post('/life/events', data),
+  updateEvent: (id, data) => api.put(`/life/events/${id}`, data),
+  deleteEvent: (id) => api.delete(`/life/events/${id}`),
+
+  // 模块17 变更日志
+  getChanges: () => api.get('/life/changes'),
 }
 
 export const aiSettingsApi = {
   getSettings: () => api.get('/ai/settings'),
   updateSettings: (data) => api.put('/ai/settings', data),
+  // 按配置的 Base URL + 认证方式从厂商接口拉取模型清单
+  fetchModels: (data) => api.post('/ai/models/fetch', data, { timeout: 40000 }),
+  // 一次性获取所有已配置厂商的模型清单（内置 + 自定义，按厂商分组）
+  fetchAllModels: () => api.post('/ai/models/fetch-all', {}, { timeout: 90000 }),
   testModel: (data) => api.post('/ai/test-model', data, { timeout: 30000 }),
+  parseModelDoc: (data) => api.post('/ai/parse-model-doc', data, { timeout: 60000 }),
   getUsage: () => api.get('/ai/usage'),
   getLogs: (params) => api.get('/ai/logs', { params }),
+}
+
+// 联网检索降级链：设置面板读取可排序的搜索引擎清单
+export const searchApi = {
+  sources: () => api.get('/search/sources'),
 }
 
 export const wechatApi = {
@@ -212,6 +377,10 @@ export const quantApi = {
   coverage: (code) => api.get(`/quant/symbols/${encodeURIComponent(code)}/coverage`),
   runBacktest: (data) => api.post('/quant/backtest/run', data, { timeout: 60000 }),
   runGrid: (data) => api.post('/quant/backtest/grid', data, { timeout: 120000 }),
+  runExport: (fmt, data) => api.post(`/quant/backtest/export/${fmt}`, data, { timeout: 120000, responseType: 'json' }),
+  listSurvivorshipWatch: () => api.get('/quant/survivorship/watch'),
+  addSurvivorshipWatch: (data) => api.post('/quant/survivorship/watch', data),
+  removeSurvivorshipWatch: (code) => api.delete(`/quant/survivorship/watch/${encodeURIComponent(code)}`),
   agentChat: (data) => api.post('/quant/agent/chat', data, { timeout: 120000 }),
 
   // 策略工坊：AI 生成 / 改进 / 校验 / 保存自定义策略

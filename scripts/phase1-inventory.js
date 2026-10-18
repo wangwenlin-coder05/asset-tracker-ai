@@ -47,12 +47,14 @@ const authRoutes = [
   ['POST', '/api/auth/register', '公开（受注册开关/来源/限流约束）', '创建普通用户，bcrypt 哈希密码，建立 HttpOnly 会话及 CSRF Token'],
   ['POST', '/api/auth/login', '公开（来源/限流）', '校验密码，返回 user + csrfToken，原始会话 Token 只在 Cookie 中'],
   ['GET', '/api/auth/me', '已登录', '返回当前用户、角色、能力和 CSRF Token'],
+  ['POST', '/api/auth/account', '已登录 + CSRF + 当前密码', '只修改自己的邮箱，保留用户 ID，事务撤销全部旧会话并换发当前会话'],
+  ['POST', '/api/auth/password', '已登录 + CSRF + 当前密码', '校验新密码后更新 bcrypt 哈希，事务撤销全部旧会话并换发当前会话'],
   ['POST', '/api/auth/logout', '已登录 + CSRF', '删除当前会话，清除 Cookie'],
 ];
 const lines = [
   '# Phase 1 逐接口改造清单', '',
   '此文件由 `npm run docs:phase1` 按当前 server.js 自动生成；接口表中的业务表包含静态可识别的 helper 调用，动态 SQL 仍由统一数据库边界强制隔离。', '',
-  `当前登记：${routes.length} 个业务路由条目（含 2 个量化代理），另新增 4 个账号接口。实际业务表 ${BUSINESS_TABLES.size} 张；不沿用旧方案中的 31 张/165 个估计。`, '',
+  `当前登记：${routes.length} 个业务路由条目（含 2 个量化代理），另有 ${authRoutes.length} 个账号接口。实际业务表 ${BUSINESS_TABLES.size} 张；不沿用旧方案中的 31 张/165 个估计。`, '',
   '## 新账号接口', '', '| 方法 | 接口 | 权限 | 实际改法 |', '| --- | --- | --- | --- |',
   ...authRoutes.map(([method, endpoint, access, change]) => `| ${method} | \`${endpoint}\` | ${access} | ${change} |`), '',
   '## 所有业务接口', '', '| 方法 | 接口 | 关联业务表 | 权限及具体改法 |', '| --- | --- | --- | --- |',

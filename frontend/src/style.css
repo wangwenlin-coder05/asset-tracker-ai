@@ -139,6 +139,42 @@ body.gold-mode #totalPanel .dock-sep i {
 body.gold-mode #totalPanel .dock-sep em {
   color: rgba(229, 184, 73, 0.7);
 }
+/* 黄金主题：一级菜单悬浮态（图标/高亮）统一为金色，避免沿用各板块的蓝色系 */
+body.gold-mode #totalPanel .dock-item:hover .dock-icon {
+  color: #ffd977;
+  filter: drop-shadow(0 0 6px rgba(255, 213, 110, 0.55));
+}
+body.gold-mode #totalPanel .dock-item.is-hover {
+  color: #ffd977;
+  background: rgba(245, 190, 55, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(245, 190, 55, 0.34);
+}
+body.gold-mode #totalPanel .dock-item.is-hover .dock-icon {
+  color: #ffd977;
+  filter: drop-shadow(0 0 6px rgba(255, 213, 110, 0.6));
+}
+body.gold-mode #totalPanel .dock-brand-mark {
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5), 0 0 14px rgba(245, 190, 55, 0.28);
+}
+/* 黄金主题：二级菜单浮层（teleport 到 body，不在 #totalPanel 内） */
+body.gold-mode .dock-popover {
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  background: linear-gradient(180deg, rgba(30, 24, 15, 0.97), rgba(20, 16, 11, 0.95));
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55), 0 0 26px rgba(229, 184, 73, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+body.gold-mode .dock-popitem {
+  color: rgba(254, 243, 199, 0.62);
+}
+body.gold-mode .dock-popitem:hover {
+  color: #ffe9b0;
+  background: rgba(245, 190, 55, 0.14);
+}
+body.gold-mode .dock-popitem.is-active {
+  color: #ffd977;
+  font-weight: 600;
+  background: rgba(245, 190, 55, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(245, 190, 55, 0.3);
+}
 
 .gold-tool-panel {
   position: relative;
@@ -1307,3 +1343,36 @@ body.gold-mode .gold-avg-cell .gold-avg-tooltip::before {
 .stock-card-scroll-hint.is-hidden {
   opacity: 0;
 }
+
+/* 轻量全局提示（utils/toast.js 渲染） */
+.app-toast-host {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+.app-toast {
+  max-width: 320px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #fff;
+  background: rgba(30, 41, 59, 0.95);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.22);
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+.app-toast.is-in {
+  opacity: 1;
+  transform: translateY(0);
+}
+.app-toast--success { background: rgba(5, 150, 105, 0.96); }
+.app-toast--error { background: rgba(190, 40, 40, 0.96); }

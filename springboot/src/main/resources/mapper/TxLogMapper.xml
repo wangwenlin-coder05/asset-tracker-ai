@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.TxLogMapper">
+
+  <insert id="insertLog">
+    INSERT INTO tx_logs (stock_id, stock_code, action, before_count, after_count, total_buy, total_sell, trade_count, detail)
+    VALUES (#{stockId}, #{stockCode}, #{action}, #{beforeCount}, #{afterCount}, #{totalBuy}, #{totalSell}, #{tradeCount}, #{detail})
+  </insert>
+
+  <!-- created_at 为 datetime(3)：%f 补零到 6 位，Java 侧截到 23 字符，得到与 mysql2 dateStrings 完全一致的 ".123" 形态 -->
+  <select id="list" resultType="java.util.Map">
+    SELECT id, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s.%f') AS created_at,
+           stock_id, stock_code, action, before_count, after_count,
+           total_buy, total_sell, trade_count, detail
+    FROM tx_logs ORDER BY id DESC LIMIT #{limit} OFFSET #{offset}
+  </select>
+
+  <select id="count" resultType="java.lang.Long">
+    SELECT COUNT(*) FROM tx_logs
+  </select>
+
+</mapper>

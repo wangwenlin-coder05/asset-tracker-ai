@@ -186,6 +186,21 @@
           对比沪深300基准
         </label>
 
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-xs text-slate-500">滑点 <span class="text-slate-300">（% 默认 0）</span></label>
+            <input v-model.number="form.slippage_pct" type="number" step="0.01" min="0"
+              class="w-full mt-1 px-2 py-2 rounded-lg border border-slate-200 text-sm" />
+          </div>
+          <div>
+            <label class="text-xs text-slate-500">成交模式</label>
+            <select v-model="form.execution_mode" class="w-full mt-1 px-2 py-2 rounded-lg border border-slate-200 text-sm">
+              <option value="next_open">次日开盘（T+1）</option>
+              <option value="signal_close">信号根收盘（盘中价）</option>
+            </select>
+          </div>
+        </div>
+
         <button @click="run" :disabled="loading || !canRun"
           class="w-full px-4 py-2.5 rounded-lg text-sm font-bold text-white bg-indigo-500 hover:bg-indigo-600 disabled:opacity-50 flex items-center justify-center gap-2">
           <Play class="w-4 h-4" />{{ loading ? '回测中…' : runLabel }}
@@ -325,7 +340,7 @@
             <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
               <MetricCard label="最大回撤" :value="report.metrics.max_drawdown_pct" suffix="%" hint="账户从最高点跌到最低点的最大幅度，衡量你要扛多少浮亏"
                 :positive="false" warn />
-              <MetricCard label="夏普比率" :value="report.metrics.sharpe_ratio" hint="每承担 1 份波动换来的超额收益：>1 尚可，>1.5 优秀，>2 很强"
+              <MetricCard label="夏普比率" :value="report.metrics.sharpe_ratio" hint="每承担 1 份波动换来的超额收益：>1 尚可，>1.5 优秀，>2 很强（默认按无风险利率 0 计）"
                 :positive="report.metrics.sharpe_ratio >= 1" />
               <MetricCard label="卡玛比率" :value="report.metrics.calmar_ratio" hint="年化收益 ÷ 最大回撤：>1 合格，>2 优秀"
                 :positive="report.metrics.calmar_ratio && report.metrics.calmar_ratio >= 1" />
@@ -367,6 +382,7 @@
               :overlay="report.benchmark && report.benchmark.equity_curve ? report.benchmark.equity_curve.map(p => ({ date: p.date, value: p.equity })) : []"
               :trades="report.trades.map(t => ({ entry_date: t.entry_date, exit_date: t.exit_date }))"
               height="210" />
+            <p v-if="report.benchmark_note" class="text-[11px] text-amber-600 mt-1">{{ report.benchmark_note }}</p>
           </div>
 
           <!-- 回撤曲线 -->
@@ -474,8 +490,8 @@
           <section>
             <h5 class="text-sm font-bold text-slate-700 mb-1.5">6. 避坑</h5>
             <ul class="pl-1 space-y-1">
-              <li>数据源 baostock，自动前复权；回测已含佣金/印花税/滑点。</li>
-              <li>引擎按<b>次日开盘成交</b>，避免用当日收盘在盘中下单的前视偏差。</li>
+<li>数据源 baostock，自动前复权；回测已含佣金/印花税/过户费（双边万0.1），滑点默认 0（后端可调）。</li>
+               <li>引擎按<b>次日开盘成交</b>，避免用当日收盘在盘中下单的前视偏差；<b>一字涨跌停</b>当根无法成交、指令作废。</li>
               <li>历史盈利 ≠ 未来赚钱，结果仅作研究参考，不构成投资建议。</li>
             </ul>
           </section>
@@ -736,6 +752,8 @@ const form = reactive({
   initial_shares: null,
   max_adds: null,
   compare_benchmark: true,
+  slippage_pct: 0,
+  execution_mode: 'next_open',
 })
 
 // ---------- 选择交互 ----------
@@ -905,16 +923,18 @@ async function sync() {
 function buildPayload(code, s) {
   const p = params[s] || {}
   const optNum = (v) => (v === null || v === '' || v === undefined ? null : v)
-  const payload = {
-    code,
-    strategy: s,
-    start: form.start || undefined,
-    end: form.end || undefined,
-    initial_cash: form.initial_cash,
-    initial_shares: form.initial_shares || undefined,
-    max_adds: form.max_adds ?? undefined,
-    compare_benchmark: form.compare_benchmark,
-  }
+    const payload = {
+      code,
+      strategy: s,
+      start: form.start || undefined,
+      end: form.end || undefined,
+      initial_cash: form.initial_cash,
+      initial_shares: form.initial_shares || undefined,
+      max_adds: form.max_adds ?? undefined,
+      compare_benchmark: form.compare_benchmark,
+      slippage: (form.slippage_pct || 0) / 100,
+      execution_mode: form.execution_mode,
+    }
   // 自定义策略（AI 策略工坊）：参数按 PARAMS 声明的 key 原样传
   if (!BUILTIN_KEYS.has(s)) {
     payload.params = { ...p }

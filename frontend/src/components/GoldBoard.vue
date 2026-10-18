@@ -15,7 +15,7 @@
       <template v-else-if="goldItems.length === 0">
         <div class="board-empty">
           <Gem class="w-12 h-12 opacity-40 mx-auto mb-3" />
-          <p>暂无黄金持仓记录</p>
+          <p>{{ loadError || '暂无黄金持仓记录' }}</p>
           <p class="text-xs mt-2">点击右下角按钮新增黄金买入</p>
         </div>
       </template>
@@ -74,6 +74,7 @@ import { useGold } from '../composables/useGold'
 const {
   goldItems,
   loading,
+  loadError,
   todayPrice,
   priceMeta,
   groupedGold,

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="stock-card-wrap bg-white rounded-lg card-shadow" :data-id="stock.id">
     <div ref="scrollContainer" class="stock-card-scroll overflow-x-auto">
       <table class="w-full min-w-[1450px] stock-card-table">
@@ -201,6 +201,9 @@
               <button @click="toggleTransactions" class="text-neutral hover:text-slate-600 transition-all" title="展开/收起交易"><component :is="expanded ? ChevronDown : ChevronRight" class="w-3.5 h-3.5" /></button>
               <button @click="$emit('buy', stock.id)" class="text-neutral hover:text-primary transition-all" title="加仓"><PlusCircle class="w-3.5 h-3.5" /></button>
               <button @click="$emit('sell', stock.id)" class="text-neutral hover:text-primary transition-all" title="记录卖出"><BookOpen class="w-3.5 h-3.5" /></button>
+              <button @click="openChartAnalysis" class="text-neutral hover:text-primary transition-all" title="K线AI看图分析">
+                <component :is="LineChartIcon" class="w-3.5 h-3.5" />
+              </button>
               <button @click="$emit('clear', stock.id, stock.sellPrice, calcRes.tradeCount, calcRes.avgCost)" class="text-neutral hover:text-primary transition-all" title="清仓"><LogOut class="w-3.5 h-3.5" /></button>
               <button @click="$emit('delete', stock.id)" class="text-neutral hover:text-loss transition-all" title="删除"><Trash2 class="w-3.5 h-3.5" /></button>
             </div>
@@ -256,20 +259,18 @@
                         <select
                             class="text-xs rounded px-1 py-px focus:ring-1 focus:ring-amber-300 outline-none"
                             :class="txSelectClass(groupItem.tx)"
-                            :value="groupItem.tx.tType || ''"
+                            :value="tTypeValue(groupItem.tx)"
                             @change="changeTxType(groupItem.tx, $event.target.value)"
                           >
                             <template v-if="groupItem.tx.type === 'buy'">
                               <option value="">建仓/买入</option>
                               <option value="补仓">补仓</option>
-                              <option value="正T">正T</option>
-                              <option value="反T承接">反T承接</option>
+                              <option value="T入">T入</option>
                             </template>
                             <template v-else>
                               <option value="">清仓</option>
                               <option value="卖出">卖出</option>
-                              <option value="正T卖出">正T卖出</option>
-                              <option value="反T">反T</option>
+                              <option value="T出">T出</option>
                             </template>
                           </select>
                       </td>
@@ -321,7 +322,7 @@
                               <!-- 组头部 -->
                               <tr class="bg-amber-100/40">
                                 <td colspan="11" class="py-1 px-3 text-xs font-medium text-amber-700">
-                                  {{ groupItem.tType }}组 {{ groupItem.isCompleted ? '已完成' : '待承接' }}
+                                  T组 {{ groupItem.isCompleted ? '已完成' : (groupItem.pendingSide === 'sell' ? '· 待T出' : '· 待T入') }}
                                   <template v-if="groupItem.isCompleted">
                                     <span class="mx-1">|</span>
                                     盈利 <span :class="profitColorClass(groupItem.groupNetProfit)">¥{{ formatNumber(groupItem.groupNetProfit) }}</span>
@@ -336,20 +337,18 @@
                                   <select
                                       class="text-xs rounded px-1 py-px focus:ring-1 focus:ring-amber-300 outline-none"
                                       :class="txSelectClass(row.tx)"
-                                      :value="row.tx.tType || ''"
+                                      :value="tTypeValue(row.tx)"
                                       @change="changeTxType(row.tx, $event.target.value)"
                                     >
                                       <template v-if="row.tx.type === 'buy'">
                                         <option value="">建仓/买入</option>
                                         <option value="补仓">补仓</option>
-                                        <option value="正T">正T</option>
-                                        <option value="反T承接">反T承接</option>
+                                        <option value="T入">T入</option>
                                       </template>
                                       <template v-else>
                                         <option value="">清仓</option>
                                         <option value="卖出">卖出</option>
-                                        <option value="正T卖出">正T卖出</option>
-                                        <option value="反T">反T</option>
+                                        <option value="T出">T出</option>
                                       </template>
                                     </select>
                                 </td>
@@ -391,9 +390,9 @@
                               <tr v-if="!groupItem.isCompleted" class="border-t border-amber-100/50">
                                 <td colspan="11" class="py-1.5 px-3 text-xs">
                                   <div class="flex items-center gap-2 justify-center">
-                                    <span class="text-stone-400">保本{{ groupItem.tType === '正T' ? '卖' : '买' }}价 ¥{{ formatNumber(groupItem.breakEvenPrice, 3) }}</span>
+                                    <span class="text-stone-400">保本{{ groupItem.pendingSide === 'sell' ? '卖' : '买' }}价 ¥{{ formatNumber(groupItem.breakEvenPrice, 3) }}</span>
                                     <span class="text-stone-300">|</span>
-                                    <span class="text-stone-400">预览{{ groupItem.tType === '正T' ? '卖' : '买' }}价</span>
+                                    <span class="text-stone-400">预览{{ groupItem.pendingSide === 'sell' ? '卖' : '买' }}价</span>
                                     <input type="number" step="0.001" v-model="previewPrices[groupItem.previewKey]" class="w-20 border border-stone-200 rounded px-1 py-0.5 text-xs focus:input-focus" placeholder="输入价位" />
                                     <span v-if="previewPrices[groupItem.previewKey]" class="font-medium" :class="profitColorClass(previewProfit(groupItem))">¥{{ formatNumber(previewProfit(groupItem)) }}</span>
                                     <button v-if="previewPrices[groupItem.previewKey]" @click="emit('quick-record', props.stock.id, groupItem, parseFloat(previewPrices[groupItem.previewKey]))" class="px-2 py-0.5 bg-amber-100 text-amber-700 rounded text-xs font-medium hover:bg-amber-200 transition-all">录入</button>
@@ -489,10 +488,21 @@
 
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { ChevronRight, ChevronDown, PlusCircle, BookOpen, LogOut, Trash2, ArrowRight, History, Target, Zap } from 'lucide-vue-next'
+import { ChevronRight, ChevronDown, PlusCircle, BookOpen, LogOut, Trash2, ArrowRight, History, Target, Zap, LineChart } from 'lucide-vue-next'
 import { calcStock, calcRatioPrice } from '../utils/calculator'
 import { buyFeeParts, sellFeeParts } from '../utils/feeConfig'
 import { fmtNum, calculateHoldingDays, calculateHoldingDaysByRange } from '../utils/formatter'
+
+// 模板里 <component :is="LineChart"> 需显式暴露常量
+const LineChartIcon = LineChart
+
+function openChartAnalysis() {
+  // 跳转新页面（带 ?page=kline-analysis 路由，新开 tab 保留当前列表页）
+  const code = String(props.stock.code || '').trim()
+  const name = encodeURIComponent(String(props.stock.name || ''))
+  const url = `${window.location.origin}/?page=kline-analysis&code=${code}&name=${name}`
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
 
 const props = defineProps({
   stock: { type: Object, required: true },
@@ -547,7 +557,20 @@ onBeforeUnmount(() => {
   }
 })
 
+// 是否正在本卡片内编辑：跨标签/跨看板刷新时用于保护草稿，避免用户输入被覆盖
+function isCardEditing() {
+  if (activeInput.value != null) return true
+  const el = document.activeElement
+  if (!el) return false
+  const tag = el.tagName
+  if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') return false
+  const card = el.closest('.stock-card-wrap')
+  return !!card && card.dataset.id === String(props.stock.id)
+}
+
 watch(() => props.stock, (newStock) => {
+  // 用户正在本卡片内输入时，不用外部数据覆盖本地草稿（避免跨标签刷新打断输入）
+  if (isCardEditing()) return
   activeInput.value = null
   localStock.value = { ...newStock }
   rebuySharesInput.value = null
@@ -802,19 +825,19 @@ const transactionGroups = computed(() => {
 
   // === 合并 T 组和独立行，按时间排序 ===
   const sortedGroups = Object.values(groups).map(group => {
-    const groupTType = group[0].tType
-    const isZhengT = groupTType === '正T' || groupTType === '正T卖出'
+    // T 组内按实际发生时间排列（T入 与 T出 谁先录谁在前），方向不再靠标签区分
     group.sort((a, b) => {
-      if (a.type === b.type) return 0
-      if (isZhengT) return a.type === 'buy' ? -1 : 1
-      return a.type === 'sell' ? -1 : 1
+      const ta = a.createdAt || 0
+      const tb = b.createdAt || 0
+      if (ta && tb && ta !== tb) return ta - tb
+      return String(a.buyDate || a.sellDate || '').localeCompare(String(b.buyDate || b.sellDate || ''))
     })
     const firstTx = group[0]
     return {
       type: 'group',
       group,
-      groupTType,
-      isZhengT,
+      // 缺的那条腿：只有买入腿 → 待 T出；只有卖出腿 → 待 T入
+      pendingSide: firstTx.type === 'buy' ? 'sell' : 'buy',
       firstDate: firstTx.buyDate || firstTx.sellDate || '',
       firstCreatedAt: firstTx.createdAt || 0
     }
@@ -886,7 +909,7 @@ const transactionGroups = computed(() => {
       })
     } else {
       // === T 组 ===
-      const { group, groupTType, isZhengT } = item
+      const { group, pendingSide } = item
       const isCompleted = group.length >= 2
       const groupOldCost = getCurrentCost()
 
@@ -952,7 +975,7 @@ const transactionGroups = computed(() => {
       let breakEvenPrice = null
       if (!isCompleted) {
         const firstTx = group[0]
-        if (isZhengT) {
+        if (pendingSide === 'sell') {
           const buyCost = firstTx.buyPrice * firstTx.buyCount + (firstTx.commission || 0) + (firstTx.transferFee || 0)
           let lo = firstTx.buyPrice, hi = firstTx.buyPrice * 2
           for (let i = 0; i < 50; i++) {
@@ -981,7 +1004,7 @@ const transactionGroups = computed(() => {
 
       result.push({
         type: 'group',
-        tType: isZhengT ? '正T' : '反T',
+        pendingSide,
         isCompleted,
         groupNetProfit,
         groupCostChange,
@@ -1098,7 +1121,7 @@ const investTooltip = computed(() => {
   buyRecords.forEach((r) => {
     const gross = Number(r.buyPrice || 0) * Number(r.buyCount || 0)
     const fee = (Number(r.commission) || 0) + (Number(r.transferFee) || 0)
-    const label = r.tType ? `[${r.tType}]` : ''
+    const label = r.tType ? `[${tTypeValue({ ...r, type: 'buy' })}]` : ''
     lines.push(`  ${label}${r.buyDate || ''} ¥${r.buyPrice}×${r.buyCount}股 + 手续费¥${fee.toFixed(2)} = ¥${(gross + fee).toFixed(2)}`)
   })
   lines.push('-----------------------------------------')
@@ -1113,7 +1136,7 @@ const recoverTooltip = computed(() => {
     const gross = Number(r.sellPrice || 0) * Number(r.sellCount || 0)
     const fee = (Number(r.sellCommission) || 0) + (Number(r.sellTransferFee) || 0) + (Number(r.stampTax) || 0) + (Number(r.otherFee) || 0)
     const net = gross - fee
-    const label = r.tType ? `[${r.tType}]` : ''
+    const label = r.tType ? `[${tTypeValue({ ...r, type: 'sell' })}]` : ''
     lines.push(`  ${label}${r.sellDate || ''} ¥${r.sellPrice}×${r.sellCount}股 - 手续费¥${fee.toFixed(2)} = ¥${net.toFixed(2)}`)
   })
   lines.push('-----------------------------------------')
@@ -1219,21 +1242,20 @@ function previewProfit(groupItem) {
   const price = parseFloat(previewPrices.value[groupItem.previewKey])
   if (isNaN(price) || price <= 0) return 0
   const firstTx = groupItem.rows[0].tx
-  if (groupItem.tType === '正T') {
-    // 正T：已有买入，预览卖出利润
+  if (groupItem.pendingSide === 'sell') {
+    // 已有 T入（买入腿），预览 T出（卖出）的净盈利
     const buyCost = firstTx.buyPrice * firstTx.buyCount + (firstTx.commission || 0) + (firstTx.transferFee || 0)
     const sellAmt = price * firstTx.buyCount
     const { commission: comm, stampTax: stamp, transferFee: tf } = sellFeeParts(sellAmt)
     return sellAmt - comm - stamp - tf - buyCost
-  } else {
-    // 反T：已有卖出，预览买入承接利润
-    const sellAmt = firstTx.sellPrice * firstTx.sellCount
-    const sellFees = (firstTx.sellCommission || 0) + (firstTx.sellTransferFee || 0) + (firstTx.stampTax || 0)
-    const sellNet = sellAmt - sellFees
-    const buyAmt = price * firstTx.sellCount
-    const { commission: comm, transferFee: tf } = buyFeeParts(buyAmt)
-    return sellNet - buyAmt - comm - tf
   }
+  // 已有 T出（卖出腿），预览 T入（买入承接）的净盈利
+  const sellAmt = firstTx.sellPrice * firstTx.sellCount
+  const sellFees = (firstTx.sellCommission || 0) + (firstTx.sellTransferFee || 0) + (firstTx.stampTax || 0)
+  const sellNet = sellAmt - sellFees
+  const buyAmt = price * firstTx.sellCount
+  const { commission: comm, transferFee: tf } = buyFeeParts(buyAmt)
+  return sellNet - buyAmt - comm - tf
 }
 
 function toggleTransactions() {
@@ -1321,14 +1343,26 @@ function changeTxType(tx, newType) {
   emit('change-tx-type', props.stock.id, tx, newType)
 }
 
+// 旧数据兼容：历史记录里的 正T / 正T卖出 / 反T / 反T承接 在界面上统一显示为 T入 / T出
+function tTypeValue(tx) {
+  const t = String(tx?.tType || '')
+  if (tx?.type === 'buy') {
+    if (t === 'T入' || t === '正T' || t === '反T承接') return 'T入'
+    return t
+  }
+  if (t === 'T出' || t === '正T卖出' || t === '反T') return 'T出'
+  return t
+}
+
 function txSelectClass(tx) {
+  const t = tTypeValue(tx)
   if (tx.type === 'buy') {
-    if (tx.tType === '正T' || tx.tType === '反T承接') return 'bg-green-100 text-green-700 font-medium'
+    if (t === 'T入') return 'bg-green-100 text-green-700 font-medium'
     return 'bg-blue-100 text-blue-700 font-medium'
   }
   // sell
   if (tx.tType === '卖出' || tx.tType === '止盈' || tx.tType === '止损') return 'bg-emerald-100 text-emerald-700 font-medium'
-  if (tx.tType === '正T卖出' || tx.tType === '反T') return 'bg-amber-100 text-amber-700 font-medium'
+  if (t === 'T出') return 'bg-amber-100 text-amber-700 font-medium'
   return 'bg-red-100 text-red-700 font-medium'
 }
 </script>

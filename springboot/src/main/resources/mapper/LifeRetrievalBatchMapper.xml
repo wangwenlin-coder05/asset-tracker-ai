@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.LifeRetrievalBatchMapper">
+
+  <select id="countAll" resultType="java.util.LinkedHashMap">
+    SELECT COUNT(*) AS n FROM life_retrieval_batches
+  </select>
+
+  <select id="selectById" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_retrieval_batches WHERE id = #{id} LIMIT 1
+  </select>
+
+  <select id="selectRecent" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_retrieval_batches
+    ORDER BY created_at DESC
+    LIMIT #{limit}
+  </select>
+
+  <select id="billingTotals" resultType="java.util.LinkedHashMap">
+    SELECT COUNT(*) AS n, COALESCE(SUM(actual_cost), 0) AS cost
+    FROM life_retrieval_batches WHERE status IN ('done','partial')
+  </select>
+
+  <insert id="insertBatch">
+    INSERT INTO life_retrieval_batches
+      (id, batch_no, task_count, est_cost, actual_cost, status, created_at, decided_at)
+    VALUES
+      (#{id}, #{batchNo}, #{taskCount}, #{estCost}, #{actualCost}, #{status}, #{createdAt}, #{decidedAt})
+  </insert>
+
+  <update id="updateStatus">
+    UPDATE life_retrieval_batches
+    SET status = #{status}, actual_cost = #{actualCost}, decided_at = #{decidedAt}
+    WHERE id = #{id}
+  </update>
+
+</mapper>

@@ -1,8 +1,13 @@
 <template>
   <div>
-    <MarketTicker ref="marketTickerRef" />
-    <div id="stockList" class="space-y-3 overflow-x-auto">
-      <template v-if="loading">
+    <MarketTicker v-if="!analysisOnly" ref="marketTickerRef" />
+    <div v-if="!analysisOnly && priceMetaText" class="flex items-center justify-end gap-1.5 mb-1.5 text-[11px] text-slate-400">
+      <span>{{ priceMetaText }}</span>
+      <span v-if="stockPriceMeta.stale" class="text-amber-500">· 获取失败，可能已过期</span>
+    </div>
+    <div v-if="!analysisOnly" id="stockList" class="space-y-3 overflow-x-auto">
+      <!-- 仅「首次尚无任何数据」时显示加载框；已有数据后的刷新一律静默，避免列表在骨架与内容间反复跳动 -->
+      <template v-if="loading && stocks.length === 0">
         <div class="text-center py-8 text-slate-400">加载中...</div>
       </template>
       <template v-else-if="stockList.length === 0">
@@ -30,7 +35,7 @@
         />
       </template>
     </div>
-    <div v-if="clearedList.length > 0" id="clearedSection" class="mt-6">
+    <div v-if="!analysisOnly && clearedList.length > 0" id="clearedSection" class="mt-6">
       <div class="mb-3 flex items-center justify-between gap-3 flex-wrap">
         <h3 class="text-sm font-semibold text-slate-600 flex items-center gap-2">
           <Archive class="w-4 h-4" />
@@ -82,12 +87,13 @@
         />
       </div>
     </div>
-    <button @click="openNewStockDialog" class="fixed bottom-6 right-6 z-30 flex items-center gap-1.5 rounded-full bg-blue-600 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-blue-600/25 transition hover:-translate-y-0.5 hover:bg-blue-700" title="新增买入">
+    <button v-if="!analysisOnly" @click="openNewStockDialog" class="fixed bottom-6 right-6 z-30 flex items-center gap-1.5 rounded-full bg-blue-600 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-blue-600/25 transition hover:-translate-y-0.5 hover:bg-blue-700" title="新增买入">
       <Plus class="h-4 w-4" />
       新增买入
     </button>
     <StockWatchPanel
       ref="watchPanelRef"
+      :page-mode="analysisOnly"
       :stock-prices="stockPrices"
       :holding-stocks="stockList"
       :cleared-stocks="clearedList"
@@ -140,6 +146,12 @@ import { useStock } from '../composables/useStock'
 import { useStockPrice } from '../composables/useStockPrice'
 import { calcStock } from '../utils/calculator'
 import { buyFeeParts, sellFeeParts } from '../utils/feeConfig'
+import { toast } from '../utils/toast'
+
+// 仅渲染每日分析页面（用于独立页面模式，隐藏股票列表等其它内容）
+defineProps({
+  analysisOnly: { type: Boolean, default: false }
+})
 
 const marketTickerRef = ref(null)
 function restartMarketPolling() { return marketTickerRef.value?.restartMarketPolling?.() }
@@ -148,10 +160,46 @@ function genTGroupId() {
   return 'tg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
 }
 
+// ===== 做T：T入 / T出 自动配对 =====
+// 一个 T 组 = 一条买入腿（T入）+ 一条卖出腿（T出）。先录入的那条腿开组，
+// 另一条腿录入时自动找到「只缺这一腿」的组配上去；不区分先买后卖还是先卖后买，跨日也能配。
+function tRecordTime(rec) {
+  return rec?.createdAt || String(rec?.buyDate || rec?.sellDate || '')
+}
+// needLeg：需要补上的那条腿，'buy' 找只缺买入腿的组，'sell' 找只缺卖出腿的组
+function findPendingTGroup(stock, needLeg) {
+  const other = needLeg === 'buy' ? 'sell' : 'buy'
+  const groups = new Map()
+  const put = (tGroupId, key, rec) => {
+    if (!tGroupId) return
+    const group = groups.get(tGroupId) || { buy: null, sell: null }
+    group[key] = rec
+    groups.set(tGroupId, group)
+  }
+  for (const b of stock?.buyRecords || []) put(b.tGroupId, 'buy', b)
+  for (const s of stock?.sellRecords || []) put(s.tGroupId, 'sell', s)
+  const candidates = []
+  for (const [tGroupId, group] of groups) {
+    if (!group[needLeg] && group[other]) candidates.push({ tGroupId, leg: group[other] })
+  }
+  // 同时有多组待配对时，先挂先配（按录入时间取最早的一条腿）
+  candidates.sort((a, b) => String(tRecordTime(a.leg)).localeCompare(String(tRecordTime(b.leg))))
+  return candidates[0] || null
+}
+// T 组净盈利 = 卖出净收入 - 买入总成本（买卖双边手续费都扣掉，与先后顺序无关）
+function tGroupProfit(buy, sell) {
+  const buyFees = (Number(buy?.commission) || 0) + (Number(buy?.transferFee) || 0) + (Number(buy?.handlingFee) || 0) + (Number(buy?.regulatoryFee) || 0)
+  const sellFees = (Number(sell?.sellCommission) || 0) + (Number(sell?.sellTransferFee) || 0) + (Number(sell?.stampTax) || 0) + (Number(sell?.handlingFee) || 0) + (Number(sell?.regulatoryFee) || 0) + (Number(sell?.otherFee) || 0)
+  const sellNet = (Number(sell?.sellPrice) || 0) * (Number(sell?.sellCount) || 0) - sellFees
+  const buyCost = (Number(buy?.buyPrice) || 0) * (Number(buy?.buyCount) || 0) + buyFees
+  return parseFloat((sellNet - buyCost).toFixed(2))
+}
+
 const {
+  stocks,
   stockList,
   clearedList,
-  loading,
+  loadingByBoard,
   clearedSortField,
   clearedSortOrder,
   canUndoClearedSort,
@@ -171,6 +219,9 @@ const {
   getStock,
   refreshStock
 } = useStock()
+
+// 本看板（board = 'stock'）的加载态；加载态按看板隔离后互不干扰
+const loading = computed(() => !!loadingByBoard.value.stock)
 
 const sortOptions = [
   { field: 'default', label: '默认排序' },
@@ -196,7 +247,16 @@ function handleUndoSort() {
   undoClearedSort()
 }
 
-const { stockPrices, fetchStockPrices, startStockPriceTimer, stopStockPriceTimer } = useStockPrice()
+const { stockPrices, stockPriceMeta, fetchStockPrices, startStockPriceTimer, stopStockPriceTimer } = useStockPrice()
+
+// 行情更新时间提示：数据源为盘中每 30s 拉取的现价
+const priceMetaText = computed(() => {
+  const at = stockPriceMeta.value?.fetchedAt
+  if (!at) return ''
+  const t = new Date(at)
+  if (Number.isNaN(t.getTime())) return ''
+  return `行情更新 ${t.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })}`
+})
 
 const allStockCodes = computed(() => {
   const codes = new Set()
@@ -230,11 +290,11 @@ onMounted(async () => {
   await loadStocks()
   snapshotHoldingOrder()
   refreshStockPrices(true) // 启动时无条件请求一次（即使收盘）
-  startStockPriceTimer(() => allStockCodes.value)
+  startStockPriceTimer('stock', () => allStockCodes.value)
 })
 
 onBeforeUnmount(() => {
-  stopStockPriceTimer()
+  stopStockPriceTimer('stock')
 })
 
 watch(allStockCodes, () => {
@@ -272,10 +332,47 @@ function handleWatchBuy(payload) {
 }
 
 // 观察面板 → 登记卖出：仅已建仓股票可卖
-function handleWatchSell(payload) {
+async function handleWatchSell(payload) {
   const stock = findStockByCode(payload?.code)
-  if (!stock) { alert('该股票尚未建仓，无法登记卖出'); return }
+  if (!stock) { toast('该股票尚未建仓，无法登记卖出', 'error'); return }
+  // 操作行内联的快速做T：直接落库新增记录，不弹窗
+  if (payload?.quickSell) { await handleQuickSell(stock, payload.quickSell); return }
   openSellDialog(stock.id)
+}
+
+// 行内快速做T录入：新增一条 T出（卖出）记录，并自动与该笔买入配成同一 T 组
+async function handleQuickSell(stock, qs) {
+  const price = Number(qs?.price)
+  const count = Number(qs?.count)
+  if (!price || !count) return
+  const buy = (stock.buyRecords || []).find(b => String(b.id) === String(qs.buyRecordId))
+  const buyPrice = Number(buy?.buyPrice ?? qs.buyPrice ?? price)
+  const buyCount = Number(buy?.buyCount ?? count)
+  const amount = price * count
+  const sellFee = sellFeeParts(amount)
+  const buyFee = buyFeeParts(buyPrice * buyCount)
+  // 价差收益全额摊到配对买入记录的成本上
+  const costChange = parseFloat((amount - buyPrice * buyCount - buyFee.total - sellFee.total).toFixed(2))
+  // 这笔卖出就是给该笔买入配的 T出：沿用该买入已开的组，没有则新开一个组
+  const tGroupId = buy?.tGroupId || qs.tGroupId || genTGroupId()
+
+  await addSellRecord(stock.id, {
+    sellDate: new Date().toISOString().slice(0, 10),
+    sellPrice: price,
+    sellCount: count,
+    sellCommission: sellFee.commission,
+    sellTransferFee: sellFee.transferFee,
+    stampTax: sellFee.stampTax,
+    netProfit: costChange,
+    tType: 'T出',
+    tGroupId,
+    tProfit: costChange
+  })
+  // 配对的买入腿标记为 T入 并绑定同一 T 组
+  if (buy) {
+    await updateBuyRecord(stock.id, buy.id, { tType: 'T入', tGroupId, costChange })
+  }
+  await refreshStock(stock.id)
 }
 
 const currentStock = computed(() => getStock(currentStockId.value))
@@ -361,25 +458,13 @@ async function handleAddBuyRecord(data) {
   let tGroupId = null
   let costChange = 0
 
-  if (data.tType === '正T') {
-    // 正T买入：创建新T组，等待正T卖出
-    tGroupId = genTGroupId()
-  } else if (data.tType === '反T承接') {
-    // 反T承接：找待承接的反T卖出
-    const pendingSell = stock?.sellRecords?.find(s => s.tType === '反T' && s.tPending)
-    if (pendingSell) {
-      tGroupId = pendingSell.tGroupId
-      // 计算T组净盈利
-      const buyAmount = data.buyPrice * data.buyCount
-      const sellAmount = pendingSell.sellPrice * pendingSell.sellCount
-      const buyFees = (data.commission || 0) + (data.transferFee || 0)
-      const sellFees = (pendingSell.sellCommission || 0) + (pendingSell.sellTransferFee || 0) + (pendingSell.stampTax || 0)
-      costChange = sellAmount - buyAmount - buyFees - sellFees
-      // 标记卖出不再pending
-      await updateSellRecord(currentStockId.value, pendingSell.id, { tPending: false })
-    }
+  if (data.tType === 'T入') {
+    // 有挂着待配对的 T出（只缺买入腿）就直接配上，否则先开一个 T 组等 T出 来配
+    const pending = findPendingTGroup(stock, 'buy')
+    tGroupId = pending ? pending.tGroupId : genTGroupId()
+    if (pending) costChange = tGroupProfit(data, pending.leg)
   }
-  // 补仓 / 首次建仓：无tGroupId
+  // 建仓 / 补仓：不参与 T 组
 
   await addBuyRecord(currentStockId.value, {
     ...data,
@@ -404,10 +489,8 @@ async function handleChangeTxType(stockId, tx, newType) {
   const stock = getStock(stockId)
   if (!stock) return
 
-  const isTType = ['正T', '反T承接', '正T卖出', '反T'].includes(newType)
-  const wasInGroup = !!tx.tGroupId
-
-  if (wasInGroup) {
+  // 先解绑：这一腿原来挂在某个 T 组里，改类型即退出该组（另一腿会重新显示为待配对）
+  if (tx.tGroupId) {
     if (tx.type === 'buy') {
       await updateBuyRecord(stockId, tx.id, { tType: '', tGroupId: null })
     } else {
@@ -419,52 +502,35 @@ async function handleChangeTxType(stockId, tx, newType) {
   const refreshedStock = getStock(stockId)
   if (!refreshedStock) return
 
-  if (!isTType) {
+  // 非 T 类型：只改标签，不参与 T 组（与 T 组解绑已在上面完成）
+  if (newType !== 'T入' && newType !== 'T出') {
     if (tx.type === 'buy') {
       await updateBuyRecord(stockId, tx.id, { tType: newType })
     } else {
       await updateSellRecord(stockId, tx.id, { tType: newType })
     }
-  } else if (tx.type === 'buy') {
-    if (newType === '正T') {
-      const tGroupId = genTGroupId()
-      await updateBuyRecord(stockId, tx.id, { tType: '正T', tGroupId })
-    } else if (newType === '反T承接') {
-      const pendingSell = refreshedStock.sellRecords?.find(s =>
-        s.tType === '反T' && s.tPending && s.tGroupId
-      )
-      if (pendingSell) {
-        const buyAmount = tx.buyPrice * tx.buyCount
-        const sellAmount = pendingSell.sellPrice * pendingSell.sellCount
-        const buyFees = (tx.commission || 0) + (tx.transferFee || 0)
-        const sellFees = (pendingSell.sellCommission || 0) + (pendingSell.sellTransferFee || 0) + (pendingSell.stampTax || 0)
-        const costChange = sellAmount - buyAmount - buyFees - sellFees
-        await updateBuyRecord(stockId, tx.id, { tType: '反T承接', tGroupId: pendingSell.tGroupId, costChange })
-        await updateSellRecord(stockId, pendingSell.id, { tPending: false })
-      } else {
-        await updateBuyRecord(stockId, tx.id, { tType: '反T承接' })
-      }
+    await refreshStock(stockId)
+    return
+  }
+
+  if (tx.type === 'buy') {
+    // T入：有挂着待配对的 T出 就直接配上（反向后配），否则新开一组
+    const pending = findPendingTGroup(refreshedStock, 'buy')
+    if (pending) {
+      const costChange = tGroupProfit(tx, pending.leg)
+      await updateBuyRecord(stockId, tx.id, { tType: 'T入', tGroupId: pending.tGroupId, costChange })
+    } else {
+      await updateBuyRecord(stockId, tx.id, { tType: 'T入', tGroupId: genTGroupId() })
     }
   } else {
-    if (newType === '正T卖出') {
-      const pendingBuy = refreshedStock.buyRecords?.find(b =>
-        b.tType === '正T' && b.tGroupId &&
-        !refreshedStock.sellRecords?.some(s => s.tGroupId === b.tGroupId)
-      )
-      if (pendingBuy) {
-        const sellAmount = tx.sellPrice * tx.sellCount
-        const buyAmount = pendingBuy.buyPrice * pendingBuy.buyCount
-        const buyFees = (pendingBuy.commission || 0) + (pendingBuy.transferFee || 0)
-        const sellFees = (tx.sellCommission || 0) + (tx.sellTransferFee || 0) + (tx.stampTax || 0)
-        const costChange = sellAmount - buyAmount - buyFees - sellFees
-        await updateSellRecord(stockId, tx.id, { tType: '正T卖出', tGroupId: pendingBuy.tGroupId })
-        await updateBuyRecord(stockId, pendingBuy.id, { costChange })
-      } else {
-        await updateSellRecord(stockId, tx.id, { tType: '正T卖出' })
-      }
-    } else if (newType === '反T') {
-      const tGroupId = genTGroupId()
-      await updateSellRecord(stockId, tx.id, { tType: '反T', tGroupId, tPending: true })
+    // T出：有挂着待配对的 T入 就直接配上，否则新开一组
+    const pending = findPendingTGroup(refreshedStock, 'sell')
+    if (pending) {
+      const costChange = tGroupProfit(pending.leg, tx)
+      await updateSellRecord(stockId, tx.id, { tType: 'T出', tGroupId: pending.tGroupId, tProfit: costChange })
+      await updateBuyRecord(stockId, pending.leg.id, { costChange })
+    } else {
+      await updateSellRecord(stockId, tx.id, { tType: 'T出', tGroupId: genTGroupId() })
     }
   }
 
@@ -484,11 +550,12 @@ async function handleDeleteTransaction(stockId, type, recordId) {
 
 async function handleQuickRecord(stockId, groupItem, price) {
   const stock = getStock(stockId)
+  // 组内已录的那一腿决定方向：有买入腿 → 补 T出；有卖出腿 → 补 T入
   const firstTx = groupItem.rows[0].tx
   const today = new Date().toISOString().slice(0, 10)
 
-  if (groupItem.tType === '正T') {
-    // 正T：已有买入，录入卖出
+  if (firstTx.type === 'buy') {
+    // 已有 T入（买入），录入 T出（卖出）
     const sellAmt = price * firstTx.buyCount
     const { commission: sellCommission, transferFee: sellTransferFee, stampTax } = sellFeeParts(sellAmt)
     const sellFees = sellCommission + sellTransferFee + stampTax
@@ -508,13 +575,13 @@ async function handleQuickRecord(stockId, groupItem, price) {
       sellTransferFee,
       stampTax,
       netProfit,
-      tType: '正T卖出',
+      tType: 'T出',
       tGroupId: firstTx.tGroupId,
-      tPending: false
+      tProfit: costChange
     })
     await updateBuyRecord(stockId, firstTx.id, { costChange })
   } else {
-    // 反T：已有卖出，录入买入承接
+    // 已有 T出（卖出），录入 T入（买入）
     const buyAmt = price * firstTx.sellCount
     const { commission, transferFee } = buyFeeParts(buyAmt)
 
@@ -528,11 +595,10 @@ async function handleQuickRecord(stockId, groupItem, price) {
       buyCount: firstTx.sellCount,
       commission,
       transferFee,
-      tType: '反T承接',
+      tType: 'T入',
       tGroupId: firstTx.tGroupId,
       costChange
     })
-    await updateSellRecord(stockId, firstTx.id, { tPending: false })
   }
   await refreshStock(stockId)
 }
@@ -541,43 +607,32 @@ async function handleAddSellRecord(data) {
   const stock = getStock(currentStockId.value)
   const calcRes = calcStock(stock)
   let tGroupId = null
-  let tPending = false
   let costChange = 0
   let netProfit = 0
 
-  const sellAmount = data.sellPrice * data.sellCount
   const sellFees = (data.sellCommission || 0) + (data.sellTransferFee || 0) + (data.stampTax || 0)
 
-  if (data.tType === '反T') {
-    tGroupId = genTGroupId()
-    tPending = true
-    netProfit = parseFloat(((data.sellPrice - calcRes.avgCost) * data.sellCount - sellFees).toFixed(2))
-  } else if (data.tType === '正T卖出') {
-    const pendingBuy = stock?.buyRecords?.find(b => {
-      if (b.tType !== '正T' || !b.tGroupId) return false
-      return !stock.sellRecords?.some(s => s.tGroupId === b.tGroupId)
-    })
-    if (pendingBuy) {
-      tGroupId = pendingBuy.tGroupId
-      const buyAmount = pendingBuy.buyPrice * pendingBuy.buyCount
-      const buyFees = (pendingBuy.commission || 0) + (pendingBuy.transferFee || 0)
-      costChange = sellAmount - buyAmount - buyFees - sellFees
-      // T组净盈利基于配对买入价计算
-      netProfit = parseFloat(((data.sellPrice - pendingBuy.buyPrice) * data.sellCount - buyFees - sellFees).toFixed(2))
-      await updateBuyRecord(currentStockId.value, pendingBuy.id, { costChange })
+  if (data.tType === 'T出') {
+    // 有挂着待配对的 T入（只缺卖出腿）就直接配上，否则先开一个 T 组等 T入 来配
+    const pending = findPendingTGroup(stock, 'sell')
+    if (pending) {
+      tGroupId = pending.tGroupId
+      costChange = tGroupProfit(pending.leg, data)
+      // T 组净盈利基于配对买入价计算，并回写到买入腿的成本变化上
+      netProfit = costChange
+      await updateBuyRecord(currentStockId.value, pending.leg.id, { costChange })
     } else {
+      tGroupId = genTGroupId()
+      // 还没配上 T入，先按持仓平均成本估算这笔卖出的净盈利
       netProfit = parseFloat(((data.sellPrice - calcRes.avgCost) * data.sellCount - sellFees).toFixed(2))
     }
   } else {
     netProfit = parseFloat(((data.sellPrice - calcRes.avgCost) * data.sellCount - sellFees).toFixed(2))
   }
 
-  await addSellRecord(currentStockId.value, {
-    ...data,
-    netProfit,
-    tGroupId,
-    tPending
-  })
+  const payload = { ...data, netProfit, tGroupId }
+  if (data.tType === 'T出') payload.tProfit = costChange
+  await addSellRecord(currentStockId.value, payload)
   // 卖出后强制从后端拉取，校准前端 stock.count
   await refreshStock(currentStockId.value)
   showSellDialog.value = false

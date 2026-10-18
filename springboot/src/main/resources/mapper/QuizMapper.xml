@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.QuizMapper">
+
+  <select id="listQuestions" resultType="com.wangwenlin.stock.model.QuizQuestionRow">
+    SELECT id, stock_name, stock_code, quiz_date, image, correct_answer, note, created_at
+    FROM quiz_questions ORDER BY created_at DESC
+  </select>
+
+  <insert id="insertQuestion">
+    INSERT INTO quiz_questions (id, stock_name, stock_code, quiz_date, image, correct_answer, note, created_at)
+    VALUES (#{id}, #{stockName}, #{stockCode}, #{quizDate}, #{image}, #{correctAnswer}, #{note}, #{createdAt})
+  </insert>
+
+  <!-- 字段顺序与 Node 端 allowed 对象一致：stockName/stockCode/quizDate/image/correctAnswer/note -->
+  <update id="updateQuestion">
+    UPDATE quiz_questions
+    <set>
+      <if test="_parameter.containsKey('stockName')">stock_name = #{stockName},</if>
+      <if test="_parameter.containsKey('stockCode')">stock_code = #{stockCode},</if>
+      <if test="_parameter.containsKey('quizDate')">quiz_date = #{quizDate},</if>
+      <if test="_parameter.containsKey('image')">image = #{image},</if>
+      <if test="_parameter.containsKey('correctAnswer')">correct_answer = #{correctAnswer},</if>
+      <if test="_parameter.containsKey('note')">note = #{note},</if>
+    </set>
+    WHERE id = #{id}
+  </update>
+
+  <delete id="deleteAnswers">
+    DELETE FROM quiz_answers WHERE question_id = #{questionId}
+  </delete>
+
+  <delete id="deleteQuestion">
+    DELETE FROM quiz_questions WHERE id = #{id}
+  </delete>
+
+  <select id="findQuestion" resultType="com.wangwenlin.stock.model.QuizQuestionRow">
+    SELECT id, stock_name, stock_code, quiz_date, image, correct_answer, note, created_at
+    FROM quiz_questions WHERE id = #{id} LIMIT 1
+  </select>
+
+  <insert id="insertAnswer">
+    INSERT INTO quiz_answers (id, question_id, user_answer, ai_evaluation, created_at)
+    VALUES (#{id}, #{questionId}, #{userAnswer}, #{aiEvaluation}, #{createdAt})
+  </insert>
+
+  <select id="listAnswers" resultType="com.wangwenlin.stock.model.QuizAnswerRow">
+    SELECT id, question_id, user_answer, ai_evaluation, created_at
+    FROM quiz_answers WHERE question_id = #{questionId} ORDER BY created_at DESC
+  </select>
+
+</mapper>

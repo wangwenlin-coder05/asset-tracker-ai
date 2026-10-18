@@ -46,6 +46,14 @@
 
 `GET /api/auth/me` 恢复当前会话；`POST /api/auth/logout` 必须带 `X-CSRF-Token`。
 
+设置面板默认显示「账号安全」，支持修改邮箱账号、修改密码及退出登录。
+
+`POST /api/auth/account` 请求：`{"email":"new@example.com","currentPassword":"当前密码"}`。
+
+`POST /api/auth/password` 请求：`{"currentPassword":"当前密码","newPassword":"至少12字符的新密码"}`。
+
+两者均要求当前会话、允许的 Origin 和 `X-CSRF-Token`。成功返回与登录相同的用户和新 CSRF Token，并设置新 Cookie；同账号所有旧会话撤销。修改账号不改变用户 ID、角色或数据归属。密码错误返回 401、邮箱冲突返回 409、格式错误返回 400、CSRF 缺失返回 403。账号更新和会话轮换处于同一事务，失败不改变账号。请求中的 `user_id`/`role` 不受理。
+
 原业务 API 保留原 URL 和 DTO。所有 `/api`、`/quant`、`/uploads` 除显式公开账号接口外，统一鉴权。没有会话为 401，CSRF/本机门禁失败为 403。未知 API 返回 404。移除原来的仓库根目录静态服务，防止下载 `.env`、源码及 Git 文件。
 
 ## 4. 35 张表与 SQL 隔离方案

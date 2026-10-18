@@ -56,3 +56,23 @@ out/
 .DS_Store
 *.apk
 *.exe
+
+# 本地运行期缓存 / 浏览器调试配置（不提交）
+.cache/
+.chrome-cdp/
+.chrome-cdp2/
+.trae/
+.launcher/
+frontend/Microsoft/
+
+# 一次性临时脚本（下划线前缀）
+_*.py
+_*.txt
+_*.js
+
+# 个人非代码文档（如需入库可手动 git add -f）
+*.pptx
+life_plan_reject.md
+人生规划系统-终极总提示词.md
+开题汇报PPT大纲与讲稿.md
+lotus_dream.py

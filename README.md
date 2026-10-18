@@ -154,3 +154,7 @@ asset-tracker-ai/
 本机已有数据需要先停旧服务，再运行 `npm run migrate:phase1 -- --apply`；此工作区已执行并备份。所有者登录信息保存在未跟踪的 `.launcher/phase1-credentials.json`。普通用户自行注册及填写官网 Token；平台不共享 `.env` 中的模型 Key。
 
 运行 `npm run test:phase1`、`npm run test:phase1:integration` 验证隔离。微信/共享量化及任意 URL 抓取在 Phase 1 仅限本机所有者；公网发布还需完成后续部署和安全配置。
+
+侧栏底部「设置」中的「账号安全」支持修改邮箱账号、修改密码和退出登录；修改凭据需要当前密码，成功后保留数据并撤销旧会话。
+
+Vercel + Railway + TiDB 的执行说明见 `docs/deployment-plan-b.md`。`npm run import:cloud` 默认只读预检，明确确认后才加 `-- --apply`；取得真实后端域名后运行 `npm run configure:vercel -- https://真实后端域名` 生成同源代理配置。云库凭据和部署 Token 仅存于被忽略的 `.env.cloud.local`，不提交到仓库。

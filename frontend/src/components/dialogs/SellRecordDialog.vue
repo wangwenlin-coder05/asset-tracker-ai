@@ -128,8 +128,7 @@ const visible = ref(true)
 const submitting = ref(false)
 
 const sellTypeOptions = [
-  { value: '反T', label: '反T', activeClass: 'text-amber-600 bg-amber-50' },
-  { value: '正T卖出', label: '正T卖出', activeClass: 'text-green-600 bg-green-50' },
+  { value: 'T出', label: 'T出', activeClass: 'text-amber-600 bg-amber-50' },
   { value: '卖出', label: '卖出', activeClass: 'text-emerald-600 bg-emerald-50' }
 ]
 

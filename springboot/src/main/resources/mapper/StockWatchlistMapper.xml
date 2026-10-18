@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.StockWatchlistMapper">
+
+  <select id="list" resultType="com.wangwenlin.stock.model.StockWatchlistRow">
+    SELECT id, code, name, is_holding, pinned, sort_order, created_at, updated_at
+    FROM stock_watchlist ORDER BY pinned DESC, sort_order ASC, created_at DESC
+  </select>
+
+  <select id="findCodeById" resultType="java.lang.String">
+    SELECT code FROM stock_watchlist WHERE id = #{id} LIMIT 1
+  </select>
+
+  <insert id="insert">
+    INSERT INTO stock_watchlist (id, code, name, is_holding, pinned, sort_order, created_at, updated_at)
+    VALUES (#{id}, #{code}, #{name}, #{isHolding}, 0, 0, #{createdAt}, #{updatedAt})
+  </insert>
+
+  <update id="updateFields">
+    UPDATE stock_watchlist
+    <set>
+      <if test="_parameter.containsKey('pinned')">pinned = #{pinned},</if>
+      <if test="_parameter.containsKey('sortOrder')">sort_order = #{sortOrder},</if>
+      <if test="_parameter.containsKey('name')">name = #{name},</if>
+      <if test="_parameter.containsKey('isHolding')">is_holding = #{isHolding},</if>
+      updated_at = #{updatedAt}
+    </set>
+    WHERE id = #{id}
+  </update>
+
+  <delete id="deleteById">
+    DELETE FROM stock_watchlist WHERE id = #{id}
+  </delete>
+
+</mapper>

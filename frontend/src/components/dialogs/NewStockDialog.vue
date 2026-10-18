@@ -5,6 +5,7 @@
         <h3 class="text-lg font-bold text-slate-800 flex items-center gap-2">
           <PlusCircle class="w-5 h-5 text-primary" />
           新增买入
+          <span v-if="stockSuffix" class="text-sm font-normal text-slate-500">{{ stockSuffix }}</span>
         </h3>
         <button @click="$emit('close')" :disabled="batchSubmitting" class="text-neutral hover:text-slate-800 disabled:opacity-40">
           <X class="w-5 h-5" />
@@ -170,6 +171,14 @@ const props = defineProps({
 const { stocks, addStock, addBuyRecord, refreshStock } = useStock()
 
 const visible = ref(true)
+
+// 标题后追加的股票名 + 代码
+const stockSuffix = computed(() => {
+  const n = (form.name || '').trim()
+  const c = (form.code || '').trim()
+  if (!n && !c) return ''
+  return [n, c].filter(Boolean).join(' ')
+})
 
 const pasteText = ref('')
 const batchMode = ref(false)

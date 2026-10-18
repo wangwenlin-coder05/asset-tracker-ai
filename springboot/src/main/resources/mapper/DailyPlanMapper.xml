@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.DailyPlanMapper">
+
+  <select id="listAll" resultType="com.wangwenlin.stock.model.DailyPlanRow">
+    SELECT id, title, period_type, period_value, icon, sort_order, created_at
+    FROM daily_plans ORDER BY sort_order ASC, created_at ASC
+  </select>
+
+  <insert id="insert">
+    INSERT INTO daily_plans (id, title, period_type, period_value, icon, sort_order, created_at)
+    VALUES (#{id}, #{title}, #{periodType}, #{periodValue}, #{icon}, #{sortOrder}, #{createdAt})
+  </insert>
+
+  <update id="updateFields">
+    UPDATE daily_plans
+    <set>
+      <if test="_parameter.containsKey('title')">title = #{title},</if>
+      <if test="_parameter.containsKey('periodType')">period_type = #{periodType},</if>
+      <if test="_parameter.containsKey('periodValue')">period_value = #{periodValue},</if>
+      <if test="_parameter.containsKey('icon')">icon = #{icon},</if>
+      <if test="_parameter.containsKey('sortOrder')">sort_order = #{sortOrder},</if>
+    </set>
+    WHERE id = #{id}
+  </update>
+
+  <delete id="deleteById">
+    DELETE FROM daily_plans WHERE id = #{id}
+  </delete>
+
+  <update id="updateSortOrder">
+    UPDATE daily_plans SET sort_order = #{sortOrder} WHERE id = #{id}
+  </update>
+
+</mapper>

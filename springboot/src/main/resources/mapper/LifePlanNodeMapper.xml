@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.LifePlanNodeMapper">
+
+  <select id="selectAll" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_plan_nodes
+    ORDER BY sort_order ASC, created_at ASC
+  </select>
+
+  <select id="selectById" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_plan_nodes WHERE id = #{id} LIMIT 1
+  </select>
+
+  <select id="selectFirstSelf" resultType="java.util.LinkedHashMap">
+    SELECT id FROM life_plan_nodes WHERE kind = 'self' ORDER BY created_at ASC LIMIT 1
+  </select>
+
+  <select id="listSelfIdsExcept" resultType="java.util.LinkedHashMap">
+    SELECT id FROM life_plan_nodes WHERE kind = 'self' AND id &lt;&gt; #{keep}
+  </select>
+
+  <select id="listNodeDateFields" resultType="java.util.LinkedHashMap">
+    SELECT id, parent_id, kind, title, series, horizon, start_date FROM life_plan_nodes
+  </select>
+
+  <select id="listHorizonNonEmpty" resultType="java.util.LinkedHashMap">
+    SELECT id, title, horizon FROM life_plan_nodes WHERE horizon &lt;&gt; ''
+  </select>
+
+  <insert id="insertNode">
+    INSERT INTO life_plan_nodes
+      (id, parent_id, kind, domain, title, detail, status, horizon, weight, content_type, source, sort_order, created_at, updated_at)
+    VALUES
+      (#{id}, #{parent_id}, #{kind}, #{domain}, #{title}, #{detail}, #{status}, #{horizon}, #{weight}, #{content_type}, #{source}, #{sort_order}, #{created_at}, #{updated_at})
+  </insert>
+
+  <update id="updateParentId">
+    UPDATE life_plan_nodes SET parent_id = #{newParentId} WHERE parent_id = #{oldParentId}
+  </update>
+
+  <update id="updateHorizon">
+    UPDATE life_plan_nodes SET horizon = #{horizon}, updated_at = #{updatedAt} WHERE id = #{id}
+  </update>
+
+  <update id="updateNodeDates">
+    UPDATE life_plan_nodes
+    <set>
+      <if test="setHorizon">horizon = #{horizon},</if>
+      <if test="setStart">start_date = #{startDate},</if>
+      time_group = #{timeGroup},
+      updated_at = #{updatedAt}
+    </set>
+    WHERE id = #{id}
+  </update>
+
+  <update id="updateHorizonTimeGroup">
+    UPDATE life_plan_nodes
+    SET horizon = #{horizon}, time_group = #{timeGroup}, updated_at = #{updatedAt}
+    WHERE id = #{id}
+  </update>
+
+  <delete id="deleteById">
+    DELETE FROM life_plan_nodes WHERE id = #{id}
+  </delete>
+
+  <insert id="insertNodeManual">
+    INSERT INTO life_plan_nodes
+      (id, parent_id, kind, domain, title, detail, risk, status, horizon, start_date, weight,
+       content_type, content_body, progress_note, reference_ids, is_shared, source, sort_order, created_at, updated_at)
+    VALUES
+      (#{id}, #{parent_id}, #{kind}, #{domain}, #{title}, #{detail}, #{risk}, #{status}, #{horizon}, #{start_date}, #{weight},
+       #{content_type}, #{content_body}, #{progress_note}, #{reference_ids}, #{is_shared}, #{source}, #{sort_order}, #{created_at}, #{updated_at})
+  </insert>
+
+  <insert id="insertNodeFromSnapshot">
+    INSERT INTO life_plan_nodes
+      (id, parent_id, kind, domain, title, detail, risk, status, horizon, weight, source, sort_order,
+       time_group, deps, step_no, priority, series, content_type, content_body, created_at, updated_at)
+    VALUES
+      (#{id}, #{parent_id}, #{kind}, #{domain}, #{title}, #{detail}, #{risk}, #{status}, #{horizon}, #{weight}, #{source}, #{sort_order},
+       #{time_group}, #{deps}, #{step_no}, #{priority}, #{series}, #{content_type}, #{content_body}, #{created_at}, #{updated_at})
+  </insert>
+
+  <update id="updateNodeFields">
+    UPDATE life_plan_nodes
+    <set>
+      <if test="_parameter.containsKey('title')">title = #{title},</if>
+      <if test="_parameter.containsKey('detail')">detail = #{detail},</if>
+      <if test="_parameter.containsKey('risk')">risk = #{risk},</if>
+      <if test="_parameter.containsKey('horizon')">horizon = #{horizon},</if>
+      <if test="_parameter.containsKey('start_date')">start_date = #{start_date},</if>
+      <if test="_parameter.containsKey('weight')">weight = #{weight},</if>
+      <if test="_parameter.containsKey('status')">status = #{status},</if>
+      <if test="_parameter.containsKey('domain')">domain = #{domain},</if>
+      <if test="_parameter.containsKey('kind')">kind = #{kind},</if>
+      <if test="_parameter.containsKey('parent_id')">parent_id = #{parent_id},</if>
+      <if test="_parameter.containsKey('series')">series = #{series},</if>
+      <if test="_parameter.containsKey('priority')">priority = #{priority},</if>
+      <if test="_parameter.containsKey('step_no')">step_no = #{step_no},</if>
+      <if test="_parameter.containsKey('time_group')">time_group = #{time_group},</if>
+      <if test="_parameter.containsKey('content_type')">content_type = #{content_type},</if>
+      <if test="_parameter.containsKey('content_body')">content_body = #{content_body},</if>
+      <if test="_parameter.containsKey('progress_note')">progress_note = #{progress_note},</if>
+      <if test="_parameter.containsKey('reference_ids')">reference_ids = #{reference_ids},</if>
+      <if test="_parameter.containsKey('is_shared')">is_shared = #{is_shared},</if>
+      updated_at = #{updated_at}
+    </set>
+    WHERE id = #{id}
+  </update>
+
+  <delete id="deleteNonSelf">
+    DELETE FROM life_plan_nodes WHERE kind &lt;&gt; 'self'
+  </delete>
+
+  <delete id="deleteAll">
+    DELETE FROM life_plan_nodes
+  </delete>
+
+</mapper>

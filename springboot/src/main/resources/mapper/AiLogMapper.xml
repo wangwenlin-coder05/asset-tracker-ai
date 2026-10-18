@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.AiLogMapper">
+
+  <select id="list" resultType="java.util.LinkedHashMap">
+    SELECT id, CAST(created_at AS CHAR) AS created_at, model, provider, system_prompt_len,
+           user_prompt_len, response_len, duration_ms, success, error_msg,
+           request_content, response_content
+    FROM ai_logs ORDER BY id DESC LIMIT #{limit} OFFSET #{offset}
+  </select>
+
+  <select id="countAll" resultType="long">
+    SELECT COUNT(*) FROM ai_logs
+  </select>
+
+  <select id="countSuccess" resultType="long">
+    SELECT COUNT(*) FROM ai_logs WHERE success = 1
+  </select>
+
+  <select id="countSuccessOnDate" resultType="long">
+    SELECT COUNT(*) FROM ai_logs WHERE success = 1 AND DATE(created_at) = #{date}
+  </select>
+
+  <select id="successByModelOnDate" resultType="java.util.LinkedHashMap">
+    SELECT model, COUNT(*) as count FROM ai_logs
+    WHERE success = 1 AND DATE(created_at) = #{date}
+    GROUP BY model ORDER BY count DESC
+  </select>
+
+  <select id="successTrend" resultType="java.util.LinkedHashMap">
+    SELECT DATE_FORMAT(created_at, '%Y-%m-%d') as date, COUNT(*) as count FROM ai_logs
+    WHERE success = 1 AND created_at &gt;= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+    GROUP BY date ORDER BY date ASC
+  </select>
+
+  <insert id="insertLog">
+    INSERT INTO ai_logs (model, provider, system_prompt_len, user_prompt_len, response_len,
+                         duration_ms, success, error_msg
+      <if test="_parameter.containsKey('requestContent')">, request_content</if>
+      <if test="_parameter.containsKey('responseContent')">, response_content</if>
+    )
+    VALUES (#{model}, #{provider}, #{systemPromptLen}, #{userPromptLen}, #{responseLen},
+            #{durationMs}, #{success}, #{errorMsg}
+      <if test="_parameter.containsKey('requestContent')">, #{requestContent}</if>
+      <if test="_parameter.containsKey('responseContent')">, #{responseContent}</if>
+    )
+  </insert>
+
+  <insert id="upsertUsage">
+    INSERT INTO ai_usage (date, model, count) VALUES (#{date}, #{model}, 1)
+    ON DUPLICATE KEY UPDATE count = count + 1
+  </insert>
+
+</mapper>

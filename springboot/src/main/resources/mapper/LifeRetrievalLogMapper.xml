@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.LifeRetrievalLogMapper">
+
+  <insert id="insertLog">
+    INSERT INTO life_retrieval_logs (id, batch_id, action, detail, cost, created_at)
+    VALUES (#{id}, #{batchId}, #{action}, #{detail}, #{cost}, #{createdAt})
+  </insert>
+
+  <select id="selectRecent" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_retrieval_logs
+    ORDER BY created_at DESC
+    LIMIT #{limit}
+  </select>
+
+</mapper>

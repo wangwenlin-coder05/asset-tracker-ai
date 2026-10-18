@@ -53,6 +53,14 @@ class MarketStore:
                     last_sync_date  TEXT,
                     last_sync_time  TEXT
                 );
+                CREATE TABLE IF NOT EXISTS survivorship_watch (
+                    code         TEXT PRIMARY KEY,
+                    name         TEXT,
+                    delisted     INTEGER NOT NULL DEFAULT 0,
+                    last_bar_date TEXT,
+                    note         TEXT,
+                    created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+                );
                 """
             )
 
@@ -161,6 +169,48 @@ class MarketStore:
                 "first_date": row["lo"],
                 "last_date": row["hi"],
             }
+
+    # ---------- 幸存者偏差对照：退市/长停股登记 ----------
+
+    def upsert_survivorship_watch(self, code: str, name: str | None = None,
+                                  delisted: bool = True, last_bar_date: str | None = None,
+                                  note: str = "") -> None:
+        """登记一只「已退市/长期停牌」的股票，供批量回测构造幸存者偏差对照组。
+
+        退市股的历史 K 线仍保留在 stock_daily（同步时抓取），此处只标记身份，
+        让 run_grid 能把它们拉进来当对照组，暴露「只用活着的股票回测」带来的虚高。
+        """
+        with self._lock, self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO survivorship_watch
+                    (code, name, delisted, last_bar_date, note)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(code) DO UPDATE SET
+                    name=COALESCE(excluded.name, survivorship_watch.name),
+                    delisted=excluded.delisted,
+                    last_bar_date=COALESCE(excluded.last_bar_date, survivorship_watch.last_bar_date),
+                    note=COALESCE(NULLIF(excluded.note, ''), survivorship_watch.note)
+                """,
+                (code, name, 1 if delisted else 0, last_bar_date, note),
+            )
+
+    def list_survivorship_watch(self, delisted_only: bool = False) -> list[dict]:
+        with self._lock, self._conn() as conn:
+            sql = ("SELECT code, name, delisted, last_bar_date, note "
+                   "FROM survivorship_watch")
+            if delisted_only:
+                sql += " WHERE delisted=1"
+            sql += " ORDER BY code"
+            cur = conn.execute(sql)
+            return [dict(r) for r in cur.fetchall()]
+
+    def drop_survivorship_watch(self, code: str) -> bool:
+        with self._lock, self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM survivorship_watch WHERE code=?", (code,)
+            )
+            return cur.rowcount > 0
 
 
 # 全局默认实例

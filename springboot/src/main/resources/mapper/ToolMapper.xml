@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.ToolMapper">
+
+  <select id="listCategories" resultType="java.lang.String">
+    SELECT DISTINCT category FROM tools WHERE category != '' ORDER BY category ASC
+  </select>
+
+  <select id="list" resultType="com.wangwenlin.stock.model.ToolRow">
+    SELECT id, name, url, icon, note, category, sort_order, created_at, updated_at
+    FROM tools ORDER BY category ASC, sort_order ASC, created_at DESC
+  </select>
+
+  <insert id="insert">
+    INSERT INTO tools (id, name, url, icon, note, category, sort_order, created_at, updated_at)
+    VALUES (#{id}, #{name}, #{url}, #{icon}, #{note}, #{category}, #{sortOrder}, #{createdAt}, #{updatedAt})
+  </insert>
+
+  <!-- 字段顺序与 Node 端 if 链一致：name/url/icon/note/category/sort_order，末尾固定 updated_at -->
+  <update id="update">
+    UPDATE tools
+    <set>
+      <if test="_parameter.containsKey('name')">name = #{name},</if>
+      <if test="_parameter.containsKey('url')">url = #{url},</if>
+      <if test="_parameter.containsKey('icon')">icon = #{icon},</if>
+      <if test="_parameter.containsKey('note')">note = #{note},</if>
+      <if test="_parameter.containsKey('category')">category = #{category},</if>
+      <if test="_parameter.containsKey('sortOrder')">sort_order = #{sortOrder},</if>
+      updated_at = #{updatedAt},
+    </set>
+    WHERE id = #{id}
+  </update>
+
+  <delete id="delete">
+    DELETE FROM tools WHERE id = #{id}
+  </delete>
+
+  <update id="updateSortOrder">
+    UPDATE tools SET sort_order = #{sortOrder} WHERE id = #{id}
+  </update>
+
+</mapper>

@@ -144,6 +144,49 @@
             </button>
           </div>
         </div>
+
+        <!-- 个股资讯拉取（东财新闻 + 巨潮公告，带情绪打分） -->
+        <div class="bg-white rounded-xl card-shadow p-4 mt-3">
+          <div class="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">
+            <Newspaper class="w-4 h-4 text-rose-500" /> 个股资讯
+          </div>
+          <p class="text-[11px] text-slate-400 mb-2 leading-5">
+            输入持仓股代码，拉取东方财富个股新闻与巨潮官方公告，自动打情绪分（利好/利空），可直接填入「参考正文」生成文章。
+          </p>
+          <div class="flex items-center gap-2">
+            <input v-model="newsCode" placeholder="如 600519 / 000720"
+                   class="flex-1 min-w-0 px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-indigo-300" />
+            <button @click="fetchStockNews" :disabled="newsLoading"
+                    class="px-3 py-2 rounded-lg text-xs font-medium text-white bg-rose-500 hover:bg-rose-600 disabled:opacity-50 flex items-center gap-1">
+              <Loader v-if="newsLoading" class="w-3.5 h-3.5 animate-spin" />
+              <Newspaper v-else class="w-3.5 h-3.5" /> 拉取
+            </button>
+          </div>
+          <p v-if="newsError" class="text-[11px] text-rose-500 mt-2">{{ newsError }}</p>
+
+          <div v-if="newsItems.length" class="mt-3 space-y-1.5 max-h-72 overflow-y-auto pr-1">
+            <div v-for="(it, i) in newsItems" :key="i"
+                 class="rounded-lg border p-2.5 text-[11px] leading-5"
+                 :class="newsItemClass(it)">
+              <div class="font-semibold text-slate-800 break-words">{{ it.title || it.summary || '（无标题）' }}</div>
+              <div class="text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
+                <span v-if="it.time">{{ it.time }}</span>
+                <span v-if="it.source" class="px-1 rounded bg-slate-100 text-slate-500">{{ it.source }}</span>
+                <span v-if="it.type" class="px-1 rounded bg-indigo-50 text-indigo-600">{{ it.type }}</span>
+                <span class="px-1 rounded" :class="toneBadgeClass(it.tone)">
+                  {{ it.tone === 'bull' ? '利好 +' + it.score : it.tone === 'bear' ? '利空 ' + it.score : '中性' }}
+                </span>
+              </div>
+              <a v-if="it.url" :href="it.url" target="_blank" rel="noopener noreferrer"
+                 class="text-indigo-500 hover:underline break-all">原文链接 ↗</a>
+            </div>
+          </div>
+
+          <button v-if="newsItems.length" @click="useNewsAsSeed"
+                  class="mt-2 w-full py-1.5 rounded-lg text-xs font-medium text-rose-600 border border-rose-200 hover:bg-rose-50 transition-all">
+            把以上资讯填入「参考正文」
+          </button>
+        </div>
       </div>
     </aside>
 
@@ -254,7 +297,7 @@
 import { userStorage as localStorage } from '../../auth'
 import { inject, reactive, ref, computed, watch, onMounted } from 'vue'
 import {
-  Settings, Sliders, ChevronDown, Wand2, Hash, Trash2, FileText, Clock, Layers, Copy, Save, Share2, Sparkles, Loader,
+  Settings, Sliders, ChevronDown, Wand2, Hash, Trash2, FileText, Clock, Layers, Copy, Save, Share2, Sparkles, Loader, Newspaper,
 } from 'lucide-vue-next'
 import { useAiWork } from '../../composables/useAiWork'
 import { aiWorkApi } from '../../utils/api'
@@ -314,6 +357,73 @@ function extractSeedFromStorage() {
       localStorage.removeItem('ai_seed_hot')
     }
   } catch {}
+}
+
+// ==== 个股资讯（东财新闻 + 巨潮公告 + 情绪打分）====
+const newsCode = ref('')
+const newsItems = ref([])   // 合并新闻+公告，已含 tone/score
+const newsLoading = ref(false)
+const newsError = ref('')
+
+async function fetchStockNews() {
+  const code = newsCode.value.trim()
+  if (!code) return
+  newsLoading.value = true
+  newsError.value = ''
+  newsItems.value = []
+  try {
+    // 1) 资讯（akshare 东财新闻 + 巨潮公告，服务端带 1h 缓存）
+    const res = await fetch(`/api/stock/news/${encodeURIComponent(code)}`)
+    const data = await res.json()
+    if (res.ok && data.data) {
+      const news = data.data.news || []
+      const notices = data.data.notices || []
+      newsItems.value = [...news, ...notices].slice(0, 30)
+    } else if (res.status === 503) {
+      newsError.value = '资讯服务暂不可用（' + (data.error || '请稍后重试') + '）'
+    }
+    // 2) 情绪打分（利好/利空），按标题/摘要匹配
+    try {
+      const sres = await fetch(`/api/stock/sentiment/${encodeURIComponent(code)}`)
+      const sdata = await sres.json()
+      if (Array.isArray(sdata.items) && sdata.items.length) {
+        // 把 tone/score 合并回 newsItems（按标题匹配）
+        const toneMap = new Map(sdata.items.map(it => [it.title, it]))
+        newsItems.value = newsItems.value.map(it => {
+          const hit = toneMap.get(it.title)
+          return hit ? { ...it, tone: hit.tone, score: hit.score } : { ...it, tone: 'neutral', score: 0 }
+        })
+      }
+    } catch (_) { /* 情绪失败不影响资讯展示 */ }
+  } catch (e) {
+    newsError.value = e.message || '拉取失败'
+  } finally {
+    newsLoading.value = false
+  }
+}
+
+function newsItemClass(it) {
+  if (it.tone === 'bull') return 'border-emerald-200 bg-emerald-50/50'
+  if (it.tone === 'bear') return 'border-rose-200 bg-rose-50/50'
+  return 'border-slate-100 bg-white'
+}
+function toneBadgeClass(tone) {
+  if (tone === 'bull') return 'bg-emerald-100 text-emerald-700'
+  if (tone === 'bear') return 'bg-rose-100 text-rose-600'
+  return 'bg-slate-100 text-slate-500'
+}
+
+// 把资讯摘要作为参考正文塞进文章生成
+function useNewsAsSeed() {
+  if (!newsItems.value.length) return
+  const lines = newsItems.value.slice(0, 12).map(it => {
+    const t = String(it.time || '').slice(0, 10)
+    const title = it.title || (it.summary || '').slice(0, 40)
+    return `${t} ${title}`.trim()
+  }).filter(Boolean)
+  form.seedContent = lines.join('\n')
+  if (!form.topic) form.topic = `基于 ${newsCode.value} 的近期资讯解读`
+  toast('已把 ' + lines.length + ' 条资讯填入参考正文')
 }
 
 // ==== 渲染 HTML ====

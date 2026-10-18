@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.PlanCompletionMapper">
+
+  <select id="listByDate" resultType="com.wangwenlin.stock.model.PlanCompletionRow">
+    SELECT plan_id, completed FROM plan_completions WHERE complete_date = #{date}
+  </select>
+
+  <select id="findOne" resultType="com.wangwenlin.stock.model.PlanCompletionRow">
+    SELECT id, completed FROM plan_completions WHERE plan_id = #{planId} AND complete_date = #{date} LIMIT 1
+  </select>
+
+  <insert id="insert">
+    INSERT INTO plan_completions (id, plan_id, complete_date, completed, created_at)
+    VALUES (#{id}, #{planId}, #{completeDate}, #{completed}, #{createdAt})
+  </insert>
+
+  <update id="updateCompleted">
+    UPDATE plan_completions SET completed = #{completed} WHERE id = #{id}
+  </update>
+
+  <delete id="deleteByPlanId">
+    DELETE FROM plan_completions WHERE plan_id = #{planId}
+  </delete>
+
+</mapper>

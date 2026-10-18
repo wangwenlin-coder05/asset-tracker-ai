@@ -5,6 +5,7 @@ import { sumByFilter, findByKeyword, num } from '../utils/formatter'
 
 const goldItems = ref([])
 const loading = ref(false)
+const loadError = ref('')
 const todayPrice = ref(0)
 const priceSource = ref('')
 const priceMeta = ref({ source: '', updatedAt: '', fetchedAt: '', internationalPriceUsd: 0, market: '' })
@@ -16,6 +17,7 @@ let dailyCount = 50
 let priceFetchPromise = null
 let lastPriceFetchAt = 0
 let configLoaded = false
+let loadGoldItemsPromise = null
 
 function isInGoldWindow() {
   const h = new Date().getHours()
@@ -110,15 +112,23 @@ export function useGold() {
   const physicalMarketValue = computed(() => getMarketValueByKeyword('实物'))
 
   async function loadGoldItems() {
+    // 同一时刻只允许一个请求：切换看板时的统一刷新与看板自身 onMounted 的加载会合并为一次
+    if (loadGoldItemsPromise) return loadGoldItemsPromise
     loading.value = true
-    try {
-      const data = await stockApi.getStocks('gold')
-      goldItems.value = data
-    } catch (error) {
-      console.error('Failed to load gold items:', error)
-    } finally {
-      loading.value = false
-    }
+    loadError.value = ''
+    loadGoldItemsPromise = (async () => {
+      try {
+        const data = await stockApi.getStocks('gold')
+        goldItems.value = Array.isArray(data) ? data : []
+      } catch (error) {
+        loadError.value = error.response?.data?.error || error.message || '黄金持仓加载失败'
+        console.error('Failed to load gold items:', error)
+      } finally {
+        loading.value = false
+        loadGoldItemsPromise = null
+      }
+    })()
+    return loadGoldItemsPromise
   }
 
   async function addGoldItem(data) {
@@ -311,6 +321,7 @@ export function useGold() {
   return {
     goldItems,
     loading,
+    loadError,
     todayPrice,
     priceSource,
     priceMeta,

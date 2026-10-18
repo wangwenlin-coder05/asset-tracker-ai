@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.LifeCalendarEventMapper">
+
+  <select id="selectAllByDate" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_calendar_events ORDER BY event_date ASC
+  </select>
+
+  <select id="selectTopByDate" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_calendar_events ORDER BY event_date ASC LIMIT #{limit}
+  </select>
+
+  <select id="selectByTitle" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_calendar_events WHERE title = #{title} LIMIT 1
+  </select>
+
+  <insert id="insertEvent">
+    INSERT INTO life_calendar_events
+      (id, title, event_date, category, level, remind_days, status, note, created_at, updated_at)
+    VALUES
+      (#{id}, #{title}, #{event_date}, #{category}, #{level}, #{remind_days}, #{status}, #{note}, #{created_at}, #{updated_at})
+  </insert>
+
+  <delete id="deleteById">
+    DELETE FROM life_calendar_events WHERE id = #{id}
+  </delete>
+
+  <!-- 等价 server.js 10187：DELETE 前取 title -->
+  <select id="selectTitleById" resultType="java.util.LinkedHashMap">
+    SELECT title FROM life_calendar_events WHERE id = #{id} LIMIT 1
+  </select>
+
+  <!-- 等价 server.js 10174 的 PUT 动态更新 -->
+  <update id="updateEventFields">
+    UPDATE life_calendar_events
+    <set>
+      <if test="_parameter.containsKey('title')">title = #{title},</if>
+      <if test="_parameter.containsKey('event_date')">event_date = #{event_date},</if>
+      <if test="_parameter.containsKey('category')">category = #{category},</if>
+      <if test="_parameter.containsKey('level')">level = #{level},</if>
+      <if test="_parameter.containsKey('remind_days')">remind_days = #{remind_days},</if>
+      <if test="_parameter.containsKey('status')">status = #{status},</if>
+      <if test="_parameter.containsKey('note')">note = #{note},</if>
+      updated_at = #{updated_at}
+    </set>
+    WHERE id = #{id}
+  </update>
+
+</mapper>

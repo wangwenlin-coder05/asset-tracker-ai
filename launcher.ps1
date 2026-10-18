@@ -47,9 +47,11 @@ function Stop-ExistingProject {
   $escapedProject = [regex]::Escape($ProjectDir)
   $orphans = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
     $_.ProcessId -ne $PID -and
-    $_.Name -in @('node.exe', 'cmd.exe') -and
+    $_.Name -in @('node.exe', 'cmd.exe', 'java.exe') -and
     $_.CommandLine -match $escapedProject -and
-    ($_.CommandLine -match 'server\.js' -or $_.CommandLine -match 'vite[\\/]bin[\\/]vite\.js' -or $_.CommandLine -match 'npm-cli\.js.+run dev')
+    ($_.CommandLine -match 'springboot[\\/]target[\\/]stock-springboot' -or
+     $_.CommandLine -match 'vite[\\/]bin[\\/]vite\.js' -or
+     $_.CommandLine -match 'npm-cli\.js.+run dev')
   })
   foreach ($orphan in $orphans) { Stop-ProcessTree -ProcessId $orphan.ProcessId }
 
@@ -94,7 +96,7 @@ if ($StopOnly) {
   exit 0
 }
 
-$node = Get-Command node.exe -ErrorAction Stop
+$java = Get-Command java.exe -ErrorAction Stop
 $npm = Get-Command npm.cmd -ErrorAction Stop
 Remove-Item -LiteralPath $BackendOutLog,$BackendErrLog,$FrontendOutLog,$FrontendErrLog -Force -ErrorAction SilentlyContinue
 
@@ -102,7 +104,19 @@ $backend = $null
 $frontend = $null
 try {
   Write-Host '[2/5] Starting backend on port 3300...'
-  $backend = Start-Process -FilePath $node.Source -ArgumentList @('server.js') -WorkingDirectory $ProjectDir -WindowStyle Hidden -RedirectStandardOutput $BackendOutLog -RedirectStandardError $BackendErrLog -PassThru
+  $targetDir = Join-Path $ProjectDir 'springboot\target'
+  $jar = Get-ChildItem -Path $targetDir -Filter 'stock-springboot-*.jar' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if (-not $jar) {
+    Write-Host 'Backend jar not found, building with Maven...'
+    $mvn = Get-Command mvn.cmd -ErrorAction Stop
+    & $mvn.Source -q -DskipTests -f (Join-Path $ProjectDir 'springboot\pom.xml') package
+    if ($LASTEXITCODE -ne 0) { throw 'Maven build failed' }
+    $jar = Get-ChildItem -Path $targetDir -Filter 'stock-springboot-*.jar' |
+      Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if (-not $jar) { throw 'Backend jar still missing after build' }
+  }
+  $backend = Start-Process -FilePath $java.Source -ArgumentList @('-jar', $jar.FullName) -WorkingDirectory $ProjectDir -WindowStyle Hidden -RedirectStandardOutput $BackendOutLog -RedirectStandardError $BackendErrLog -PassThru
   [System.IO.File]::WriteAllText($BackendPidFile, [string]$backend.Id, [System.Text.Encoding]::ASCII)
   Wait-HttpReady -Url 'http://127.0.0.1:3300/healthz' -Process $backend -Name 'Backend' -ErrorLog $BackendErrLog
 

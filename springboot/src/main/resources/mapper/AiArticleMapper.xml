@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.AiArticleMapper">
+
+  <sql id="listWhere">
+    <where>
+      <if test="_parameter.containsKey('category') and category != null and category != ''">
+        AND category = #{category}
+      </if>
+      <if test="_parameter.containsKey('status') and status != null and status != ''">
+        AND status = #{status}
+      </if>
+      <if test="_parameter.containsKey('qLike') and qLike != null and qLike != ''">
+        AND (title LIKE #{qLike} OR IFNULL(plain_text, "") LIKE #{qLike} OR tags LIKE #{qLike})
+      </if>
+    </where>
+  </sql>
+
+  <select id="list" resultType="java.util.LinkedHashMap">
+    SELECT id, category, title, word_count, source, tags, status, platform, created_at, updated_at,
+           LEFT(IFNULL(plain_text, ""), 140) AS summary
+    FROM ai_articles
+    <include refid="listWhere"/>
+    ORDER BY ${orderBy} LIMIT #{pageSize} OFFSET #{offset}
+  </select>
+
+  <select id="count" resultType="long">
+    SELECT COUNT(*) FROM ai_articles
+    <include refid="listWhere"/>
+  </select>
+
+  <select id="distinctCategories" resultType="java.lang.String">
+    SELECT DISTINCT category FROM ai_articles ORDER BY category
+  </select>
+
+  <select id="findById" resultType="java.util.LinkedHashMap">
+    SELECT * FROM ai_articles WHERE id = #{id} LIMIT 1
+  </select>
+
+  <insert id="insert">
+    INSERT INTO ai_articles (id, category, title, content, plain_text, word_count, source, source_url,
+                             tags, status, platform, created_at, updated_at)
+    VALUES (#{id}, #{category}, #{title}, #{content}, #{plainText}, #{wordCount}, #{source}, #{sourceUrl},
+            #{tags}, #{status}, #{platform}, #{createdAt}, #{updatedAt})
+  </insert>
+
+  <update id="update">
+    UPDATE ai_articles
+    <set>
+      <if test="_parameter.containsKey('category')">category = #{category},</if>
+      <if test="_parameter.containsKey('title')">title = #{title},</if>
+      <if test="_parameter.containsKey('content')">content = #{content},</if>
+      <if test="_parameter.containsKey('plainText')">plain_text = #{plainText},</if>
+      <if test="_parameter.containsKey('wordCount')">word_count = #{wordCount},</if>
+      <if test="_parameter.containsKey('source')">source = #{source},</if>
+      <if test="_parameter.containsKey('sourceUrl')">source_url = #{sourceUrl},</if>
+      <if test="_parameter.containsKey('tags')">tags = #{tags},</if>
+      <if test="_parameter.containsKey('status')">status = #{status},</if>
+      <if test="_parameter.containsKey('platform')">platform = #{platform},</if>
+      updated_at = #{updatedAt}
+    </set>
+    WHERE id = #{id}
+  </update>
+
+  <delete id="deleteById">
+    DELETE FROM ai_articles WHERE id = #{id}
+  </delete>
+
+</mapper>

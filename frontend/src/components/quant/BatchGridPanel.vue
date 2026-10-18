@@ -82,6 +82,38 @@
           </label>
         </template>
 
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-xs text-slate-500">滑点（%，默认 0）</label>
+            <input v-model.number="form.slippage_pct" type="number" step="0.01" min="0"
+              class="w-full mt-1 px-2 py-2 rounded-lg border border-slate-200 text-sm" />
+          </div>
+          <div>
+            <label class="text-xs text-slate-500">成交模式</label>
+            <select v-model="form.execution_mode" class="w-full mt-1 px-2 py-2 rounded-lg border border-slate-200 text-sm">
+              <option value="next_open">次日开盘（T+1）</option>
+              <option value="signal_close">信号根收盘（盘中价）</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label class="text-xs text-slate-500">训练/验证切分日 <span class="text-slate-300">（防过拟合）</span></label>
+          <input type="date" v-model="form.train_end"
+            class="w-full mt-1 px-2 py-2 rounded-lg border border-slate-200 text-sm" />
+          <p v-if="form.train_end" class="text-[11px] text-indigo-400 mt-0.5">每行将额外输出训练段 [start~切分日] 的收益/回撤/夏普</p>
+        </div>
+
+        <label class="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+          <input type="checkbox" v-model="form.liquidity_slippage" class="accent-indigo-500" />
+          按成交额分档滑点 <span class="text-slate-400">（大盘股 0.05% / 小盘股 0.4%）</span>
+        </label>
+
+        <label class="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+          <input type="checkbox" v-model="form.survivorship" class="accent-indigo-500" />
+          含退市股对照组 <span class="text-slate-400">（量化幸存者偏差）</span>
+        </label>
+
         <div>
           <label class="text-xs text-slate-500">初始资金</label>
           <input v-model.number="form.initial_cash" type="number" class="w-full mt-1 px-2 py-2 rounded-lg border border-slate-200 text-sm" />
@@ -131,10 +163,58 @@
             </div>
           </div>
 
+          <!-- 帕累托前沿：夏普/收益/回撤不被其他组合全面支配的参数点 -->
+          <div v-if="result.pareto && result.pareto.length" class="rounded-xl border border-indigo-200 bg-indigo-50/40 p-3">
+            <p class="text-xs font-bold text-indigo-700 mb-1.5">
+              帕累托前沿（{{ result.pareto.length }} 组：无单一指标被支配的候选）
+            </p>
+            <div class="flex flex-wrap gap-1.5">
+              <span v-for="p in result.pareto" :key="`${p.code}-${p.take_profit}-${p.stop_loss}`"
+                class="px-2 py-0.5 rounded-full text-[11px] bg-indigo-100 text-indigo-700 font-mono">
+                {{ p.code }}·TP{{ p.take_profit != null ? (p.take_profit * 100).toFixed(0) + '%' : '—' }}
+                ·SL{{ p.stop_loss != null ? (p.stop_loss * 100).toFixed(0) + '%' : '—' }}
+                ·α{{ p.sharpe_ratio }} ·DD{{ (p.max_drawdown * 100).toFixed(1) }}%
+              </span>
+            </div>
+          </div>
+
           <!-- 跳过说明 -->
           <p v-if="result.skipped && result.skipped.length" class="text-[11px] text-amber-600">
             未同步/无数据跳过: {{ result.skipped.join(', ') }}
           </p>
+
+          <!-- 幸存者偏差对照 -->
+          <div v-if="result.survivorship_gap" class="rounded-xl border border-amber-200 bg-amber-50/50 p-3">
+            <p class="text-xs font-bold text-amber-700 mb-1">
+              幸存者偏差对照
+            </p>
+            <p class="text-xs text-amber-700/80 leading-5">
+              {{ result.survivorship_gap.note || '—' }}
+            </p>
+          </div>
+
+          <!-- 训练/验证切分说明 -->
+          <div v-if="result.train_end" class="rounded-xl border border-sky-200 bg-sky-50/50 p-3">
+            <p class="text-xs font-bold text-sky-700 mb-1">
+              训练/验证切分 · 切分日 {{ result.train_end }}
+            </p>
+            <p class="text-xs text-sky-700/80 leading-5">
+              每行带训练段指标（train_*）。建议：训练段挑参数 → 验证段定参数，防全期过拟合。
+            </p>
+          </div>
+
+          <!-- 导出 -->
+          <div class="flex items-center gap-2">
+            <button @click="exportReport('csv')" :disabled="exporting"
+              class="px-3 py-1.5 rounded-lg text-xs font-medium text-indigo-600 border border-indigo-200 hover:bg-indigo-50 disabled:opacity-40">
+              导出 CSV
+            </button>
+            <button @click="exportReport('xlsx')" :disabled="exporting"
+              class="px-3 py-1.5 rounded-lg text-xs font-medium text-indigo-600 border border-indigo-200 hover:bg-indigo-50 disabled:opacity-40">
+              导出 Excel
+            </button>
+            <span v-if="exportNote" class="text-[11px] text-slate-400">{{ exportNote }}</span>
+          </div>
 
           <!-- 对比表 -->
           <div>
@@ -190,6 +270,7 @@ const loading = ref(false)
 const symbols = ref([])
 const result = ref(null)
 const selected = computed(() => new Set(selectedCodes.value))
+let lastPayload = { codes: [], strategy: 't1_take_profit', params: {} }
 
 const form = reactive({
   start: '',
@@ -200,6 +281,11 @@ const form = reactive({
   require_d1_hold: true,
   initial_cash: 1000000,
   best_key: 'sharpe_ratio',
+  slippage_pct: 0,
+  execution_mode: 'next_open',
+  train_end: '',
+  liquidity_slippage: false,
+  survivorship: false,
 })
 const codesText = ref('')
 const selectedCodes = ref([])
@@ -224,16 +310,66 @@ function isBest(r) {
   return result.value.best && result.value.best === r
 }
 
+function isPareto(r) {
+  const p = result.value?.pareto
+  if (!p || !p.length) return false
+  return p.some(x => x.code === r.code && x.take_profit === r.take_profit
+    && x.stop_loss === r.stop_loss && x.max_drawdown === r.max_drawdown)
+}
+
+const exporting = ref(false)
+const exportNote = ref('')
+
+async function exportReport(fmt) {
+  if (!result.value || !result.value.rows?.length) { alert('请先运行批量扫描'); return }
+  exporting.value = true
+  exportNote.value = ''
+  try {
+    const res = await quantApi.runExport(fmt, {
+      codes: lastPayload.codes,
+      strategy: lastPayload.strategy,
+      params: lastPayload.params,
+      start: lastPayload.start,
+      end: lastPayload.end,
+      initial_cash: lastPayload.initial_cash,
+      slippage: lastPayload.slippage,
+      liquidity_slippage: lastPayload.liquidity_slippage || false,
+      execution_mode: lastPayload.execution_mode,
+      train_end: lastPayload.train_end,
+      survivorship: lastPayload.survivorship,
+    })
+    // base64 → 二进制下载
+    const b64 = res.content_base64
+    const bin = atob(b64)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    const blob = new Blob([bytes], { type: res.mime })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = res.filename
+    a.click()
+    URL.revokeObjectURL(url)
+    if (res.note) exportNote.value = res.note
+  } catch (e) {
+    alert('导出失败：' + (e.response?.data?.detail || e.message))
+  } finally {
+    exporting.value = false
+  }
+}
+
 async function ping() {
   serviceUp.value = false
   try { await quantApi.ping(); serviceUp.value = true } catch (e) { serviceUp.value = false }
 }
+
 async function loadSymbols() {
   try {
     const res = await quantApi.listSymbols()
     symbols.value = (res && res.symbols) || []
   } catch (e) { symbols.value = [] }
 }
+
 function applySelected() {
   codesText.value = selectedCodes.value.join(', ')
 }
@@ -251,7 +387,7 @@ async function runGrid() {
     if (sl.length) params.stop_loss = sl
     if (form.require_d1_hold) params.require_d1_hold = [true]
   }
-  const payload = {
+  lastPayload = {
     codes,
     strategy: form.strategy,
     params,
@@ -259,9 +395,14 @@ async function runGrid() {
     end: form.end || undefined,
     initial_cash: form.initial_cash,
     best_key: form.best_key,
+    slippage: form.liquidity_slippage ? 0 : ((form.slippage_pct || 0) / 100),
+    liquidity_slippage: form.liquidity_slippage,
+    execution_mode: form.execution_mode,
+    train_end: form.train_end || undefined,
+    survivorship: form.survivorship,
   }
   try {
-    result.value = await quantApi.runGrid(payload)
+    result.value = await quantApi.runGrid(lastPayload)
   } catch (e) {
     alert(e.response?.data?.detail || e.message || '批量扫描失败')
   } finally {

@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.InstallmentMapper">
+
+  <!-- 显式列名：保证键名与 Node 端 SELECT * 的行对象一致 -->
+  <select id="listPlans" resultType="java.util.Map">
+    SELECT id as id, deposit_item_id as deposit_item_id, total_principal as total_principal,
+           total_interest as total_interest, installments as installments, monthly_day as monthly_day,
+           start_date as start_date, payment_account_id as payment_account_id,
+           created_at as created_at, user_id as user_id
+    FROM installment_plans WHERE deposit_item_id = #{depositItemId}
+  </select>
+
+  <select id="findPlanIds" resultType="java.lang.String">
+    SELECT id FROM installment_plans WHERE deposit_item_id = #{depositItemId}
+  </select>
+
+  <select id="lockPlan" resultType="java.util.Map">
+    SELECT deposit_item_id FROM installment_plans WHERE id = #{id} FOR UPDATE
+  </select>
+
+  <insert id="insertPlan">
+    INSERT INTO installment_plans
+      (id, deposit_item_id, total_principal, total_interest, installments, monthly_day, start_date, payment_account_id, created_at)
+    VALUES
+      (#{id}, #{depositItemId}, #{totalPrincipal}, #{totalInterest}, #{installments}, #{monthlyDay}, #{startDate}, #{paymentAccountId}, #{createdAt})
+  </insert>
+
+  <update id="updatePlan">
+    UPDATE installment_plans
+    SET total_principal = #{totalPrincipal}, total_interest = #{totalInterest},
+        installments = #{installments}, monthly_day = #{monthlyDay},
+        start_date = #{startDate}, payment_account_id = #{paymentAccountId}
+    WHERE id = #{id}
+  </update>
+
+  <delete id="deletePlan">
+    DELETE FROM installment_plans WHERE id = #{id}
+  </delete>
+
+  <delete id="deleteBillsByPlan">
+    DELETE FROM installment_bills WHERE plan_id = #{planId}
+  </delete>
+
+  <select id="listPlansForReconcile" resultType="java.util.Map">
+    SELECT id, deposit_item_id, total_principal, total_interest, installments, monthly_day,
+           start_date, payment_account_id
+    FROM installment_plans
+  </select>
+
+  <select id="listBillDates" resultType="java.util.Map">
+    SELECT period, due_date, status, paid_at FROM installment_bills WHERE plan_id = #{planId} ORDER BY period
+  </select>
+
+  <select id="listPaidBills" resultType="java.util.Map">
+    SELECT period, due_date, paid_at FROM installment_bills
+    WHERE plan_id = #{planId} AND status = 'paid'
+  </select>
+
+  <select id="listBillsByPlan" resultType="java.util.Map">
+    SELECT id as id, plan_id as plan_id, period as period, due_date as due_date,
+           principal as principal, interest as interest, total as total, status as status,
+           paid_at as paid_at, created_at as created_at, user_id as user_id
+    FROM installment_bills WHERE plan_id = #{planId} ORDER BY period
+  </select>
+
+  <insert id="insertBill">
+    INSERT INTO installment_bills
+      (id, plan_id, period, due_date, principal, interest, total, status, paid_at, created_at)
+    VALUES
+      (#{id}, #{planId}, #{period}, #{dueDate}, #{principal}, #{interest}, #{total}, #{status}, #{paidAt}, #{createdAt})
+  </insert>
+
+  <select id="lockBill" resultType="java.util.Map">
+    SELECT b.id, b.plan_id, b.period, b.total, b.status, p.payment_account_id, p.deposit_item_id, d.name AS item_name
+    FROM installment_bills b
+    JOIN installment_plans p ON b.plan_id = p.id
+    JOIN deposit_items d ON p.deposit_item_id = d.id
+    WHERE b.id = #{id} FOR UPDATE
+  </select>
+
+  <update id="markBillPaid">
+    UPDATE installment_bills SET status = 'paid', paid_at = #{paidAt} WHERE id = #{id}
+  </update>
+
+  <select id="listDueBills" resultType="java.util.Map">
+    SELECT b.id as bill_id, b.plan_id as plan_id, b.period as period, b.total as bill_total,
+           p.payment_account_id as payment_account_id, p.deposit_item_id as deposit_item_id,
+           d.name as item_name
+    FROM installment_bills b
+    JOIN installment_plans p ON b.plan_id = p.id
+    JOIN deposit_items d ON p.deposit_item_id = d.id
+    WHERE b.status = 'pending' AND b.due_date &lt;= #{today}
+  </select>
+
+  <select id="pendingTotal" resultType="java.util.Map">
+    SELECT COALESCE(SUM(total), 0) AS remaining FROM installment_bills WHERE plan_id = #{planId} AND status = 'pending'
+  </select>
+
+</mapper>

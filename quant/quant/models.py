@@ -66,6 +66,7 @@ class Trade:
     reason: str            # 平仓原因（如「有效止盈」「止损」「均线死叉」「回测结束平仓」）
     add_count: int = 0     # 期间补仓次数（0 = 一次性建仓）
     entry_reason: str = "" # 建仓原因（如「空仓建仓」「均线金叉」「放量突破建仓」）
+    transfer_fee: float = 0.0  # 过户费（买卖双边）
 
 
 @dataclass

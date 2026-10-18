@@ -1,7 +1,14 @@
 <template>
-  <nav id="totalPanel" class="dock-rail">
+  <nav
+    id="totalPanel"
+    ref="railRef"
+    class="dock-rail"
+    :class="{ 'is-sub-open': subOpen }"
+    @mouseenter="cancelSubmenuClose"
+    @mouseleave="queueSubmenuClose"
+  >
     <!-- 品牌标 -->
-    <button class="dock-brand" title="资产总览" @click="$emit('switch-board', 'overview')">
+    <button class="dock-brand" title="AI 问答" @click="$emit('open-ai')">
       <span class="dock-brand-mark">
         <svg class="brand-logo" viewBox="0 0 64 64" aria-hidden="true">
           <defs>
@@ -127,10 +134,11 @@
           v-else
           :ref="el => setItemRef(el, item.id)"
           class="dock-item"
-          :class="{ 'is-active': currentBoard === item.id }"
+          :class="{ 'is-active': currentBoard === item.id, 'is-hover': item.id === 'stock' && subOpen }"
           :style="{ '--accent': item.accent }"
           :title="item.label"
           @click="$emit('switch-board', item.id)"
+          @mouseenter="item.id === 'stock' ? openSubmenu($event) : undefined"
         >
           <component :is="item.icon" class="dock-icon" :stroke-width="1.9" />
           <span class="dock-label">{{ item.label }}</span>
@@ -138,10 +146,24 @@
       </template>
     </div>
 
+    <!-- 股票子菜单：悬浮后从右侧弹出（teleport 到 body，不挤压 dock 布局） -->
+    <Teleport to="body">
+      <div
+        v-if="subOpen"
+        class="dock-popover"
+        :style="subStyle"
+        @mouseenter="cancelSubmenuClose"
+        @mouseleave="queueSubmenuClose"
+      >
+        <button class="dock-popitem" :class="{ 'is-active': currentBoard === 'daily-analysis' }" @click.stop="$emit('open-page', 'daily-analysis'); closeSubmenu()">每日分析</button>
+        <button class="dock-popitem" :class="{ 'is-active': currentBoard === 'newstock-calendar' }" @click.stop="$emit('open-page', 'newstock-calendar'); closeSubmenu()">打新日历</button>
+      </div>
+    </Teleport>
+
     <!-- 设置 -->
-    <button class="dock-item dock-item--foot" title="AI 设置" @click="$emit('open-settings')">
+    <button class="dock-item dock-item--foot" title="设置" aria-label="设置" @click="$emit('open-settings')">
       <Cog class="dock-icon" :stroke-width="1.9" />
-      <span class="dock-label">AI 设置</span>
+      <span class="dock-label">设置</span>
     </button>
   </nav>
 </template>
@@ -150,7 +172,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   LayoutGrid, TrendingUp, Coins, PiggyBank, Gift, NotebookPen, Wrench,
-  MessageSquare, FlaskConical, Layers, Sparkles, Palette, GraduationCap, Cog
+  MessageSquare, FlaskConical, Layers, Sparkles, Palette, GraduationCap, Compass, Cog
 } from 'lucide-vue-next'
 
 const props = defineProps({
@@ -160,7 +182,7 @@ const props = defineProps({
   }
 })
 
-defineEmits(['switch-board', 'open-settings'])
+defineEmits(['switch-board', 'open-settings', 'open-page', 'open-ai'])
 
 const navItems = [
   { key: 'g1', type: 'sep', label: '核心' },
@@ -178,7 +200,9 @@ const navItems = [
   { key: 'quant-grid', id: 'quant-grid', label: '批量回测', icon: Layers, accent: '#7c3aed' },
   { key: 'ai', id: 'ai', label: 'AI 创作工作台', icon: Sparkles, accent: '#6366f1' },
   { key: 'ai-canvas', id: 'ai-canvas', label: 'AI 画布', icon: Palette, accent: '#ec4899' },
-  { key: 'quiz', id: 'quiz', label: 'AI 题目问答', icon: GraduationCap, accent: '#8b5cf6' }
+  { key: 'quiz', id: 'quiz', label: 'AI 题目问答', icon: GraduationCap, accent: '#8b5cf6' },
+  { key: 'g4', type: 'sep', label: '人生' },
+  { key: 'life', id: 'life', label: '人生规划器', icon: Compass, accent: '#6366f1' }
 ]
 
 const navRef = ref(null)
@@ -211,6 +235,40 @@ function syncIndicator() {
 
 watch(() => props.currentBoard, () => nextTick(syncIndicator))
 
+// 股票子菜单：悬浮锚点后从右侧弹出（teleport 到 body，不挤压 dock）
+const subOpen = ref(false)
+const subStyle = ref({})
+const railRef = ref(null)
+let subCloseTimer = null
+// 与 .dock-rail:hover 展开后的宽度保持一致，用于把二级菜单放到 Dock 右侧之外
+const RAIL_EXPANDED_WIDTH = 178
+// 鼠标穿过一级/二级菜单之间的间隙时的容错时间
+const SUBMENU_CLOSE_DELAY = 320
+
+function openSubmenu(e) {
+  const item = e.currentTarget
+  const rail = railRef.value
+  if (!item || !rail) return
+  const itemRect = item.getBoundingClientRect()
+  const railRect = rail.getBoundingClientRect()
+  // 二级菜单必须落在一级 Dock「展开后」的右边缘之外：若盖在 Dock 上，
+  // 指针会直接落在刚出现的浮层里而触发不了 mouseenter，浮层随即被误关闭导致点不到。
+  const left = Math.min(railRect.left + RAIL_EXPANDED_WIDTH + 10, Math.max(12, window.innerWidth - 164))
+  const top = Math.min(Math.max(itemRect.top - 10, 12), Math.max(12, window.innerHeight - 120))
+  subStyle.value = { left: `${left}px`, top: `${top}px` }
+  cancelSubmenuClose()
+  subOpen.value = true
+}
+function queueSubmenuClose() {
+  clearTimeout(subCloseTimer)
+  subCloseTimer = setTimeout(() => { subOpen.value = false }, SUBMENU_CLOSE_DELAY)
+}
+function cancelSubmenuClose() { clearTimeout(subCloseTimer) }
+function closeSubmenu() {
+  clearTimeout(subCloseTimer)
+  subOpen.value = false
+}
+
 onMounted(() => {
   nextTick(syncIndicator)
   window.addEventListener('resize', syncIndicator)
@@ -218,6 +276,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', syncIndicator)
+  clearTimeout(subCloseTimer)
 })
 </script>
 
@@ -246,7 +305,8 @@ onBeforeUnmount(() => {
   /* 只靠 hover 展开，鼠标离开自动收起；不使用 focus-within，避免点击后一直展开 */
   transition: width 0.34s cubic-bezier(0.4, 0, 0.2, 1), background 0.35s ease, border-color 0.35s ease;
 }
-.dock-rail:hover {
+.dock-rail:hover,
+.dock-rail.is-sub-open {
   width: 178px;
 }
 
@@ -334,7 +394,8 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   transition: opacity 0.2s ease;
 }
-.dock-rail:hover .dock-sep em { opacity: 1; }
+.dock-rail:hover .dock-sep em,
+.dock-rail.is-sub-open .dock-sep em { opacity: 1; }
 
 /* 导航项 */
 .dock-item {
@@ -360,7 +421,13 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--accent, #2563eb) 13%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent, #2563eb) 26%, transparent);
 }
-.dock-item.is-active .dock-icon {
+/* 悬浮二级菜单时，一级「股票」保持高亮展示 */
+.dock-item.is-hover {
+  color: var(--accent, #2563eb);
+  background: color-mix(in srgb, var(--accent, #2563eb) 13%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent, #2563eb) 26%, transparent);
+}
+.dock-item.is-hover .dock-icon {
   filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent, #2563eb) 55%, transparent));
 }
 
@@ -379,10 +446,55 @@ onBeforeUnmount(() => {
   opacity: 0;
   transition: opacity 0.22s ease 0.04s;
 }
-.dock-rail:hover .dock-label { opacity: 1; }
+.dock-rail:hover .dock-label,
+.dock-rail.is-sub-open .dock-label { opacity: 1; }
 
 /* 底部设置 */
 .dock-item--foot { margin-top: 2px; }
+
+/* 股票子菜单浮层：teleport 到 body，从 dock 右侧弹出 */
+.dock-popover {
+  position: fixed;
+  z-index: 60;
+  min-width: 132px;
+  padding: 6px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(248, 250, 252, 0.94));
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.16);
+  backdrop-filter: blur(18px) saturate(1.35);
+  animation: dock-pop-in 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  transform-origin: left center;
+}
+@keyframes dock-pop-in {
+  from { opacity: 0; transform: translateX(-8px) scale(0.96); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+/* 悬浮桥：填补一级菜单与二级菜单之间的空隙，
+   鼠标经过或停留在间隙时仍算作悬浮在子菜单上，不会误触发关闭 */
+.dock-popover::before {
+  content: '';
+  position: absolute;
+  top: -8px;
+  bottom: -8px;
+  left: -16px;
+  width: 16px;
+}
+.dock-popitem {
+  display: block;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 12px 5px 14px;
+  border-radius: 9px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 22px;
+  text-align: left;
+  white-space: nowrap;
+  transition: color .2s, background .2s, transform .2s;
+}
+.dock-popitem:hover { color: #2563eb; background: rgba(59, 130, 246, .08); transform: translateX(2px); }
+.dock-popitem.is-active { color: #2563eb; font-weight: 600; background: rgba(59, 130, 246, .1); }
 
 @media (max-height: 760px) {
   .dock-item { height: 32px; }

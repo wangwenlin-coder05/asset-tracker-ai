@@ -31,17 +31,51 @@
         <div class="ov-screen" :class="{ 'is-blurred': hideAssets }">
           <div
             class="ov-screen-num"
-            :class="{ 'is-risk': rollNeg, 'is-growing': isGrowing, 'is-snapping': snapping }"
+            :class="screenNumClass"
           >
-            <span class="ov-screen-cur">¥</span>
+            <!-- 计价货币：靠 CSS order 排在数字之后，外观就是数字的单位 -->
+            <span ref="curTrigger" class="ov-screen-cur" :class="{ 'is-open': currencyOpen }" @click="toggleCurrency">
+              <span class="ov-screen-cur__code">{{ effectiveCurrency }}</span>
+              <!-- 货币选择下拉（teleport 到 body，避免被 .ov-hero 的 overflow:hidden 裁切） -->
+              <Teleport to="body">
+                <div v-if="currencyOpen" class="ov-currency-menu" :style="menuStyle">
+                  <div class="ov-currency-menu__head">
+                    <span>选择计价货币</span>
+                    <span class="ov-currency-menu__sub">右侧 · 1 单位 ≈ 人民币</span>
+                  </div>
+                  <button
+                    v-for="code in FOREX_PREFERRED"
+                    :key="code"
+                    type="button"
+                    class="ov-currency-item"
+                    :class="{ 'is-active': code === effectiveCurrency, 'is-off': !rateAvailable(code) }"
+                    :disabled="!rateAvailable(code)"
+                    @click="selectCurrency(code)"
+                  >
+                    <span class="ov-currency-item__flag">{{ CURRENCY_META[code].flag }}</span>
+                    <span class="ov-currency-item__lbl">{{ CURRENCY_META[code].label }}</span>
+                    <span class="ov-currency-item__code">{{ code }}</span>
+                    <span v-if="code === 'CNY'" class="ov-currency-item__rate is-base">基准</span>
+                    <span v-else class="ov-currency-item__rate">{{ rateToCNYText(code) }}</span>
+                    <svg class="ov-currency-item__check" viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M3.5 8.6 6.5 11.5 12.5 4.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  </button>
+                  <div class="ov-currency-menu__foot">
+                    <span class="ov-currency-menu__dot"></span>
+                    {{ forexSavedAt ? new Date(forexSavedAt).toLocaleDateString('zh-CN') + ' 更新 · 每日汇率' : '加载中…' }}
+                  </div>
+                </div>
+              </Teleport>
+            </span>
             <span v-if="rollNeg" class="ov-screen-sign">-</span>
             <template v-for="(pos, i) in rollShown.int" :key="'p' + (rollShown.int.length - 1 - i)">
               <span class="ov-col">
                 <span
                   class="ov-od"
-                  :style="{ '--ci': rollShown.dec.length + (rollShown.int.length - 1 - i), ...initialDigitStyle(rollShown.int.length - 1 - i) }"
+                  :style="rollDigitStyle(rollShown.dec.length + (rollShown.int.length - 1 - i), rollShown.int.length - 1 - i)"
                 >
-                  <span class="ov-od-col" :style="{ transform: `translateY(-${pos}em)` }">
+                  <span class="ov-od-col" :style="rollColStyle(pos)">
                     <span v-for="k in ROLL_CELLS" :key="k" class="ov-od-d">{{ (k - 1) % 10 }}</span>
                   </span>
                 </span>
@@ -58,9 +92,9 @@
               v-for="(pos, i) in rollShown.dec"
               :key="'d' + i"
               class="ov-od"
-              :style="{ '--ci': rollShown.dec.length - 1 - i }"
+              :style="rollDigitStyle(rollShown.dec.length - 1 - i)"
             >
-              <span class="ov-od-col" :style="{ transform: `translateY(-${pos}em)` }">
+              <span class="ov-od-col" :style="rollColStyle(pos)">
                 <span v-for="k in ROLL_CELLS" :key="k" class="ov-od-d">{{ (k - 1) % 10 }}</span>
               </span>
             </span>
@@ -96,22 +130,68 @@
 
       <!-- ② 数据概览区 -->
       <section class="ov-flow" :class="{ 'is-blurred': hideAssets }">
-        <!-- 存款 -->
-        <article class="ov-card glass is-deposit" :style="{ '--i': 0 }">
-          <span class="ov-card-wm" aria-hidden="true"><PiggyBank :stroke-width="1.2" /></span>
+      <!-- 存款 -->
+      <article class="ov-card glass is-deposit" :style="{ '--i': 0 }">
+        <span class="ov-card-wm" aria-hidden="true"><PiggyBank :stroke-width="1.2" /></span>
 
-          <div class="ov-card-head">
-            <span class="ov-card-ic"><PiggyBank :stroke-width="1.8" /></span>
-            <h3>存款</h3>
+        <div class="ov-card-head">
+          <span class="ov-card-ic"><PiggyBank :stroke-width="1.8" /></span>
+          <h3>存款</h3>
+        </div>
+
+        <div class="ov-card-main">
+          <div class="ov-card-num">
+            <div class="ov-card-big">{{ fiatSymbol }}{{ fiatFormat(depositTotal) }}</div>
+            <div class="ov-card-sub">账户存款总额 · 占净资 {{ depositShare.toFixed(1) }}%</div>
+          </div>
+        </div>
+
+        <!-- 存款 / 黄金 分隔线 -->
+        <div class="ov-sub-divider" aria-hidden="true"></div>
+
+        <!-- 黄金：内容并入本卡（上存款、下黄金） -->
+        <div class="ov-card-head ov-gold-head">
+          <span class="ov-card-ic"><Coins :stroke-width="1.8" /></span>
+          <h3>黄金</h3>
+          <span class="ov-card-badge is-gold-badge">持仓{{ formatNumber(goldTotalGrams, 2) }}g</span>
+        </div>
+        <div class="ov-gold-block">
+          <div class="ov-card-num">
+            <div class="ov-card-big is-sub">{{ fiatSymbol }}{{ fiatFormat(goldTotalMarketValue) }}</div>
+            <div class="ov-card-sub">黄金总市值 · 占净资 {{ goldShare.toFixed(1) }}%</div>
           </div>
 
-          <div class="ov-card-main">
-            <div class="ov-card-num">
-              <div class="ov-card-big">¥{{ formatNumber(depositTotal) }}</div>
-              <div class="ov-card-sub">账户存款总额 · 占净资 {{ depositShare.toFixed(1) }}%</div>
+          <div class="ov-metrics">
+            <div class="ov-metric">
+              <span class="ov-metric-label">总成本</span>
+              <b class="ov-metric-val">{{ fiatSymbol }}{{ fiatFormat(goldTotalCost) }}</b>
+            </div>
+            <div class="ov-metric">
+              <span class="ov-metric-label">持仓盈亏</span>
+              <b class="ov-metric-val" :class="goldTotalMarketValue >= goldTotalCost ? 'is-profit' : 'is-risk'">{{ goldTotalMarketValue - goldTotalCost >= 0 ? '+' : '' }}{{ fiatSymbol }}{{ fiatFormat(goldTotalMarketValue - goldTotalCost) }}</b>
+            </div>
+            <div class="ov-metric ov-avg" tabindex="0">
+              <span class="ov-metric-label">总均价</span>
+              <b class="ov-metric-val">{{ fiatSymbol }}{{ fiatFormat(goldAvgPrice) }}</b>
+              <div class="ov-avg-tip">
+                <div class="tip-title">总均价 = 净成本 ÷ 总克数</div>
+                <div class="tip-row"><span>累计买入总额（含手续费）</span><b>+{{ fiatSymbol }}{{ fiatFormat(goldTotalBuyAmount) }}</b></div>
+                <div class="tip-row"><span>累计卖出收入（扣手续费）</span><b>-{{ fiatSymbol }}{{ fiatFormat(goldTotalSellAmount) }}</b></div>
+                <div class="tip-row"><span>净成本（买入 - 卖出）</span><b>={{ fiatSymbol }}{{ fiatFormat(goldTotalCost) }}</b></div>
+                <div class="tip-row"><span>总克数</span><b>{{ formatNumber(goldTotalGrams, 4) }}g</b></div>
+                <div class="tip-row result"><span>总均价</span><b>={{ fiatSymbol }}{{ fiatFormat(goldAvgPrice, 4) }}/g</b></div>
+                <div v-if="goldHasSell" class="tip-note">
+                  注：卖出盈亏已摊入剩余持仓成本<br />赚钱卖出 → 均价下降；亏钱卖出 → 均价上升
+                </div>
+              </div>
+            </div>
+            <div class="ov-metric">
+              <span class="ov-metric-label">总克数</span>
+              <b class="ov-metric-val">{{ formatNumber(goldTotalGrams, 2) }}g</b>
             </div>
           </div>
-        </article>
+        </div>
+      </article>
 
         <!-- 股票 -->
         <article class="ov-card glass is-stock" :style="{ '--i': 1 }">
@@ -125,7 +205,7 @@
 
           <div class="ov-card-main">
             <div class="ov-card-num">
-              <div class="ov-card-big">¥{{ formatNumber(stockTotalAsset) }}</div>
+              <div class="ov-card-big">{{ fiatSymbol }}{{ fiatFormat(stockTotalAsset) }}</div>
             </div>
           </div>
 
@@ -145,22 +225,22 @@
               <b
                 class="ov-metric-val"
                 :class="stockHoldingMarketValue >= stockHoldingAmount ? 'is-profit' : 'is-risk'"
-              >¥{{ formatNumber(stockHoldingMarketValue) }}</b>
+              >{{ fiatSymbol }}{{ fiatFormat(stockHoldingMarketValue) }}</b>
             </div>
             <div class="ov-metric">
               <span class="ov-metric-label">总盈利</span>
               <b
                 class="ov-metric-val"
                 :class="stockTotalProfit >= 0 ? 'is-profit' : 'is-risk'"
-              >¥{{ formatNumber(stockTotalProfit) }}</b>
+              >{{ fiatSymbol }}{{ fiatFormat(stockTotalProfit) }}</b>
             </div>
             <div class="ov-metric is-combo">
               <span class="ov-metric-label" title="被套资金 = 持仓成本；被套比例 = 被套资金 ÷ 股票总资产">被套/被套比例</span>
-              <b class="ov-metric-val">¥{{ formatNumber(stockHoldingAmount) }}<em :style="{ color: crisisAccent }">{{ stockTrappedRatio.toFixed(1) }}%</em></b>
+              <b class="ov-metric-val">{{ fiatSymbol }}{{ fiatFormat(stockHoldingAmount) }}<em :style="{ color: crisisAccent }">{{ stockTrappedRatio.toFixed(1) }}%</em></b>
             </div>
             <div class="ov-metric">
               <span class="ov-metric-label">浮亏</span>
-              <b class="ov-metric-val is-risk">¥{{ formatNumber(stockUnrealizedLoss) }}</b>
+              <b class="ov-metric-val is-risk">{{ fiatSymbol }}{{ fiatFormat(stockUnrealizedLoss) }}</b>
             </div>
           </div>
 
@@ -172,8 +252,9 @@
                 <span class="ov-ipo-tip">
                   <b>A股打新规则</b>
                   <ul>
-                    <li>沪深市值<b>分开计算</b>，不互通；每 5000 元 = 1 单位 = 500 股</li>
-                    <li>门槛：T-2 日前 <b>20 个交易日日均</b> ≥ 1 万元</li>
+                    <li>沪深市值<b>分开计算</b>，互不通用：沪市每 <b>1 万 = 1000 股</b>，深市每 <b>5000 元 = 500 股</b></li>
+                    <li>沪市底仓只能打沪市新股（主板 60 / 科创 68），深市底仓只能打深市新股（主板 00 / 创业 30）</li>
+                    <li>门槛：各自 T-2 日前 <b>20 个交易日日均</b> ≥ 1 万元</li>
                     <li>主板：开户即可；创业板：2年经验 + 日均≥10万</li>
                     <li>科创板：2年经验 + 日均≥50万；北交所：2年+50万，需预缴</li>
                     <li>可转债：<b>无需底仓</b>，2年经验 + 日均≥10万 + 签风险书</li>
@@ -195,13 +276,13 @@
             <div class="ov-ipo-mv">
               <div class="ov-ipo-mv-item">
                 <span class="ov-ipo-mv-label">{{ ipoAvg.loaded ? '沪市日均底仓' : '沪市实时底仓' }}</span>
-                <b :class="ipoEffectiveMv.sh >= 10000 ? 'is-ok' : 'is-need'">¥{{ fmtNum(ipoEffectiveMv.sh) }}</b>
-                <span class="ov-ipo-mv-sub">{{ ipoUnits(ipoEffectiveMv.sh) }}股{{ ipoGap(ipoEffectiveMv.sh) > 0 ? ' · 差' + fmtNum(ipoGap(ipoEffectiveMv.sh)) : '' }}<em v-if="ipoAvg.loaded && ipoMarketValue.sh !== ipoEffectiveMv.sh">（实时¥{{ fmtNum(ipoMarketValue.sh) }}）</em></span>
+                <b :class="ipoEffectiveMv.sh >= 10000 ? 'is-ok' : 'is-need'">{{ fiatSymbol }}{{ fiatFormatRaw(ipoEffectiveMv.sh) }}</b>
+                <span class="ov-ipo-mv-sub">{{ ipoUnits(ipoEffectiveMv.sh, 'sh') }}股{{ ipoGap(ipoEffectiveMv.sh) > 0 ? ' · 差' + fiatFormatRaw(ipoGap(ipoEffectiveMv.sh)) : '' }}<em v-if="ipoAvg.loaded && ipoMarketValue.sh !== ipoEffectiveMv.sh">（实时{{ fiatSymbol }}{{ fiatFormatRaw(ipoMarketValue.sh) }}）</em></span>
               </div>
               <div class="ov-ipo-mv-item">
                 <span class="ov-ipo-mv-label">{{ ipoAvg.loaded ? '深市日均底仓' : '深市实时底仓' }}</span>
-                <b :class="ipoEffectiveMv.sz >= 10000 ? 'is-ok' : 'is-need'">¥{{ fmtNum(ipoEffectiveMv.sz) }}</b>
-                <span class="ov-ipo-mv-sub">{{ ipoUnits(ipoEffectiveMv.sz) }}股{{ ipoGap(ipoEffectiveMv.sz) > 0 ? ' · 差' + fmtNum(ipoGap(ipoEffectiveMv.sz)) : '' }}<em v-if="ipoAvg.loaded && ipoMarketValue.sz !== ipoEffectiveMv.sz">（实时¥{{ fmtNum(ipoMarketValue.sz) }}）</em></span>
+                <b :class="ipoEffectiveMv.sz >= 10000 ? 'is-ok' : 'is-need'">{{ fiatSymbol }}{{ fiatFormatRaw(ipoEffectiveMv.sz) }}</b>
+                <span class="ov-ipo-mv-sub">{{ ipoUnits(ipoEffectiveMv.sz, 'sz') }}股{{ ipoGap(ipoEffectiveMv.sz) > 0 ? ' · 差' + fiatFormatRaw(ipoGap(ipoEffectiveMv.sz)) : '' }}<em v-if="ipoAvg.loaded && ipoMarketValue.sz !== ipoEffectiveMv.sz">（实时{{ fiatSymbol }}{{ fiatFormatRaw(ipoMarketValue.sz) }}）</em></span>
               </div>
             </div>
 
@@ -246,51 +327,16 @@
           </div>
         </article>
 
-        <!-- 黄金 -->
-        <article class="ov-card glass is-gold" :style="{ '--i': 2 }">
-          <span class="ov-card-wm" aria-hidden="true"><Coins :stroke-width="1.2" /></span>
+        <!-- 每日任务 -->
+        <article class="ov-card glass is-task" :style="{ '--i': 2 }">
+          <span class="ov-card-wm" aria-hidden="true"><Sparkles :stroke-width="1.2" /></span>
 
           <div class="ov-card-head">
-            <span class="ov-card-ic"><Coins :stroke-width="1.8" /></span>
-            <h3>黄金</h3>
+            <span class="ov-card-ic"><Sparkles :stroke-width="1.8" /></span>
+            <h3>每日任务</h3>
           </div>
 
-          <div class="ov-card-main">
-            <div class="ov-card-num">
-              <div class="ov-card-big">¥{{ formatNumber(goldTotalMarketValue) }}</div>
-              <div class="ov-card-sub">总市值 · 占净资 {{ goldShare.toFixed(1) }}%</div>
-            </div>
-          </div>
-
-          <div class="ov-metrics">
-            <div class="ov-metric">
-              <span class="ov-metric-label">总成本</span>
-              <b class="ov-metric-val">¥{{ formatNumber(goldTotalCost) }}</b>
-            </div>
-            <div class="ov-metric">
-              <span class="ov-metric-label">总市值</span>
-              <b class="ov-metric-val">¥{{ formatNumber(goldTotalMarketValue) }}</b>
-            </div>
-            <div class="ov-metric ov-avg" tabindex="0">
-              <span class="ov-metric-label">总均价</span>
-              <b class="ov-metric-val">¥{{ formatNumber(goldAvgPrice) }}</b>
-              <div class="ov-avg-tip">
-                <div class="tip-title">总均价 = 净成本 ÷ 总克数</div>
-                <div class="tip-row"><span>累计买入总额（含手续费）</span><b>+¥{{ formatNumber(goldTotalBuyAmount) }}</b></div>
-                <div class="tip-row"><span>累计卖出收入（扣手续费）</span><b>-¥{{ formatNumber(goldTotalSellAmount) }}</b></div>
-                <div class="tip-row"><span>净成本（买入 - 卖出）</span><b>=¥{{ formatNumber(goldTotalCost) }}</b></div>
-                <div class="tip-row"><span>总克数</span><b>{{ formatNumber(goldTotalGrams, 4) }}g</b></div>
-                <div class="tip-row result"><span>总均价</span><b>=¥{{ formatNumber(goldAvgPrice, 4) }}/g</b></div>
-                <div v-if="goldHasSell" class="tip-note">
-                  注：卖出盈亏已摊入剩余持仓成本<br />赚钱卖出 → 均价下降；亏钱卖出 → 均价上升
-                </div>
-              </div>
-            </div>
-            <div class="ov-metric">
-              <span class="ov-metric-label">总克数</span>
-              <b class="ov-metric-val">{{ formatNumber(goldTotalGrams, 2) }}g</b>
-            </div>
-          </div>
+          <div class="ov-gold-task"><DailyTaskTool /></div>
         </article>
       </section>
 
@@ -336,7 +382,7 @@
               <li v-for="seg in donutSegments" :key="seg.key">
                 <i :style="{ background: seg.color }"></i>
                 <span class="lg-label">{{ seg.label }}</span>
-                <span class="lg-val">¥{{ formatNumber(seg.value) }}</span>
+                <span class="lg-val">{{ fiatSymbol }}{{ fiatFormat(seg.value) }}</span>
                 <b class="lg-pct">{{ seg.percent.toFixed(1) }}%</b>
               </li>
             </ul>
@@ -355,11 +401,17 @@
               v-if="trendGeom"
               class="ov-chart-total"
               :class="trendGeom.total >= 0 ? 'is-profit' : 'is-risk'"
-            >¥{{ formatNumber(trendGeom.total) }}</b>
+            >{{ fiatSymbol }}{{ fiatFormat(trendGeom.total) }}</b>
           </div>
 
-          <div v-if="trendGeom" class="ov-trend">
-            <svg class="ov-trend-svg" :viewBox="`0 0 ${trendGeom.W} ${trendGeom.H}`">
+          <div
+            v-if="trendGeom"
+            ref="trendWrapRef"
+            class="ov-trend"
+            @mousemove="updateTrendHover"
+            @mouseleave="clearTrendHover"
+          >
+            <svg ref="trendSvgRef" class="ov-trend-svg" :viewBox="`0 0 ${trendGeom.W} ${trendGeom.H}`">
               <defs>
                 <linearGradient id="ovTrendFill" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stop-color="#86c8ff" stop-opacity="0.42" />
@@ -419,11 +471,35 @@
 
               <path class="ov-trend-area" :d="trendGeom.area" fill="url(#ovTrendFill)" />
               <path ref="trendPathRef" class="ov-trend-line" :d="trendGeom.line" />
-              <path class="ov-trend-flow" :d="trendGeom.line" />
+              <path ref="trendNeckRef" class="ov-trend-flow" :d="trendGeom.line" />
+              <circle ref="trendHeadRef" class="ov-trend-head" :cx="trendGeom.first.x" :cy="trendGeom.first.y" r="5.2" />
 
               <circle class="ov-trend-halo" :cx="trendGeom.last.x" :cy="trendGeom.last.y" r="9" />
               <circle class="ov-trend-dot" :cx="trendGeom.last.x" :cy="trendGeom.last.y" r="4.5" />
+
+              <!-- 悬停十字准线：横线对左侧纵坐标、竖线对下方横坐标 -->
+              <g v-if="hoverPoint" class="ov-cross">
+                <line
+                  :x1="trendGeom.padL" :y1="hoverPoint.y"
+                  :x2="trendGeom.W - trendGeom.padR" :y2="hoverPoint.y"
+                />
+                <line
+                  :x1="hoverPoint.x" :y1="trendGeom.padT"
+                  :x2="hoverPoint.x" :y2="trendGeom.H - trendGeom.padB"
+                />
+                <circle class="ov-cross-dot" :cx="hoverPoint.x" :cy="hoverPoint.y" r="4.2" />
+              </g>
             </svg>
+
+            <!-- 该点的日期与金额读数 -->
+            <div
+              v-if="hoverPoint"
+              class="ov-trend-tip"
+              :style="{ left: trendHoverPos.left + 'px', top: trendHoverPos.top + 'px', width: TREND_TIP_W + 'px' }"
+            >
+              <b>{{ hoverPoint.date.slice(5, 10) }}</b>
+              <span>{{ fiatSymbol }}{{ fiatFormat(hoverPoint.value) }}</span>
+            </div>
           </div>
 
           <div v-else class="ov-trend-empty">
@@ -445,11 +521,13 @@ import {
   Sparkles, PiggyBank, TrendingUp, Coins, Activity, ChartPie, ChartLine
 } from 'lucide-vue-next'
 import { CRISIS_LEVELS, getCrisisLevel, calcStock } from '../utils/calculator'
-import { fmtNum, getStockBoard } from '../utils/formatter'
+import { fmtNum } from '../utils/formatter'
+import { exchangeOf } from '../utils/stockBoard'
 import { useStock } from '../composables/useStock'
 import { useStockPrice } from '../composables/useStockPrice'
 import { useGold } from '../composables/useGold'
 import { useDeposit } from '../composables/useDeposit'
+import DailyTaskTool from './DailyTaskTool.vue'
 import { feeConfig, toWan } from '../utils/feeConfig'
 
 // 与「设置 → 交易手续费」当前生效档位保持一致
@@ -542,13 +620,6 @@ const stockTrappedRatio = computed(() => {
 })
 
 /* ---------- A股打新资格统计 ---------- */
-function exchangeOf(code) {
-  const board = getStockBoard(code)
-  if (board === '沪主板' || board === '科创板') return 'sh'
-  if (board === '深主板' || board === '创业板') return 'sz'
-  if (board === '北交所') return 'bj'
-  return null
-}
 // 各市场持仓实时市值（仅作参考，实际打新以 20 日日均为准）
 const ipoMarketValue = computed(() => {
   let sh = 0, sz = 0, bj = 0
@@ -596,8 +667,11 @@ const ipoEffectiveMv = computed(() => {
   return { sh: ipoMarketValue.value.sh, sz: ipoMarketValue.value.sz, bj: ipoMarketValue.value.bj }
 })
 
-// 每 5000 元市值 = 1 个申购单位 = 500 股
-function ipoUnits(mv) { return Math.floor(mv / 5000) * 500 }
+// 沪市、深市申购单位分开计算，市值互不通用
+// 沪市：每 1 万元市值 = 1000 股；深市：每 5000 元市值 = 500 股
+function ipoUnitsSh(mv) { return Math.floor(mv / 10000) * 1000 }
+function ipoUnitsSz(mv) { return Math.floor(mv / 5000) * 500 }
+function ipoUnits(mv, market) { return market === 'sh' ? ipoUnitsSh(mv) : ipoUnitsSz(mv) }
 function ipoGap(mv) { return Math.max(0, 10000 - mv) }
 
 // 近 20 日底仓市值走势图（viewBox 400x110，留坐标轴空间）
@@ -650,21 +724,24 @@ const ipoBoards = computed(() => {
   const sz = ipoEffectiveMv.value.sz
   return [
     {
-      key: 'main', name: '沪深主板', assetReq: 0, expReq: false, permReq: true, perm: true,
-      mv: Math.max(sh, sz), mvLabel: sh >= sz ? '沪' : '深',
-      desc: '60/00开头 · 底仓≥1万', gap: ipoGap(Math.max(sh, sz)), unit: ipoUnits(Math.max(sh, sz))
+      key: 'shmain', name: '沪市主板', assetReq: 0, expReq: false, permReq: true, perm: true,
+      desc: '60开头 · 沪市底仓≥1万', gap: ipoGap(sh), unit: ipoUnitsSh(sh)
     },
     {
-      key: 'gem', name: '创业板', assetReq: 100000, expReq: true, permReq: true, perm: ipoSettings.gemOpen,
-      mv: sz, mvLabel: '深', desc: '30开头 · 深市底仓≥1万', gap: ipoGap(sz), unit: ipoUnits(sz)
+      key: 'szmain', name: '深市主板', assetReq: 0, expReq: false, permReq: true, perm: true,
+      desc: '00开头 · 深市底仓≥1万', gap: ipoGap(sz), unit: ipoUnitsSz(sz)
     },
     {
       key: 'star', name: '科创板', assetReq: 500000, expReq: true, permReq: true, perm: ipoSettings.starOpen,
-      mv: sh, mvLabel: '沪', desc: '68开头 · 沪市底仓≥1万', gap: ipoGap(sh), unit: ipoUnits(sh)
+      desc: '68开头 · 沪市底仓≥1万', gap: ipoGap(sh), unit: ipoUnitsSh(sh)
+    },
+    {
+      key: 'gem', name: '创业板', assetReq: 100000, expReq: true, permReq: true, perm: ipoSettings.gemOpen,
+      desc: '30开头 · 深市底仓≥1万', gap: ipoGap(sz), unit: ipoUnitsSz(sz)
     },
     {
       key: 'bj', name: '北交所', assetReq: 500000, expReq: true, permReq: true, perm: ipoSettings.bjOpen,
-      mv: 0, mvLabel: '—', desc: '8/4开头 · 无需底仓（需预缴）', gap: 0, unit: 0
+      desc: '8/4开头 · 无需底仓（需预缴）', gap: 0, unit: 0
     }
   ]
 })
@@ -679,8 +756,8 @@ function ipoUnmet(b) {
   const unmet = []
   if (b.permReq && !b.perm) unmet.push('未开通权限')
   if (b.expReq && !ipoSettings.has2YearExp) unmet.push('不满2年经验')
-  if (b.assetReq > 0 && ipoTotalAsset.value < b.assetReq) unmet.push(`资产差¥${fmtNum(b.assetReq - ipoTotalAsset.value)}`)
-  if (b.gap > 0) unmet.push(`底仓差¥${fmtNum(b.gap)}`)
+  if (b.assetReq > 0 && ipoTotalAsset.value < b.assetReq) unmet.push(`资产差${fiatSymbol.value}${fiatFormatRaw(b.assetReq - ipoTotalAsset.value)}`)
+  if (b.gap > 0) unmet.push(`底仓差${fiatSymbol.value}${fiatFormatRaw(b.gap)}`)
   return unmet
 }
 // 直接列出所有未满足的条件；全部满足才显示可申购
@@ -705,11 +782,114 @@ const depositTotal = computed(() => depositTotalAmount.value)
 
 const netAssetTotal = computed(() => depositTotal.value + stockTotalAsset.value + goldTotalMarketValue.value)
 
+// ===== 单位换算（多货币展示，底层始终 CNY 计算） =====
+// 必须前置到 rollTarget 之前，否则 fiat() 在 TDZ 里会触发 ReferenceError
+const CURRENCY_META = {
+  CNY: { symbol: '¥',  label: '人民币', flag: '🇨🇳' },
+  USD: { symbol: '$',  label: '美元',   flag: '🇺🇸' },
+  EUR: { symbol: '€',  label: '欧元',   flag: '🇪🇺' },
+  JPY: { symbol: '¥',  label: '日元',   flag: '🇯🇵' },
+  HKD: { symbol: 'HK$', label: '港币',  flag: '🇭🇰' },
+  GBP: { symbol: '£',  label: '英镑',   flag: '🇬🇧' },
+}
+const FOREX_PREFERRED = Object.keys(CURRENCY_META)
+const CURRENCY_KEY = 'asset-overview.currency'
+
+// 本地存的是历史选择，若已不在支持列表里（或为空）就退回人民币
+function readStoredCurrency() {
+  const saved = localStorage.getItem(CURRENCY_KEY)
+  return FOREX_PREFERRED.includes(saved) ? saved : 'CNY'
+}
+
+const currency = ref(readStoredCurrency())
+const forexRates = ref({})
+const forexSavedAt = ref(0)
+const currencyOpen = ref(false)
+const curTrigger = ref(null)
+const menuStyle = ref({})
+const MENU_WIDTH = 268
+
+// 汇率未就绪（首次加载 / 离线）时不要出现「人民币的数值 + 外币符号」的错位显示：
+// 先退回人民币，等汇率到位再切到所选货币，避免数字先大后小地跳变
+const effectiveCurrency = computed(() => {
+  if (currency.value === 'CNY') return 'CNY'
+  const v = Number(forexRates.value[currency.value])
+  return Number.isFinite(v) && v > 0 ? currency.value : 'CNY'
+})
+
+// 接口以 CNY 为基准返回「1 CNY = x 目标币」，换算金额直接乘该系数
+const forexRate = computed(() => {
+  if (effectiveCurrency.value === 'CNY') return 1
+  const v = Number(forexRates.value[effectiveCurrency.value])
+  return Number.isFinite(v) && v > 0 ? v : 1
+})
+const fiatSymbol = computed(() => CURRENCY_META[effectiveCurrency.value].symbol)
+
+// 反过来「1 单位外币 ≈ 多少人民币」更符合直觉，用于下拉里的汇率提示
+function rateToCNY(code) {
+  if (code === 'CNY') return 1
+  const v = Number(forexRates.value[code])
+  return Number.isFinite(v) && v > 0 ? 1 / v : null
+}
+function rateToCNYText(code) {
+  const v = rateToCNY(code)
+  if (v == null) return '—'
+  return `¥${v >= 1 ? v.toFixed(4) : v.toFixed(5)}`
+}
+function rateAvailable(code) { return rateToCNY(code) != null }
+
+function openCurrencyMenu() {
+  const r = curTrigger.value?.getBoundingClientRect()
+  if (!r) return
+  const left = Math.min(Math.max(8, r.left), window.innerWidth - MENU_WIDTH - 8)
+  menuStyle.value = { left: `${Math.round(left)}px`, top: `${Math.round(r.bottom + 8)}px` }
+  currencyOpen.value = true
+}
+function toggleCurrency(e) {
+  e.stopPropagation()
+  if (currencyOpen.value) currencyOpen.value = false
+  else openCurrencyMenu()
+}
+function selectCurrency(code) {
+  if (!rateAvailable(code)) return
+  currency.value = code
+  currencyOpen.value = false
+  localStorage.setItem(CURRENCY_KEY, code)
+}
+// 下拉已 teleport 到 body，点击菜单内部不算“点外部”
+function onDocClick(e) {
+  if (e?.target instanceof Element && e.target.closest('.ov-currency-menu')) return
+  currencyOpen.value = false
+}
+function onEscClose(e) {
+  if (e.key === 'Escape') currencyOpen.value = false
+}
+
+function fiat(rmb) {
+  const v = Number(rmb)
+  return Number.isFinite(v) ? v * forexRate.value : 0
+}
+function fiatFormat(rmb, decimals = 2) { return fmtNum(fiat(rmb), decimals) }
+function fiatFormatRaw(rmb) { return fmtNum(fiat(rmb)) }
+
+async function loadForex() {
+  try {
+    const res = await fetch('/api/forex/rates')
+    const json = await res.json()
+    if (json?.ok && json.rates) {
+      forexRates.value = json.rates
+      forexSavedAt.value = json.savedAt || 0
+    }
+  } catch {}
+}
+
 /* ---------- 净资产大屏数字（按位轮动） ---------- */
 const rollNeg = computed(() => netAssetTotal.value < 0)
 
 const rollTarget = computed(() => {
-  const fixed = Math.abs(netAssetTotal.value).toFixed(2)
+  // 净资产先按选定货币换算（纯展示层），业务计算始终 CNY
+  const amount = fiat(netAssetTotal.value)
+  const fixed = Math.abs(amount).toFixed(2)
   const [int, dec] = fixed.split('.')
   return { intDigits: int.split('').map(Number), decDigits: dec.split('').map(Number) }
 })
@@ -729,6 +909,8 @@ function placeName(i, len) {
 // 落位序号是 turns * 10 + d；初始动画滚满三整圈，后续刷新只滚变化位并滚满两整圈
 const INITIAL_TURNS = 3
 const SUB_TURNS = 2
+// 后续动画每位错峰时长（与 CSS 的 --roll-step 一致）
+const SUB_ROLL_STEP = 110
 const ROLL_CELLS = (INITIAL_TURNS + 1) * 10
 const rollShown = ref({ int: [0], dec: [0, 0] })
 const snapping = ref(false)
@@ -753,11 +935,42 @@ function createInitialRollSchedule(digitCount) {
   })
 }
 
-function initialDigitStyle(place) {
-  if (!isGrowing.value) return {}
-  const duration = initialRollSchedule.value[place]?.duration || ROLL_DUR
-  return { '--roll-dur': `${duration}ms` }
+// 内联 style 对象按“值”缓存：Vue 只在对象引用变化时才重新下发 style，
+// 因此行情轮询这类无关重渲染不会碰到正在滚动的列，避免打断过渡造成卡顿
+const styleCache = new Map()
+function cachedStyle(key, create) {
+  let style = styleCache.get(key)
+  if (!style) {
+    style = create()
+    styleCache.set(key, style)
+  }
+  return style
 }
+
+// 列位移：同一位移复用同一个对象
+const rollColStyle = (pos) => cachedStyle(`t${pos}`, () => ({ transform: `translateY(-${pos}em)` }))
+
+// 位的错峰序号 --ci 与初始补位的 --roll-dur：place < 0 表示小数位，不参与补位节奏
+function rollDigitStyle(ci, place = -1) {
+  const duration = isGrowing.value && place >= 0
+    ? (initialRollSchedule.value[place]?.duration || ROLL_DUR)
+    : 0
+  return cachedStyle(`d${ci}|${place}|${duration}`, () => {
+    const style = { '--ci': ci }
+    if (duration) style['--roll-dur'] = `${duration}ms`
+    return style
+  })
+}
+
+// 大屏数字的状态类用字符串：字符串相等时 Vue 整段跳过 class 下发，
+// 否则每次重渲染重设 class 都会让各列 transition-delay 重新求值
+const screenNumClass = computed(() => {
+  const list = []
+  if (rollNeg.value) list.push('is-risk')
+  if (isGrowing.value) list.push('is-growing')
+  if (snapping.value) list.push('is-snapping')
+  return list.join(' ')
+})
 
 function stopGrow() {
   growTimers.forEach(clearTimeout)
@@ -793,7 +1006,7 @@ function runInitialRoll(t, suspense = true) {
       rollShown.value = { int: toPosInitial(tInt), dec: toPosInitial(tDec) }
     })
     growTimers.push(setTimeout(() => { isGrowing.value = false }, finish.duration))
-    return
+    return finish.duration
   }
 
   // 位数变化：从个位起逐位补位，新位从 0 滚一整圈到目标值，已就位的低位保持不动
@@ -814,6 +1027,7 @@ function runInitialRoll(t, suspense = true) {
   growTimers.push(
     setTimeout(() => { isGrowing.value = false }, finish.delay + finish.duration)
   )
+  return finish.delay + finish.duration
 }
 
 // 后续动画：只滚改变的数位并滚满两整圈；数字变大（该位从下往上滚），变小（从上往下滚）
@@ -827,8 +1041,7 @@ function runSubRoll(t) {
 
   // 位数变化（跨数量级，罕见）：沿用初始式补位动画
   if (!sameWidth) {
-    runInitialRoll(t, false)
-    return
+    return runInitialRoll(t, false)
   }
 
   const baseInt = tInt.map((dNew, i) => {
@@ -858,16 +1071,37 @@ function runSubRoll(t) {
     snapping.value = false
     rollShown.value = { int: targetInt, dec: targetDec }
   })
+  // 最左位最后落定：单列 4.6s + 逐位错峰（ci 从右往左包含小数位）
+  return ROLL_DUR + (tInt.length + tDec.length - 1) * SUB_ROLL_STEP
+}
+
+let rollAnimating = false
+let pendingRollTarget = null
+let rollEndTimer = 0
+
+// 一轮滚动结束：若动画期间数值又变了，此刻才把最新值滚上去
+function endRoll() {
+  rollAnimating = false
+  const next = pendingRollTarget
+  pendingRollTarget = null
+  if (next) startRoll(next)
+}
+
+function startRoll(t) {
+  rollAnimating = true
+  const isInitial = !initialShown
+  initialShown = true
+  const duration = isInitial ? runInitialRoll(t) : runSubRoll(t)
+  clearTimeout(rollEndTimer)
+  // 多留一点余量，确保最后一列完全落位后再接管新数值
+  rollEndTimer = setTimeout(endRoll, duration + 150)
 }
 
 function onRollTarget(t) {
   if (!mountReady.value) return
-  if (!initialShown) {
-    initialShown = true
-    runInitialRoll(t)
-  } else {
-    runSubRoll(t)
-  }
+  // 动画进行中不刷新数值：先暂存最新目标值，等动画结束后再滚
+  if (rollAnimating) { pendingRollTarget = t; return }
+  startRoll(t)
 }
 
 watch(rollTarget, onRollTarget)
@@ -1009,6 +1243,9 @@ const trendGeom = computed(() => {
     area,
     ticks,
     xLabels,
+    // 每个数据点的坐标与原始值，供悬停十字准线定位与读数
+    points: coords.map((c, i) => ({ x: c.x, y: c.y, date: pts[i].date, value: pts[i].value })),
+    first: coords[0],
     last: coords[coords.length - 1],
     zeroY: yOf(0),
     total: values[values.length - 1]
@@ -1016,23 +1253,164 @@ const trendGeom = computed(() => {
 })
 
 const trendPathRef = ref(null)
+const trendNeckRef = ref(null)
+const trendHeadRef = ref(null)
+const trendSvgRef = ref(null)
+const trendWrapRef = ref(null)
+let trendRaf = 0
+// 爬行动画只在首次渲染时播一遍；之后的数据刷新直接显示终态，避免反复重播
+let trendPlayedOnce = false
+
+// ---- 悬停十字准线：横线对左侧纵坐标，竖线对下方横坐标，读数为该点的日期与金额 ----
+const trendHoverIdx = ref(null)
+const trendHoverPos = reactive({ left: 0, top: 0 })
+let trendHoverRaf = 0
+const TREND_TIP_W = 132
+
+const hoverPoint = computed(() => {
+  const g = trendGeom.value
+  const i = trendHoverIdx.value
+  if (!g || i == null || !g.points[i]) return null
+  return g.points[i]
+})
+
+function updateTrendHover(event) {
+  const g = trendGeom.value
+  const svg = trendSvgRef.value
+  const wrap = trendWrapRef.value
+  if (!g || !svg || !wrap) return
+  const rect = svg.getBoundingClientRect()
+  if (!rect.width || !rect.height) return
+  // 视口坐标 → viewBox 坐标（等比映射），再找横向最近的数据点
+  const vbX = (event.clientX - rect.left) * (g.W / rect.width)
+  let idx = 0
+  let best = Infinity
+  g.points.forEach((p, i) => {
+    const d = Math.abs(p.x - vbX)
+    if (d < best) { best = d; idx = i }
+  })
+  trendHoverIdx.value = idx
+
+  const point = g.points[idx]
+  const wrapRect = wrap.getBoundingClientRect()
+  const sx = point.x * (rect.width / g.W) + (rect.left - wrapRect.left)
+  const sy = point.y * (rect.height / g.H) + (rect.top - wrapRect.top)
+  // 读数框贴在数据点上方，左右不越出卡片
+  if (trendHoverRaf) cancelAnimationFrame(trendHoverRaf)
+  trendHoverRaf = requestAnimationFrame(() => {
+    trendHoverRaf = 0
+    trendHoverPos.left = Math.min(Math.max(sx - TREND_TIP_W / 2, 0), Math.max(0, wrapRect.width - TREND_TIP_W))
+    trendHoverPos.top = Math.max(0, sy - 48)
+  })
+}
+
+function clearTrendHover() {
+  if (trendHoverRaf) { cancelAnimationFrame(trendHoverRaf); trendHoverRaf = 0 }
+  trendHoverIdx.value = null
+}
+
+// 直接落到终态：曲线完整显示、蛇头/蛇颈收起
+function settleTrendDraw() {
+  const line = trendPathRef.value
+  if (line) {
+    line.style.transition = 'none'
+    line.style.strokeDasharray = 'none'
+    line.style.strokeDashoffset = '0'
+  }
+  if (trendNeckRef.value) trendNeckRef.value.style.opacity = '0'
+  if (trendHeadRef.value) trendHeadRef.value.style.opacity = '0'
+}
+
+// 贪吃蛇爬行：整段耗时 / 蛇颈柔光长度（占整条曲线比例）
+const TREND_CRAWL_MS = 2200
+const TREND_NECK = 0.14
+
+function stopTrendDraw() {
+  if (trendRaf) { cancelAnimationFrame(trendRaf); trendRaf = 0 }
+}
+
+// 缓入缓出，蛇头起步轻、中段快、末段收
+function trendEase(p) {
+  return p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2
+}
 
 function playTrendDraw() {
-  const el = trendPathRef.value
-  if (!el || typeof el.getTotalLength !== 'function') return
-  const len = el.getTotalLength()
+  const line = trendPathRef.value
+  const neck = trendNeckRef.value
+  const head = trendHeadRef.value
+  if (!line || typeof line.getTotalLength !== 'function') return
+  const len = line.getTotalLength()
   if (!Number.isFinite(len) || len <= 0) return
-  el.style.transition = 'none'
-  el.style.strokeDasharray = `${len}`
-  el.style.strokeDashoffset = `${len}`
-  void el.getBoundingClientRect()
-  el.style.transition = 'stroke-dashoffset 1.6s cubic-bezier(0.2, 0.8, 0.3, 1)'
-  el.style.strokeDashoffset = '0'
+
+  stopTrendDraw()
+
+  const start = trendGeom.value ? trendGeom.value.first : { x: 0, y: 0 }
+  const neckLen = len * TREND_NECK
+
+  // 整条曲线先藏起来，随蛇头爬行逐段露出
+  line.style.transition = 'none'
+  line.style.strokeDasharray = `${len}`
+  line.style.strokeDashoffset = `${len}`
+
+  if (neck) {
+    neck.style.transition = 'none'
+    neck.style.strokeDasharray = `${neckLen} ${len}`
+    neck.style.strokeDashoffset = `${neckLen}`
+    neck.style.opacity = '0'
+  }
+  if (head) {
+    head.style.opacity = '0'
+    head.setAttribute('cx', String(start.x))
+    head.setAttribute('cy', String(start.y))
+  }
+
+  // 无障碍：关闭动态效果时直接落到终点
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  if (reduce) {
+    line.style.strokeDashoffset = '0'
+    return
+  }
+
+  const startAt = performance.now()
+
+  const step = (now) => {
+    const p = Math.min(1, (now - startAt) / TREND_CRAWL_MS)
+    const drawn = trendEase(p) * len
+
+    line.style.strokeDashoffset = `${len - drawn}`
+
+    if (neck) {
+      // 蛇颈：贴着蛇头身后的一段柔光，strokeDashoffset = 颈长 - 已爬长度
+      neck.style.strokeDashoffset = `${neckLen - drawn}`
+      neck.style.opacity = drawn > neckLen ? '1' : '0'
+    }
+    if (head) {
+      const pt = line.getPointAtLength(drawn)
+      head.setAttribute('cx', pt.x.toFixed(2))
+      head.setAttribute('cy', pt.y.toFixed(2))
+      head.style.opacity = p >= 1 ? '0' : '1'
+    }
+
+    if (p < 1) {
+      trendRaf = requestAnimationFrame(step)
+    } else {
+      trendRaf = 0
+      if (neck) neck.style.opacity = '0'
+      if (head) head.style.opacity = '0'
+    }
+  }
+
+  trendRaf = requestAnimationFrame(step)
 }
 
 watch(trendGeom, (g) => {
-  if (!g) return
-  nextTick(playTrendDraw)
+  if (!g) { stopTrendDraw(); return }
+  nextTick(() => {
+    // 只播一遍：首次渲染走爬行动画，之后的数据刷新直接落终态
+    if (trendPlayedOnce) { settleTrendDraw(); return }
+    trendPlayedOnce = true
+    playTrendDraw()
+  })
 }, { flush: 'post' })
 
 /* ---------- 星尘 ---------- */
@@ -1075,8 +1453,12 @@ onMounted(async () => {
       showCrisisReminder.value = false
     }, 4000)
   }
-  // 基础数据并行加载（股票列表/黄金列表/存款互不依赖），尽快进入初始动画
-  await Promise.all([loadStocks(), loadGoldItems(), loadDeposits()])
+  // 基础数据并行加载（股票列表/黄金列表/存款/汇率互不依赖），尽快进入初始动画
+  document.addEventListener('click', onDocClick)
+  // 滚动时收起下拉：菜单是 fixed 定位，不跟随触发器移动
+  window.addEventListener('scroll', onDocClick, true)
+  document.addEventListener('keydown', onEscClose)
+  await Promise.all([loadStocks(), loadGoldItems(), loadDeposits(), loadForex()])
   if (!stockPrincipal.value) {
     stockPrincipal.value = Math.round(totalCost.value)
   }
@@ -1095,14 +1477,19 @@ onMounted(async () => {
   fetchGoldPrice()
 
   // 启动 30s 股价定时刷新，驱动大屏净资产数字的逐位滚动动画
-  startStockPriceTimer(() => stockCodes.value)
+  startStockPriceTimer('overview', () => stockCodes.value)
 })
 
 onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocClick)
+  window.removeEventListener('scroll', onDocClick, true)
+  document.removeEventListener('keydown', onEscClose)
   if (reminderTimer) window.clearTimeout(reminderTimer)
   cancelAnimationFrame(donutRaf)
+  clearTimeout(rollEndTimer)
+  stopTrendDraw()
   stopGrow()
-  stopStockPriceTimer()
+  stopStockPriceTimer('overview')
 })
 </script>
 
@@ -1163,6 +1550,8 @@ onBeforeUnmount(() => {
   border-radius: 50%;
   filter: blur(64px);
   opacity: 0.5;
+  /* 常驻环境动画：提示合成器保持独立图层，避免反复提升/降级丢帧 */
+  will-change: transform, opacity;
 }
 .ov-glow.g1 {
   width: 38vw;
@@ -1190,6 +1579,7 @@ onBeforeUnmount(() => {
   border-radius: 50%;
   filter: blur(48px);
   opacity: 0.6;
+  will-change: transform, opacity;
 }
 .ov-cloud.c1 {
   width: 54vw;
@@ -1390,12 +1780,170 @@ onBeforeUnmount(() => {
 .ov-screen-num.is-risk {
   color: var(--risk);
 }
+/* 计价货币：不做按钮外观，做成「数字后面跟一个单位」的无感衔接 */
 .ov-screen-cur {
-  font-size: 0.42em;
+  /* order:1 —— 其余数字子项默认 order:0，于是它被排到所有数字之后 */
+  order: 1;
+  display: inline-flex;
+  align-items: baseline;
+  font-size: 0.4em;
   font-weight: 600;
-  margin: 0 0.14em 0.28em 0;
-  color: var(--ice-ink);
-  opacity: 0.86;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  /* 与逗号相同的上提量，让单位落在数字基线上 */
+  margin: 0 0 0.4em 0.32em;
+  color: inherit;
+  opacity: 0.6;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: opacity 0.16s ease;
+}
+.ov-screen-cur:hover,
+.ov-screen-cur.is-open { opacity: 0.95; }
+
+/* ---------- 计价货币下拉（teleport 到 body，浅色玻璃） ---------- */
+.ov-currency-menu {
+  position: fixed;
+  width: 268px;
+  padding: 7px;
+  border-radius: 16px;
+  background:
+    linear-gradient(158deg, rgba(255, 255, 255, 0.97) 0%, rgba(233, 243, 253, 0.95) 100%),
+    #ffffff;
+  border: 1px solid rgba(150, 195, 235, 0.55);
+  box-shadow:
+    0 20px 44px rgba(58, 104, 158, 0.22),
+    0 4px 10px rgba(84, 132, 190, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 1);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  z-index: 2147483000;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #22384c;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transform-origin: top left;
+  animation: ovCurrencyIn 0.16s ease-out;
+}
+@keyframes ovCurrencyIn {
+  from { opacity: 0; transform: translateY(-5px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+.ov-currency-menu__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #8398ad;
+  padding: 3px 7px 6px;
+  line-height: 1.2;
+}
+.ov-currency-menu__sub {
+  font-weight: 500;
+  letter-spacing: 0;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+.ov-currency-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px 7px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #22384c;
+  font-size: 13px;
+  line-height: 1.2;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.13s, color 0.13s;
+}
+.ov-currency-item::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  width: 2px;
+  height: 0;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #7cc0f0, #4a8fd0);
+  transform: translateY(-50%);
+  transition: height 0.15s ease;
+}
+.ov-currency-item:hover { background: rgba(120, 178, 235, 0.14); }
+.ov-currency-item:hover::before { height: 18px; }
+.ov-currency-item.is-active {
+  background: rgba(120, 178, 235, 0.2);
+  color: #1a659f;
+  font-weight: 600;
+}
+.ov-currency-item.is-off,
+.ov-currency-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+.ov-currency-item:disabled:hover { background: transparent; }
+.ov-currency-item:disabled:hover::before { height: 0; }
+.ov-currency-item__flag {
+  flex: none;
+  font-size: 15px;
+  line-height: 1;
+  filter: saturate(1.05);
+}
+.ov-currency-item__lbl { flex: 1; min-width: 0; }
+.ov-currency-item__code {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  opacity: 0.42;
+  font-variant-numeric: tabular-nums;
+}
+.ov-currency-item__rate {
+  flex: none;
+  min-width: 64px;
+  text-align: right;
+  font-size: 11px;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+.ov-currency-item__rate.is-base { opacity: 0.32; }
+.ov-currency-item__check {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: #2f86c9;
+  opacity: 0;
+  transition: opacity 0.13s;
+}
+.ov-currency-item.is-active .ov-currency-item__check { opacity: 1; }
+.ov-currency-menu__foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin-top: 5px;
+  padding: 7px 8px 3px;
+  border-top: 1px solid rgba(130, 172, 212, 0.28);
+  font-size: 11px;
+  color: #8b9fb3;
+}
+.ov-currency-menu__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #34c98a;
+  box-shadow: 0 0 6px rgba(52, 201, 138, 0.75);
 }
 .ov-screen-sign {
   font-size: 0.62em;
@@ -1577,6 +2125,52 @@ onBeforeUnmount(() => {
 .ov-card.is-stock::before { background: linear-gradient(90deg, transparent, #86c8ff, transparent); }
 .ov-card.is-gold::before { background: linear-gradient(90deg, transparent, #e6c887, transparent); }
 
+/* 黄金卡：金调玻璃质感 */
+.ov-card.is-gold {
+  background:
+    radial-gradient(130% 90% at 100% 0%, rgba(233, 196, 119, 0.2), transparent 58%),
+    radial-gradient(90% 70% at 0% 100%, rgba(214, 178, 106, 0.1), transparent 55%),
+    linear-gradient(158deg, var(--glass-a) 0%, var(--glass-b) 62%),
+    var(--glass-base);
+  border-color: rgba(205, 168, 92, 0.38);
+}
+.ov-card.is-gold:hover,
+.ov-card.is-gold:focus-within {
+  box-shadow:
+    0 32px 64px rgba(176, 141, 66, 0.22),
+    0 0 42px rgba(233, 196, 119, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+.is-gold .ov-card-ic {
+  background: linear-gradient(150deg, rgba(252, 243, 214, 0.95), rgba(233, 196, 119, 0.35));
+  border-color: rgba(205, 168, 92, 0.45);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 0 14px rgba(233, 196, 119, 0.25);
+}
+.is-gold .ov-card-sub { color: #a4853f; }
+.is-gold .ov-metric-val { color: #7c6220; }
+.is-gold-badge {
+  color: #8a6a1f !important;
+  border-color: rgba(205, 168, 92, 0.55) !important;
+  background: linear-gradient(135deg, rgba(252, 243, 214, 0.8), rgba(233, 196, 119, 0.25)) !important;
+}
+.ov-gold-task {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 黄金内容并入存款卡（上存款、下黄金） */
+.ov-gold-block {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 
 /* 卡片角落水印图标 */
 .ov-card-wm {
@@ -1649,8 +2243,22 @@ onBeforeUnmount(() => {
   animation-delay: calc(var(--i, 0) * 120ms + 240ms);
 }
 .is-deposit .ov-card-big { color: #2f9e73; }
+/* 黄金并入存款卡后的次级大数字 */
+.ov-card-big.is-sub { font-size: 24px; }
+.is-deposit .ov-card-big.is-sub {
+  background: linear-gradient(120deg, #8c6b24, #d9b05e 45%, #a97e2f 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
 .is-stock .ov-card-big { color: var(--ice-deep); }
-.is-gold .ov-card-big { color: #b99440; }
+.is-gold .ov-card-big {
+  background: linear-gradient(120deg, #8c6b24, #d9b05e 45%, #a97e2f 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: #b99440;
+}
 
 .ov-card-sub {
   position: relative;
@@ -1905,6 +2513,63 @@ onBeforeUnmount(() => {
   text-align: center;
   padding: 14px 0;
 }
+
+/* 存款 / 黄金 之间的分隔线：一条干净的渐变色线 */
+.ov-sub-divider {
+  height: 1px;
+  margin: 18px 0 16px;
+  background: linear-gradient(90deg, rgba(47, 158, 115, 0) 0%, rgba(47, 158, 115, 0.4) 24%, rgba(205, 168, 92, 0.5) 70%, rgba(205, 168, 92, 0) 100%);
+}
+/* 标题配色：存款绿、黄金金 */
+.is-deposit .ov-card-head:not(.ov-gold-head) h3 { color: #1f7a5c; }
+.is-deposit .ov-gold-head h3 { color: #9a7b2e; }
+.is-deposit .ov-gold-head .ov-card-ic { color: #b99440; }
+
+/* ===== 存款卡：克制排版，弱化装饰 ===== */
+/* 数字用实色，不用高饱和渐变 */
+.is-deposit .ov-card-big,
+.is-deposit .ov-card-big.is-sub {
+  background: none;
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+  -webkit-text-fill-color: currentColor;
+}
+.is-deposit .ov-card-big { color: #1f7a5c; }
+.is-deposit .ov-card-big.is-sub { color: #a8812f; }
+/* 存款图标：仅用绿色点缀，不做玻璃托盘 */
+.is-deposit .ov-card-head:not(.ov-gold-head) .ov-card-ic { color: #2f9e73; }
+
+/* 黄金指标：轻量列表（标签小字 + 数值粗体），靠留白与细线分层 */
+.is-deposit .ov-gold-block .ov-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 14px;
+  padding-top: 0;
+  border-top: 0;
+  border-image: none;
+}
+.is-deposit .ov-gold-block .ov-metric {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 2px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid rgba(150, 118, 42, 0.12);
+  border-radius: 0;
+  box-shadow: none;
+}
+.is-deposit .ov-gold-block .ov-metric:last-child { border-bottom: 0; }
+.is-deposit .ov-gold-block .ov-metric-label { font-size: 12px; color: #a3937a; }
+.is-deposit .ov-gold-block .ov-metric-val {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.2px;
+}
+.is-deposit .ov-gold-block .ov-metric-val:not(.is-profit):not(.is-risk) { color: #6b5a2e; }
 
 /* 指标网格 */
 .ov-metrics {
@@ -2213,7 +2878,7 @@ onBeforeUnmount(() => {
 }
 
 /* 折线图 */
-.ov-trend { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+.ov-trend { position: relative; flex: 1; display: flex; flex-direction: column; justify-content: center; }
 .ov-trend-svg { width: 100%; height: auto; display: block; overflow: visible; }
 
 .ov-grid line {
@@ -2222,9 +2887,9 @@ onBeforeUnmount(() => {
   stroke-dasharray: 3 5;
 }
 .ov-grid text {
-  fill: #9aabc4;
+  fill: #b9cade;
   font-family: var(--font-num);
-  font-size: 10px;
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
 }
 .ov-axis {
@@ -2237,9 +2902,9 @@ onBeforeUnmount(() => {
   stroke-dasharray: 5 5;
 }
 .ov-xlab {
-  fill: #9aabc4;
+  fill: #b9cade;
   font-family: var(--font-num);
-  font-size: 10.5px;
+  font-size: 11.5px;
   letter-spacing: 0.04em;
 }
 
@@ -2251,24 +2916,29 @@ onBeforeUnmount(() => {
   stroke-linejoin: round;
   filter: drop-shadow(0 3px 10px rgba(74, 168, 240, 0.4));
 }
-/* 沿线流动的柔光 */
+/* 贪吃蛇「蛇颈」柔光：贴着蛇头身后的一段，由脚本驱动爬行 */
 .ov-trend-flow {
   fill: none;
   stroke: rgba(255, 255, 255, 0.95);
   stroke-width: 2.6;
   stroke-linecap: round;
-  stroke-dasharray: 22 240;
-  animation: ovFlow 3.8s linear infinite;
+  opacity: 0;
   filter: drop-shadow(0 0 8px rgba(134, 200, 255, 0.95));
   pointer-events: none;
 }
-@keyframes ovFlow {
-  from { stroke-dashoffset: 262; }
-  to { stroke-dashoffset: 0; }
+/* 贪吃蛇蛇头：从起点一路爬到终点 */
+.ov-trend-head {
+  fill: #ffffff;
+  stroke: var(--ice-deep);
+  stroke-width: 2.4;
+  opacity: 0;
+  filter: drop-shadow(0 0 9px rgba(74, 168, 240, 0.85));
+  pointer-events: none;
 }
+/* 面积随蛇头抵达终点后淡入（与爬行时长 2.2s 对齐） */
 .ov-trend-area {
-  animation: ovNumIn 1.2s ease both;
-  animation-delay: 1s;
+  animation: ovNumIn 0.8s ease both;
+  animation-delay: 2.2s;
 }
 .ov-trend-halo {
   fill: rgba(134, 200, 255, 0.35);
@@ -2280,6 +2950,51 @@ onBeforeUnmount(() => {
   stroke: var(--ice-deep);
   stroke-width: 2.6;
   filter: drop-shadow(0 0 8px rgba(74, 168, 240, 0.75));
+}
+
+/* 悬停十字准线：横线对左侧纵坐标、竖线对下方横坐标 */
+.ov-cross line {
+  stroke: rgba(160, 208, 250, 0.6);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  pointer-events: none;
+}
+.ov-cross-dot {
+  fill: #ffffff;
+  stroke: var(--ice-deep);
+  stroke-width: 2.2;
+  pointer-events: none;
+  filter: drop-shadow(0 0 7px rgba(74, 168, 240, 0.85));
+}
+/* 该点的日期 · 金额读数 */
+.ov-trend-tip {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 5px 8px;
+  border-radius: 10px;
+  background: rgba(13, 24, 41, 0.92);
+  border: 1px solid rgba(134, 200, 255, 0.4);
+  box-shadow: 0 8px 20px rgba(8, 20, 40, 0.32);
+  pointer-events: none;
+  z-index: 3;
+  white-space: nowrap;
+}
+.ov-trend-tip b {
+  font-family: var(--font-num);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  color: #a9c6e6;
+}
+.ov-trend-tip span {
+  font-family: var(--font-num);
+  font-size: 12.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #d6e9ff;
 }
 @keyframes ovDotPulse {
   0%, 100% { opacity: 0.25; r: 7; }
@@ -2326,8 +3041,8 @@ onBeforeUnmount(() => {
   to { opacity: 1; transform: none; }
 }
 @keyframes ovNumIn {
-  from { opacity: 0; transform: translateY(10px); filter: blur(6px); }
-  to { opacity: 1; transform: none; filter: blur(0); }
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
 }
 
 .is-blurred {
@@ -2340,7 +3055,7 @@ onBeforeUnmount(() => {
 @media (max-width: 1180px) {
   .ov-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ov-card.is-deposit { order: 1; }
-  .ov-card.is-gold { order: 2; }
+  .ov-card.is-task { order: 2; }
   .ov-card.is-stock { order: 3; grid-column: span 2; }
 }
 @media (max-width: 1080px) {
@@ -2371,3 +3086,4 @@ onBeforeUnmount(() => {
   }
 }
 </style>
+

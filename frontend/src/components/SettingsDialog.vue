@@ -7,10 +7,10 @@
           <h2 class="text-base font-semibold text-slate-800">设置</h2>
           <button class="text-xl leading-none text-slate-400 hover:text-slate-700" title="关闭" @click="$emit('close')">×</button>
         </div>
-        <div class="flex items-center gap-1 mt-3 border-b border-slate-200">
+        <div class="flex items-center gap-1 mt-3 border-b border-slate-200 overflow-x-auto">
           <button
             v-for="tab in TABS" :key="tab.key"
-            class="px-3.5 py-2 text-sm flex items-center gap-1.5 border-b-2 -mb-px transition-colors"
+            class="shrink-0 whitespace-nowrap px-3.5 py-2 text-sm flex items-center gap-1.5 border-b-2 -mb-px transition-colors"
             :class="activeSection === tab.key ? 'border-primary text-primary font-medium' : 'border-transparent text-slate-500 hover:text-slate-700'"
             @click="activeSection = tab.key"
           >
@@ -22,33 +22,221 @@
       <!-- 内容区 -->
       <div class="flex-1 min-h-0 px-5 py-4 flex flex-col">
 
-        <!-- ===== 基础设置 ===== -->
-        <div v-if="activeSection === 'basic'" class="h-full overflow-y-auto">
-          <div class="max-w-2xl space-y-4">
-            <!-- AI 模型 -->
+        <!-- ===== 账号安全 ===== -->
+        <div v-if="activeSection === 'account'" class="h-full overflow-y-auto overscroll-contain">
+          <div class="max-w-4xl space-y-4 pb-2">
+            <div class="rounded-lg border border-slate-200 bg-slate-50 p-4">
+              <h3 class="text-sm font-semibold text-slate-700">当前账号</h3>
+              <p class="mt-2 break-all text-sm text-slate-600">{{ auth.user.email }}</p>
+              <p class="mt-1 text-xs text-slate-400">数据绑定账号 ID；修改邮箱或密码不会丢失资产和设置。</p>
+            </div>
+            <p v-if="accountError" class="rounded-lg bg-rose-50 p-3 text-sm text-rose-600" role="alert">{{ accountError }}</p>
+            <p v-if="accountSuccess" class="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-600" role="status">{{ accountSuccess }}</p>
+            <form class="space-y-3 rounded-lg border border-slate-200 p-4" @submit.prevent="changeAccount">
+              <h3 class="text-sm font-semibold text-slate-700">修改登录账号</h3>
+              <label for="account-email" class="block text-xs text-slate-600">新的邮箱账号</label>
+              <input id="account-email" v-model.trim="accountForm.email" type="email" autocomplete="username" required maxlength="254" class="w-full rounded border border-slate-200 px-3 py-2 text-sm" />
+              <label for="account-current-password" class="block text-xs text-slate-600">当前密码</label>
+              <input id="account-current-password" v-model="accountForm.currentPassword" type="password" autocomplete="current-password" required maxlength="72" class="w-full rounded border border-slate-200 px-3 py-2 text-sm" />
+              <button type="submit" :disabled="accountBusy !== ''" class="rounded bg-primary px-4 py-2 text-sm text-white disabled:opacity-50">{{ accountBusy === 'account' ? '修改中…' : '修改账号' }}</button>
+            </form>
+            <form class="space-y-3 rounded-lg border border-slate-200 p-4" @submit.prevent="changePassword">
+              <h3 class="text-sm font-semibold text-slate-700">修改密码</h3>
+              <label for="password-current-password" class="block text-xs text-slate-600">当前密码</label>
+              <input id="password-current-password" v-model="passwordForm.currentPassword" type="password" autocomplete="current-password" required maxlength="72" class="w-full rounded border border-slate-200 px-3 py-2 text-sm" />
+              <label for="account-new-password" class="block text-xs text-slate-600">新密码（至少 8 个字符）</label>
+              <input id="account-new-password" v-model="passwordForm.newPassword" type="password" autocomplete="new-password" required minlength="8" maxlength="72" class="w-full rounded border border-slate-200 px-3 py-2 text-sm" />
+              <label for="account-confirm-password" class="block text-xs text-slate-600">再次输入新密码</label>
+              <input id="account-confirm-password" v-model="passwordForm.confirmPassword" type="password" autocomplete="new-password" required minlength="8" maxlength="72" class="w-full rounded border border-slate-200 px-3 py-2 text-sm" />
+              <p class="text-xs text-slate-400">修改后会撤销其他设备的会话；当前设备会自动换用新会话。</p>
+              <button type="submit" :disabled="accountBusy !== ''" class="rounded bg-primary px-4 py-2 text-sm text-white disabled:opacity-50">{{ accountBusy === 'password' ? '修改中…' : '修改密码' }}</button>
+            </form>
+            <div class="flex items-center justify-between gap-3 rounded-lg border border-rose-100 p-4">
+              <span class="text-xs text-slate-500">退出当前设备，不删除账号及数据。</span>
+              <button type="button" :disabled="accountBusy !== ''" class="shrink-0 rounded border border-rose-200 px-4 py-2 text-sm text-rose-600 disabled:opacity-50" @click="signOutAccount">{{ accountBusy === 'logout' ? '退出中…' : '退出登录' }}</button>
+            </div>
+          </div>
+        </div>
+        <!-- ===== AI 与模型 ===== -->
+        <div v-else-if="activeSection === 'ai'" class="h-full overflow-y-auto overscroll-contain">
+          <!-- 竖向单列排布：模型中心在上，模型分配与接入、联网搜索等依次往下排，不再左右分栏 -->
+          <div class="grid gap-4 pb-2">
+            <!-- 上：模型中心（按厂商分组获取全部模型） -->
+            <div class="rounded-lg border border-slate-200 p-4">
+              <div class="flex items-center justify-between gap-2 mb-3">
+                <div class="flex items-center gap-1.5 text-sm font-semibold text-slate-700">
+                  <Sparkles class="w-4 h-4 text-indigo-500" />模型中心
+                </div>
+                <button type="button" class="shrink-0 rounded bg-primary px-3 py-1.5 text-xs text-white hover:bg-blue-700 disabled:opacity-50" :disabled="fetchingAll" @click="fetchAllVendorModels">{{ fetchingAll ? '获取中…' : '获取全部模型' }}</button>
+              </div>
+              <p class="text-[11px] text-slate-500">按厂商逐个拉取其官方模型清单，结果按厂商分类展示；获取成功后会同步到右侧模型分配的下拉列表。</p>
+              <p v-if="modelCenterMsg" class="mt-2 text-[11px] text-slate-600">{{ modelCenterMsg }}</p>
+              <div v-if="!vendorGroups.length && !fetchingAll" class="mt-3 rounded border border-dashed border-slate-200 p-4 text-center text-[11px] text-slate-400">
+                点「获取全部模型」开始；仅已配置 API Key 的厂商能返回完整清单。
+              </div>
+              <div class="mt-3 space-y-2">
+                <div v-for="group in vendorGroups" :key="group.id" class="rounded border border-slate-200 bg-white p-2.5">
+                  <div class="flex items-center gap-2">
+                    <span class="w-6 h-6 shrink-0 rounded-full text-[10px] font-semibold text-white flex items-center justify-center" :style="{ background: vendorColor(group.id) }">{{ vendorInitial(group.name) }}</span>
+                    <span class="min-w-0 flex-1 truncate text-xs font-medium text-slate-700" :title="group.name">{{ group.name }}</span>
+                    <span class="shrink-0 rounded-full px-1.5 py-0.5 text-[10px]" :class="group.kind === 'builtin' ? 'bg-indigo-50 text-indigo-600' : 'bg-emerald-50 text-emerald-600'">{{ group.kind === 'builtin' ? '内置' : '自定义' }}</span>
+                    <span v-if="group.ok" class="shrink-0 text-[10px] text-slate-400">{{ group.models.length }} 个</span>
+                  </div>
+                  <div v-if="group.ok" class="mt-2 max-h-40 overflow-y-auto overscroll-contain">
+                    <div class="flex flex-wrap gap-1">
+                      <span v-for="model in group.models" :key="model" class="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-600">{{ model }}</span>
+                    </div>
+                  </div>
+                  <p v-else class="mt-1.5 text-[10px] text-amber-600">{{ group.error }}</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- 下：模型分配与接入（含联网搜索、密钥与引擎顺序） -->
+            <div class="space-y-4">
             <div class="rounded-lg border border-slate-200 p-4">
               <div class="flex items-center gap-1.5 text-sm font-semibold text-slate-700 mb-3">
-                <FlaskConical class="w-4 h-4 text-indigo-500" />AI 模型
+                <FlaskConical class="w-4 h-4 text-indigo-500" />模型分配与接入
               </div>
               <div class="space-y-3">
-                <label class="block text-xs font-medium text-slate-600">
-                  Agnes API Key
-                  <a href="https://platform.agnes-ai.com" target="_blank" rel="noopener noreferrer" class="ml-2 text-primary">官网申请</a>
-                  <input v-model="form.agnes_api_key" type="password" autocomplete="off" class="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" placeholder="留空则保持现有配置" />
-                </label>
-                <label class="block text-xs font-medium text-slate-600">
-                  GLM API Key
-                  <a href="https://open.bigmodel.cn" target="_blank" rel="noopener noreferrer" class="ml-2 text-primary">官网申请</a>
-                  <input v-model="form.glm_api_key" type="password" autocomplete="off" class="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" placeholder="留空则保持现有配置" />
-                </label>
+                <div class="rounded border border-indigo-100 bg-indigo-50/50 p-3">
+                  <div class="text-xs font-semibold text-slate-700">板块模型分配</div>
+                  <p class="mt-1 text-[11px] text-slate-500">分别指定 AI 问答、文章生成、行情分析、人生规划使用的模型；模型费用由你的 Token 账户承担。</p>
+                  <div class="mt-2 grid gap-2 sm:grid-cols-2">
+                    <label class="text-[11px] text-slate-600">AI 问答<select v-model="modelRoutes.assistant" class="mt-1 w-full rounded border border-slate-200 px-2 py-1.5 text-xs bg-white"><optgroup v-for="group in settingsGroups" :key="group.id" :label="group.name"><option v-for="model in group.models" :key="model" :value="model">{{ model }}</option></optgroup></select></label>
+                    <label class="text-[11px] text-slate-600">文章生成<select v-model="modelRoutes.article" class="mt-1 w-full rounded border border-slate-200 px-2 py-1.5 text-xs bg-white"><optgroup v-for="group in settingsGroups" :key="group.id" :label="group.name"><option v-for="model in group.models" :key="model" :value="model">{{ model }}</option></optgroup></select></label>
+                    <label class="text-[11px] text-slate-600">行情分析<select v-model="modelRoutes.market" class="mt-1 w-full rounded border border-slate-200 px-2 py-1.5 text-xs bg-white"><optgroup v-for="group in settingsGroups" :key="group.id" :label="group.name"><option v-for="model in group.models" :key="model" :value="model">{{ model }}</option></optgroup></select></label>
+                    <label class="text-[11px] text-slate-600">人生规划<select v-model="modelRoutes.life" class="mt-1 w-full rounded border border-slate-200 px-2 py-1.5 text-xs bg-white"><optgroup v-for="group in settingsGroups" :key="group.id" :label="group.name"><option v-for="model in group.models" :key="model" :value="model">{{ model }}</option></optgroup></select></label>
+                  </div>
+                </div>
+
+                <!-- 粘贴模型文档自动接入 -->
+                <div class="rounded border border-slate-200 bg-slate-50/60 p-3">
+                  <div class="text-xs font-semibold text-slate-700">粘贴模型文档自动接入</div>
+                  <p class="mt-1 text-[11px] text-slate-500">把任意厂商的官方 API 文档整段复制粘贴到下方，点击「AI 解析」，系统会自动识别 Base URL、接口路径、认证方式与模型名称；未配置任何 Key 时自动改用规则解析。</p>
+                  <textarea v-model="docText" rows="4" spellcheck="false" class="mt-2 w-full rounded border border-slate-200 px-3 py-2 text-[11px] font-mono outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" placeholder="在此粘贴模型官网对接文档…"></textarea>
+                  <div class="mt-2 flex items-center gap-2">
+                    <button type="button" class="shrink-0 rounded border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50" :disabled="parsingDoc" @click="parseModelDoc">{{ parsingDoc ? '解析中…' : 'AI 解析' }}</button>
+                    <p v-if="docParseNote" class="min-w-0 flex-1 truncate text-[11px] text-slate-500" :title="docParseNote">{{ docParseNote }}</p>
+                  </div>
+                  <p v-if="docError" class="mt-2 text-[11px] text-rose-500">{{ docError }}</p>
+                  <div v-if="parsedConfig" class="mt-3 space-y-2 rounded border border-slate-200 bg-white p-3">
+                    <div class="grid gap-2 sm:grid-cols-2">
+                      <label class="block text-[11px] text-slate-600">模型名称<input v-model="parsedConfig.name" class="mt-1 w-full rounded border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-primary" /></label>
+                      <label class="block text-[11px] text-slate-600">接口路径<input v-model="parsedConfig.path" class="mt-1 w-full rounded border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-primary" /></label>
+                      <label class="block text-[11px] text-slate-600">Base URL<input v-model="parsedConfig.baseUrl" class="mt-1 w-full rounded border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-primary" /></label>
+                      <div>
+                        <label class="block text-[11px] text-slate-600">模型 ID（逗号分隔）</label>
+                        <div class="mt-1 flex items-center gap-1.5">
+                          <input v-model="parsedModelsText" class="min-w-0 flex-1 rounded border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-primary" placeholder="留空可点右侧按钮自动获取" />
+                          <button type="button" class="shrink-0 rounded border border-slate-200 px-2 py-1.5 text-[11px] text-slate-600 hover:bg-slate-50 disabled:opacity-50" :disabled="fetchingModels" @click="fetchParsedModels">{{ fetchingModels ? '获取中…' : '从接口获取' }}</button>
+                        </div>
+                      </div>
+                      <label class="block text-[11px] text-slate-600">认证方式<select v-model="parsedConfig.authStyle" class="mt-1 w-full rounded border border-slate-200 px-2 py-1.5 text-xs bg-white"><option value="bearer">Authorization: Bearer</option><option value="x-api-key">x-api-key</option></select></label>
+                      <label class="block text-[11px] text-slate-600">接口风格<select v-model="parsedConfig.apiStyle" class="mt-1 w-full rounded border border-slate-200 px-2 py-1.5 text-xs bg-white"><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic 兼容</option></select></label>
+                    </div>
+                    <p v-if="fetchModelsMsg" class="text-[11px] text-emerald-600">{{ fetchModelsMsg }}</p>
+                    <div>
+                      <label class="block text-[11px] text-slate-600">API Key</label>
+                      <div class="mt-1 flex items-center gap-1.5">
+                        <div class="relative min-w-0 flex-1">
+                          <input v-model="parsedKey" :type="reveal.parsed ? 'text' : 'password'" autocomplete="off" class="w-full rounded border border-slate-200 px-2 py-1.5 pr-8 text-xs outline-none focus:border-primary" placeholder="粘贴该厂商的 API Key，加密保存" />
+                          <button type="button" class="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" :title="reveal.parsed ? '隐藏' : '查看'" @click="reveal.parsed = !reveal.parsed">
+                            <component :is="reveal.parsed ? EyeOff : Eye" class="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                        <button type="button" class="shrink-0 rounded border border-slate-200 p-1.5 text-slate-400 hover:bg-slate-50 hover:text-slate-600" title="复制框内内容" @click="copySecret('parsed', '')"><Copy class="w-3.5 h-3.5" /></button>
+                        <button type="button" class="shrink-0 rounded border border-slate-200 p-1.5 text-slate-400 hover:bg-slate-50 hover:text-slate-600" title="从剪贴板粘贴" @click="pasteSecret('parsed', '')"><ClipboardPaste class="w-3.5 h-3.5" /></button>
+                      </div>
+                      <p v-if="keyHint.parsed" class="mt-1 text-[11px] text-emerald-600">{{ keyHint.parsed }}</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <button type="button" class="shrink-0 rounded bg-primary px-3 py-1.5 text-xs text-white hover:bg-blue-700 disabled:opacity-50" :disabled="savingDoc" @click="saveParsedModel">{{ savingDoc ? '保存中…' : '保存接入' }}</button>
+                      <p v-if="docSavedMsg" class="min-w-0 flex-1 truncate text-[11px] text-emerald-600" :title="docSavedMsg">{{ docSavedMsg }}</p>
+                    </div>
+                  </div>
+                  <div v-if="customModels.length" class="mt-3 space-y-1">
+                    <div class="text-[11px] font-medium text-slate-600">已接入的自定义模型</div>
+                    <div v-for="m in customModels" :key="m.id" class="flex items-center justify-between gap-2 rounded border border-slate-200 bg-white px-2 py-1.5">
+                      <span class="min-w-0 truncate text-[11px] text-slate-600" :title="`${m.baseUrl}${m.path}`">{{ m.name }} · {{ (m.models || []).join(', ') }}</span>
+                      <div class="flex items-center gap-2 shrink-0">
+                        <button type="button" class="text-[11px] text-primary hover:text-blue-700 disabled:opacity-50" :disabled="fetchingId === m.id" @click="refreshCustomModel(m)">{{ fetchingId === m.id ? '刷新中…' : '刷新模型' }}</button>
+                        <button type="button" class="text-[11px] text-rose-500 hover:text-rose-600" @click="removeCustomModel(m.id)">移除</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <!-- 自定义模型 Key：AI 解析接入的模型可能来自不同厂商，各自独立一行 -->
+                <div class="rounded border border-slate-200 bg-slate-50/60 p-3">
+                  <div class="text-xs font-semibold text-slate-700">自定义模型 Key</div>
+                  <p class="mt-1 text-[11px] text-slate-500">解析接入的模型可能来自不同厂商，各厂商用各自的 Key；这里每个厂商单独一行，输入后自动保存，与内置厂商互不影响。</p>
+                  <div v-if="!customModels.length" class="mt-2 rounded border border-dashed border-slate-200 p-3 text-center text-[11px] text-slate-400">
+                    暂无自定义模型，先在上方粘贴文档并保存接入。
+                  </div>
+                  <div v-else class="mt-2 space-y-3">
+                    <div v-for="m in customModels" :key="m.id" class="rounded border border-slate-200 bg-white p-2.5">
+                      <div class="flex items-center gap-2">
+                        <span class="min-w-0 flex-1 truncate text-xs font-medium text-slate-700" :title="`${m.baseUrl}${m.path}`">{{ m.name }}</span>
+                        <span v-if="customKeyConfigured[m.keyField]" class="shrink-0 text-[11px] text-emerald-600">已配置</span>
+                        <span v-else class="shrink-0 text-[11px] text-amber-600">未配置</span>
+                      </div>
+                      <p v-if="m.models?.length" class="mt-0.5 truncate text-[11px] text-slate-400">{{ m.models.join(', ') }}</p>
+                      <div v-if="m.keyField" class="mt-1.5 flex items-center gap-1.5">
+                        <div class="relative min-w-0 flex-1">
+                          <input v-model="draftKeys[m.keyField]" :type="reveal[m.keyField] ? 'text' : 'password'" autocomplete="off" class="w-full rounded border border-slate-200 px-2 py-1.5 pr-8 text-xs outline-none focus:border-primary" placeholder="粘贴该厂商的 API Key，输入后自动保存" @input="autoSaveCustomKey(m.keyField)" />
+                          <button type="button" class="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" :title="reveal[m.keyField] ? '隐藏' : '查看'" @click="reveal[m.keyField] = !reveal[m.keyField]">
+                            <component :is="reveal[m.keyField] ? EyeOff : Eye" class="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                        <button type="button" class="shrink-0 rounded border border-slate-200 p-1.5 text-slate-400 hover:bg-slate-50 hover:text-slate-600" title="复制框内内容" @click="copySecret(m.keyField, m.keyField)"><Copy class="w-3.5 h-3.5" /></button>
+                        <button type="button" class="shrink-0 rounded border border-slate-200 p-1.5 text-slate-400 hover:bg-slate-50 hover:text-slate-600" title="从剪贴板粘贴" @click="pasteSecret(m.keyField, m.keyField)"><ClipboardPaste class="w-3.5 h-3.5" /></button>
+                        <button v-if="customKeyConfigured[m.keyField]" type="button" class="shrink-0 rounded border border-rose-200 px-2 py-1.5 text-[11px] text-rose-500 hover:bg-rose-50" title="删除该厂商的 Key" @click="clearCustomKey(m)">删除</button>
+                      </div>
+                      <p v-else class="mt-1 text-[11px] text-amber-600">缺少配置标识，请重新解析该文档后再保存接入</p>
+                      <p v-if="keyHint[m.keyField]" class="mt-1 text-[11px] text-emerald-600">{{ keyHint[m.keyField] }}</p>
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-600">
+                    Agnes API Key
+                    <a href="https://platform.agnes-ai.com" target="_blank" rel="noopener noreferrer" class="ml-2 text-primary">官网申请</a>
+                    <span v-if="configured.agnes" class="ml-2 text-[11px] text-emerald-600">已配置</span>
+                  </label>
+                  <div class="mt-1 flex items-center gap-1.5">
+                    <div class="relative min-w-0 flex-1">
+                      <input v-model="form.agnes_api_key" :type="reveal.agnes ? 'text' : 'password'" autocomplete="off" class="w-full rounded border border-slate-200 px-3 py-2 pr-9 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" placeholder="留空则保持现有配置，输入后自动保存" @input="autoSaveSecret('agnes', 'agnes_api_key')" />
+                      <button type="button" class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" :title="reveal.agnes ? '隐藏' : '查看'" @click="reveal.agnes = !reveal.agnes">
+                        <component :is="reveal.agnes ? EyeOff : Eye" class="w-4 h-4" />
+                      </button>
+                    </div>
+                    <button type="button" class="shrink-0 rounded border border-slate-200 p-2 text-slate-400 hover:bg-slate-50 hover:text-slate-600" title="复制框内内容" @click="copySecret('agnes', 'agnes_api_key')"><Copy class="w-3.5 h-3.5" /></button>
+                    <button type="button" class="shrink-0 rounded border border-slate-200 p-2 text-slate-400 hover:bg-slate-50 hover:text-slate-600" title="从剪贴板粘贴" @click="pasteSecret('agnes', 'agnes_api_key')"><ClipboardPaste class="w-3.5 h-3.5" /></button>
+                  </div>
+                  <p v-if="keyHint.agnes" class="mt-1 text-[11px] text-emerald-600">{{ keyHint.agnes }}</p>
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-600">
+                    GLM API Key
+                    <a href="https://open.bigmodel.cn" target="_blank" rel="noopener noreferrer" class="ml-2 text-primary">官网申请</a>
+                    <span v-if="configured.glm" class="ml-2 text-[11px] text-emerald-600">已配置</span>
+                  </label>
+                  <div class="mt-1 flex items-center gap-1.5">
+                    <div class="relative min-w-0 flex-1">
+                      <input v-model="form.glm_api_key" :type="reveal.glm ? 'text' : 'password'" autocomplete="off" class="w-full rounded border border-slate-200 px-3 py-2 pr-9 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" placeholder="留空则保持现有配置，输入后自动保存" @input="autoSaveSecret('glm', 'glm_api_key')" />
+                      <button type="button" class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" :title="reveal.glm ? '隐藏' : '查看'" @click="reveal.glm = !reveal.glm">
+                        <component :is="reveal.glm ? EyeOff : Eye" class="w-4 h-4" />
+                      </button>
+                    </div>
+                    <button type="button" class="shrink-0 rounded border border-slate-200 p-2 text-slate-400 hover:bg-slate-50 hover:text-slate-600" title="复制框内内容" @click="copySecret('glm', 'glm_api_key')"><Copy class="w-3.5 h-3.5" /></button>
+                    <button type="button" class="shrink-0 rounded border border-slate-200 p-2 text-slate-400 hover:bg-slate-50 hover:text-slate-600" title="从剪贴板粘贴" @click="pasteSecret('glm', 'glm_api_key')"><ClipboardPaste class="w-3.5 h-3.5" /></button>
+                  </div>
+                  <p v-if="keyHint.glm" class="mt-1 text-[11px] text-emerald-600">{{ keyHint.glm }}</p>
+                </div>
                 <label class="block text-xs font-medium text-slate-600">
                   默认 AI 模型
                   <select v-model="form.default_model" class="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10 bg-white">
-                    <option value="agnes-2.5-flash">agnes-2.5-flash（官网快速模型）</option>
-                    <option value="agnes-2.0-flash">agnes-2.0-flash（快速）</option>
-                    <option value="agnes-2.5-pro">agnes-2.5-pro（深度推理）</option>
-                    <option value="glm-4-flash-250414">GLM-4 Flash</option>
-                    <option value="glm-4.6v">GLM-4.6V 视觉</option>
+                    <optgroup v-for="group in settingsGroups" :key="group.id" :label="group.name"><option v-for="model in group.models" :key="model" :value="model">{{ model }}</option></optgroup>
                   </select>
                 </label>
                 <div class="flex items-center gap-2">
@@ -61,7 +249,58 @@
               </div>
             </div>
 
-            <!-- 数据刷新 -->
+            <!-- 联网搜索 -->
+            <div class="rounded-lg border border-slate-200 p-4">
+              <div class="flex items-center gap-1.5 text-sm font-semibold text-slate-700 mb-1">
+                <Globe class="w-4 h-4 text-sky-500" />联网搜索
+              </div>
+              <p class="text-[11px] text-slate-500 mb-3">人生规划器在回答考试、政策、薪资等实时问题前会自动联网，按下面列表的顺序依次尝试，某家报错或返回空结果就切下一家，成功即停。秘塔（需密钥，默认首选）、豆包搜索（需密钥，备用）、Tavily（需密钥，兜底）三家未配密钥会自动跳过；SearXNG 由服务自动拉起，内部只开启中文引擎（百度 / 搜狗 / 360 / 夸克 / 中国搜索），Bing 与 Claw 免密钥。相同问题 30 分钟内命中缓存，不重复消耗额度。</p>
+              <!-- 搜索引擎：排序与密钥合并成同一个面板 —— 需要密钥的引擎直接在自己那一行里填写，
+                   不再另开一块密钥表单，免得同一件事分散在两个地方 -->
+              <div class="mt-3 rounded-lg border border-slate-200 p-3">
+                <div class="text-xs font-semibold text-slate-700">搜索引擎降级顺序</div>
+                <p class="mt-1 text-[11px] text-slate-500">从上到下依次尝试，某家报错或返回空结果时才切换下一家，成功即停。调整后自动保存、立即生效，重启服务仍按此顺序（开机自检不再覆盖）。需要密钥的引擎（秘塔 / 豆包 / Tavily）直接在本行填写，未填写会自动跳过。</p>
+                <div class="mt-2 space-y-1.5">
+                  <div v-for="(item, index) in searchSources" :key="item.id" class="rounded border border-slate-200 px-2 py-1.5">
+                    <div class="flex items-center gap-2">
+                      <span class="shrink-0 w-5 h-5 rounded-full bg-slate-100 text-[11px] font-semibold text-slate-600 flex items-center justify-center">{{ index + 1 }}</span>
+                      <div class="min-w-0 flex-1">
+                        <div class="flex items-center gap-2 text-xs font-medium text-slate-700">
+                          {{ item.name }}
+                          <span v-if="item.needKey && !configured[item.id]" class="text-[10px] font-normal text-amber-600">未配置密钥，将自动跳过</span>
+                          <span v-else-if="item.needKey" class="text-[10px] font-normal text-emerald-600">已配置</span>
+                          <a v-if="keyMeta(item.id)" :href="keyMeta(item.id).site" target="_blank" rel="noopener noreferrer" class="text-[10px] font-normal text-primary">申请密钥</a>
+                        </div>
+                        <p class="text-[10px] text-slate-400">{{ item.desc }}</p>
+                      </div>
+                      <button type="button" class="shrink-0 rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-transparent" :disabled="index === 0" @click="moveSearchSource(index, -1)">上移</button>
+                      <button type="button" class="shrink-0 rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-transparent" :disabled="index === searchSources.length - 1" @click="moveSearchSource(index, 1)">下移</button>
+                    </div>
+                    <template v-if="keyMeta(item.id)">
+                      <div class="mt-1.5 flex items-center gap-1.5 pl-7">
+                        <div class="relative min-w-0 flex-1">
+                          <input v-model="form[keyMeta(item.id).field]" :type="reveal[item.id] ? 'text' : 'password'" autocomplete="off" class="w-full rounded border border-slate-200 px-3 py-1.5 pr-9 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" placeholder="粘贴密钥，输入后自动保存" @input="autoSaveSecret(item.id, keyMeta(item.id).field)" />
+                          <button type="button" class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" :title="reveal[item.id] ? '隐藏' : '查看'" @click="reveal[item.id] = !reveal[item.id]">
+                            <component :is="reveal[item.id] ? EyeOff : Eye" class="w-4 h-4" />
+                          </button>
+                        </div>
+                        <button type="button" class="shrink-0 rounded border border-slate-200 p-2 text-slate-400 hover:bg-slate-50 hover:text-slate-600" title="复制框内内容" @click="copySecret(item.id, keyMeta(item.id).field)"><Copy class="w-3.5 h-3.5" /></button>
+                        <button type="button" class="shrink-0 rounded border border-slate-200 p-2 text-slate-400 hover:bg-slate-50 hover:text-slate-600" title="从剪贴板粘贴" @click="pasteSecret(item.id, keyMeta(item.id).field)"><ClipboardPaste class="w-3.5 h-3.5" /></button>
+                      </div>
+                      <p v-if="keyHint[item.id]" class="mt-1 pl-7 text-[11px] text-emerald-600">{{ keyHint[item.id] }}</p>
+                    </template>
+                  </div>
+                </div>
+                <p v-if="searchOrderHint" class="mt-2 text-[11px] text-emerald-600">{{ searchOrderHint }}</p>
+              </div>
+            </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== 外观与刷新 ===== -->
+        <div v-else-if="activeSection === 'appearance'" class="h-full overflow-y-auto overscroll-contain">
+          <div class="max-w-4xl space-y-4">
             <div class="rounded-lg border border-slate-200 p-4">
               <div class="flex items-center gap-1.5 text-sm font-semibold text-slate-700 mb-3">
                 <RefreshCw class="w-4 h-4 text-sky-500" />数据刷新
@@ -101,8 +340,8 @@
         </div>
 
         <!-- ===== 交易手续费 ===== -->
-        <div v-else-if="activeSection === 'fee'" class="h-full overflow-y-auto">
-          <div class="max-w-2xl space-y-4">
+        <div v-else-if="activeSection === 'fee'" class="h-full overflow-y-auto overscroll-contain">
+          <div class="max-w-4xl space-y-4">
             <!-- 档位列表 -->
             <div class="rounded-lg border border-slate-200 p-4">
               <div class="flex items-center justify-between mb-3">
@@ -211,11 +450,23 @@
               <div class="text-sm font-semibold text-slate-700 mb-3">新增自定义档位</div>
               <div class="space-y-3">
                 <p class="text-xs text-slate-500">你自备官网 Token 并自行承担 AI 费用。密钥只保存到你的账户，不使用平台共享密钥。</p>
-                <label class="block text-xs font-medium text-slate-600">
-                  ALAPI Token（可选，黄金行情）
-                  <a href="https://www.alapi.cn" target="_blank" rel="noopener noreferrer" class="ml-2 text-primary">官网申请</a>
-                  <input v-model="form.alapi_token" type="password" autocomplete="off" class="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm" placeholder="留空保持现有配置" />
-                </label>
+                <div>
+                  <label class="block text-xs font-medium text-slate-600">
+                    ALAPI Token（可选，黄金行情）
+                    <a href="https://www.alapi.cn" target="_blank" rel="noopener noreferrer" class="ml-2 text-primary">官网申请</a>
+                  </label>
+                  <div class="mt-1 flex items-center gap-1.5">
+                    <div class="relative min-w-0 flex-1 max-w-sm">
+                      <input v-model="form.alapi_token" :type="reveal.alapi ? 'text' : 'password'" autocomplete="off" class="w-full rounded border border-slate-200 px-3 py-2 pr-9 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" placeholder="留空保持现有配置，输入后自动保存" @input="autoSaveSecret('alapi', 'alapi_token')" />
+                      <button type="button" class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" :title="reveal.alapi ? '隐藏' : '查看'" @click="reveal.alapi = !reveal.alapi">
+                        <component :is="reveal.alapi ? EyeOff : Eye" class="w-4 h-4" />
+                      </button>
+                    </div>
+                    <button type="button" class="shrink-0 rounded border border-slate-200 p-2 text-slate-400 hover:bg-slate-50 hover:text-slate-600" title="复制框内内容" @click="copySecret('alapi', 'alapi_token')"><Copy class="w-3.5 h-3.5" /></button>
+                    <button type="button" class="shrink-0 rounded border border-slate-200 p-2 text-slate-400 hover:bg-slate-50 hover:text-slate-600" title="从剪贴板粘贴" @click="pasteSecret('alapi', 'alapi_token')"><ClipboardPaste class="w-3.5 h-3.5" /></button>
+                  </div>
+                  <p v-if="keyHint.alapi" class="mt-1 text-[11px] text-emerald-600">{{ keyHint.alapi }}</p>
+                </div>
                 <div class="flex flex-wrap gap-2 text-xs">
                   <button type="button" class="text-rose-500" @click="clearKey('glm_api_key')">删除 GLM 密钥</button>
                   <button type="button" class="text-rose-500" @click="clearKey('agnes_api_key')">删除 Agnes 密钥</button>
@@ -268,8 +519,8 @@
         </div>
 
         <!-- ===== 标语库 ===== -->
-        <div v-else-if="activeSection === 'tips'" class="h-full overflow-y-auto">
-          <div class="max-w-2xl space-y-4">
+        <div v-else-if="activeSection === 'tips'" class="h-full overflow-y-auto overscroll-contain">
+          <div class="max-w-4xl space-y-4">
             <div class="rounded-lg border border-slate-200 p-4">
               <div class="flex items-center justify-between mb-3">
                 <div class="flex items-center gap-1.5 text-sm font-semibold text-slate-700">
@@ -523,7 +774,7 @@
         </div>
         <div class="flex gap-2 shrink-0">
           <button class="rounded border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50" @click="$emit('close')">取消</button>
-          <button class="rounded bg-primary px-4 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50" :disabled="saving" @click="save">{{ saving ? '保存中...' : '保存' }}</button>
+          <button v-if="activeSection !== 'account'" class="rounded bg-primary px-4 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50" :disabled="saving" @click="save">{{ saving ? '保存中...' : '保存' }}</button>
         </div>
       </div>
     </section>
@@ -532,8 +783,9 @@
 
 <script setup>
 import { computed, reactive, ref, nextTick, onMounted, onUnmounted } from 'vue'
-import { FlaskConical, Terminal, RefreshCw, Receipt, Trash2, Settings, Megaphone, ChevronUp, ChevronDown } from 'lucide-vue-next'
-import { aiSettingsApi, stockApi } from '../utils/api'
+import { FlaskConical, Terminal, RefreshCw, Receipt, Trash2, Megaphone, ChevronUp, ChevronDown, UserRound, Cpu, Sparkles, Gauge, Eye, EyeOff, Copy, ClipboardPaste, Globe } from 'lucide-vue-next'
+import { auth, authRequest, setSession, logout } from '../auth'
+import { aiSettingsApi, searchApi, stockApi } from '../utils/api'
 import { useSoulRingSettings, MIN_SOUL_RINGS, MAX_SOUL_RINGS } from '../composables/useSoulRingSettings'
 import {
   feeConfig, toWan, applyFeeSettings,
@@ -545,26 +797,264 @@ import {
   DEFAULT_METRIC_TIPS, METRIC_TIPS_KEY,
   parseMetricTips, serializeMetricTips, setMetricTips,
 } from '../utils/metricTips'
+import { BUILTIN_MODELS, buildModelGroups, buildModelOptions } from '../utils/aiModels'
+import { toast } from '../utils/toast'
+
+// 弹窗打开期间锁定背景滚动，避免滚轮/触摸滚动穿透到下层页面
+let prevBodyOverflow = ''
+onMounted(() => {
+  prevBodyOverflow = document.body.style.overflow
+  document.body.style.overflow = 'hidden'
+})
+onUnmounted(() => {
+  document.body.style.overflow = prevBodyOverflow
+})
 
 const emit = defineEmits(['close'])
 const { ringCount, setRingCount } = useSoulRingSettings()
 const draftRingCount = ref(ringCount.value)
-const form = reactive({ agnes_api_key: '', glm_api_key: '', alapi_token: '', default_model: 'agnes-2.5-flash', gold_daily_count: 50, market_fetch_interval: 30000 })
+const form = reactive({ agnes_api_key: '', glm_api_key: '', alapi_token: '', metaso_api_key: '', volcengine_api_key: '', tavily_api_key: '', default_model: 'agnes-2.5-flash', gold_daily_count: 50, market_fetch_interval: 30000 })
+// 用户自助接入的模型（来自设置项 ai_custom_models）
+const customModels = ref([])
+// 从各厂商接口获取到的完整模型清单（来自设置项 ai_model_catalog），按厂商分组缓存
+const catalog = ref({})
+const modelOptions = computed(() => buildModelOptions(customModels.value, catalog.value))
+const settingsGroups = computed(() => buildModelGroups(customModels.value, catalog.value))
+const modelRoutes = reactive({ assistant: 'agnes-2.5-flash', article: 'agnes-2.5-flash', market: 'agnes-2.5-flash', life: 'agnes-2.5-flash' })
 const usage = reactive({ date: '', total: null, today: null, byModel: [], trend: [] })
 const saving = ref(false)
 const error = ref('')
-const configured = reactive({ agnes: false, glm: false })
+const configured = reactive({ agnes: false, glm: false, metaso: false, volcengine: false, tavily: false })
 const testingModel = ref(false)
 const testResult = ref('')
 const testError = ref('')
 
+// 粘贴模型文档自动接入
+const docText = ref('')
+const parsingDoc = ref(false)
+const docError = ref('')
+const docParseNote = ref('')
+const parsedConfig = ref(null)
+const parsedModelsText = ref('')
+const parsedKey = ref('')
+const savingDoc = ref(false)
+const docSavedMsg = ref('')
+// 从厂商接口自动拉取模型清单
+const fetchingModels = ref(false)
+const fetchingId = ref('')
+const fetchModelsMsg = ref('')
+// 模型中心：一次性获取所有厂商的模型清单
+const vendorGroups = ref([])
+const fetchingAll = ref(false)
+const modelCenterMsg = ref('')
+
+const VENDOR_COLORS = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#14b8a6', '#f97316']
+// 联网搜索里真正在跑的引擎见下面「搜索引擎降级顺序」列表（以后端 SOURCES 为准）。
+// 其中需要密钥的只有三家：秘塔（默认首选）、豆包搜索（备用，额度少）、Tavily（终极兜底）；
+// SearXNG / Bing / Claw / OpenSERP / DuckDuckGo 都是免密钥抓取，不需要填任何东西。
+// 原先摆在这里的 Bing / Firecrawl / Serper 密钥后端从未读取，已随「以真实运行为准」清理。
+const SEARCH_KEYS = [
+  { id: 'metaso', field: 'metaso_api_key', label: '秘塔 Metaso', site: 'https://metaso.cn/', note: '默认首选 · 国内 AI 原生搜索，优先抓 gov.cn 官网' },
+  { id: 'volcengine', field: 'volcengine_api_key', label: '豆包搜索（火山引擎）', site: 'https://console.volcengine.com/search-infinity/api-key', note: '备用 · 每月 500 次免费，额度少，不适合当主力' },
+  { id: 'tavily', field: 'tavily_api_key', label: 'Tavily', site: 'https://app.tavily.com/home', note: '终极兜底 · 未填写时自动跳过这一家' }
+]
+// 引擎行内要就地渲染密钥输入框，因此按引擎 id 反查它的密钥字段与申请入口（免密钥的引擎查不到即不渲染）
+const KEY_META = Object.fromEntries(SEARCH_KEYS.map(item => [item.id, item]))
+function keyMeta(id) {
+  return KEY_META[id] || null
+}
+// 搜索引擎降级链：顺序存进 ai_settings.search_source_order，调整后立即生效
+const searchSources = ref([])
+const searchOrderHint = ref('')
+async function loadSearchSources() {
+  try {
+    const data = await searchApi.sources()
+    searchSources.value = Array.isArray(data?.sources) ? data.sources : []
+  } catch (_) { searchSources.value = [] }
+}
+async function moveSearchSource(index, delta) {
+  const list = searchSources.value.slice()
+  const next = index + delta
+  if (next < 0 || next >= list.length) return
+  const [row] = list.splice(index, 1)
+  list.splice(next, 0, row)
+  searchSources.value = list
+  try {
+    await aiSettingsApi.updateSettings({ search_source_order: JSON.stringify(list.map(item => item.id)) })
+    searchOrderHint.value = '顺序已保存并生效'
+  } catch (err) {
+    searchOrderHint.value = '保存失败，请重试'
+  }
+  setTimeout(() => { searchOrderHint.value = '' }, 2400)
+}
+
+// 厂商头像：由厂商标识散列出稳定颜色，避免每次渲染变色
+function vendorColor(id) {
+  const text = String(id || '')
+  let hash = 0
+  for (let i = 0; i < text.length; i += 1) hash = (hash * 31 + text.charCodeAt(i)) % 997
+  return VENDOR_COLORS[hash % VENDOR_COLORS.length]
+}
+function vendorInitial(name) {
+  const text = String(name || '').trim()
+  return text ? text.slice(0, 1).toUpperCase() : '?'
+}
+
+// ===== 密钥输入框：查看 / 复制 / 粘贴 + 输入后自动保存 =====
+// 已保存的密钥服务端只回传「是否已配置」，不回传明文，因此查看与复制都只作用于当前输入框内容
+const reveal = reactive({ agnes: false, glm: false, alapi: false, parsed: false, metaso: false, volcengine: false, tavily: false })
+const keyHint = reactive({ agnes: '', glm: '', alapi: '', parsed: '', metaso: '', volcengine: '', tavily: '' })
+// 自定义模型（AI 解析接入）的 Key：按 keyField 各存一份，不同厂商互不影响
+const draftKeys = reactive({})
+const customKeyConfigured = reactive({})
+const autoSaveTimers = {}
+
+function flashKeyHint(target, text) {
+  keyHint[target] = text
+  setTimeout(() => { if (keyHint[target] === text) keyHint[target] = '' }, 2600)
+}
+
+// 自定义模型的 Key 以 keyField（形如 custom_xxx_api_key）作为输入框标识
+function isCustomKeyTarget(target) { return /^custom_[a-z0-9_]{1,48}_api_key$/.test(String(target)) }
+
+function secretValue(target, propName) {
+  if (target === 'parsed') return parsedKey.value
+  if (isCustomKeyTarget(target)) return draftKeys[target] || ''
+  return form[propName] || ''
+}
+
+function setSecretValue(target, propName, value) {
+  if (target === 'parsed') { parsedKey.value = value; return }
+  if (isCustomKeyTarget(target)) { draftKeys[target] = value; autoSaveCustomKey(target); return }
+  form[propName] = value
+  autoSaveSecret(target, propName)
+}
+
+// 输入后自动保存：只提交该字段单键，避免把弹窗里其它未保存的改动一并写入
+function autoSaveSecret(target, propName) {
+  clearTimeout(autoSaveTimers[target])
+  autoSaveTimers[target] = setTimeout(async () => {
+    const value = String(form[propName] || '').trim()
+    if (!value) return
+    try {
+      await aiSettingsApi.updateSettings({ [propName]: value })
+      configured[target] = true
+      flashKeyHint(target, '已自动保存')
+    } catch (_) {
+      flashKeyHint(target, '自动保存失败，请点底部保存按钮重试')
+    }
+  }, 800)
+}
+
+// 自定义模型的 Key 自动保存：与内置厂商同一套交互，但写入各自的 keyField
+function autoSaveCustomKey(keyField) {
+  if (!keyField) return
+  clearTimeout(autoSaveTimers[keyField])
+  autoSaveTimers[keyField] = setTimeout(async () => {
+    const value = String(draftKeys[keyField] || '').trim()
+    if (!value) return
+    try {
+      await aiSettingsApi.updateSettings({ [keyField]: value })
+      customKeyConfigured[keyField] = true
+      flashKeyHint(keyField, '已自动保存')
+    } catch (_) {
+      flashKeyHint(keyField, '自动保存失败，请点底部保存按钮重试')
+    }
+  }, 800)
+}
+
+// 删除某个自定义模型的 Key（模型配置保留，仅清空密钥）
+async function clearCustomKey(item) {
+  if (!item?.keyField) return
+  if (!window.confirm(`确定删除「${item.name}」的 API Key？删除后该厂商模型不可调用。`)) return
+  try {
+    await aiSettingsApi.updateSettings({ [item.keyField]: null })
+    customKeyConfigured[item.keyField] = false
+    draftKeys[item.keyField] = ''
+    flashKeyHint(item.keyField, '密钥已删除')
+  } catch { error.value = '删除密钥失败' }
+}
+
+async function copySecret(target, propName) {
+  const value = String(secretValue(target, propName) || '').trim()
+  if (!value) return flashKeyHint(target, '输入框为空，无可复制内容')
+  try {
+    await navigator.clipboard.writeText(value)
+    flashKeyHint(target, '已复制到剪贴板')
+  } catch (_) {
+    flashKeyHint(target, '复制失败，请手动选择文本复制')
+  }
+}
+
+async function pasteSecret(target, propName) {
+  let text = ''
+  try { text = await navigator.clipboard.readText() } catch (_) {
+    return flashKeyHint(target, '浏览器未授权读取剪贴板，请改用 Ctrl+V 粘贴')
+  }
+  text = String(text || '').trim()
+  if (!text) return flashKeyHint(target, '剪贴板内容为空')
+  setSecretValue(target, propName, text)
+  flashKeyHint(target, '已粘贴')
+}
+
 const TABS = [
-  { key: 'basic', label: '基础设置', icon: Settings },
+  { key: 'account', label: '账号安全', icon: UserRound },
+  { key: 'ai', label: 'AI 与模型', icon: Cpu },
+  { key: 'appearance', label: '外观与刷新', icon: Gauge },
   { key: 'fee', label: '交易手续费', icon: Receipt },
   { key: 'tips', label: '标语库', icon: Megaphone },
   { key: 'logs', label: '运行日志', icon: Terminal },
 ]
-const activeSection = ref('basic')
+const activeSection = ref('account')
+const accountForm = reactive({ email: auth.user.email, currentPassword: '' })
+const passwordForm = reactive({ currentPassword: '', newPassword: '', confirmPassword: '' })
+const accountBusy = ref('')
+const accountError = ref('')
+const accountSuccess = ref('')
+
+function clearAccountPasswords() {
+  accountForm.currentPassword = ''
+  passwordForm.currentPassword = ''
+  passwordForm.newPassword = ''
+  passwordForm.confirmPassword = ''
+}
+
+async function changeAccount() {
+  if (accountBusy.value) return
+  accountBusy.value = 'account'
+  accountError.value = ''
+  accountSuccess.value = ''
+  try {
+    setSession(await authRequest('account', { email: accountForm.email, currentPassword: accountForm.currentPassword }))
+    accountForm.email = auth.user.email
+    accountSuccess.value = '登录账号已修改；其他设备的会话已撤销。'
+  } catch (failure) { accountError.value = failure.message }
+  finally { clearAccountPasswords(); accountBusy.value = '' }
+}
+
+async function changePassword() {
+  if (accountBusy.value) return
+  accountError.value = ''
+  accountSuccess.value = ''
+  if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+    accountError.value = '两次输入的新密码不一致'
+    return
+  }
+  accountBusy.value = 'password'
+  try {
+    setSession(await authRequest('password', { currentPassword: passwordForm.currentPassword, newPassword: passwordForm.newPassword }))
+    accountSuccess.value = '密码已修改；其他设备的会话已撤销。'
+  } catch (failure) { accountError.value = failure.message }
+  finally { clearAccountPasswords(); accountBusy.value = '' }
+}
+
+async function signOutAccount() {
+  if (accountBusy.value) return
+  accountBusy.value = 'logout'
+  accountError.value = ''
+  try { await logout() }
+  catch (failure) { accountError.value = failure.message; accountBusy.value = '' }
+}
 
 // 交易手续费：用户可维护的档位列表，选中的档位为当前生效配置
 const feePresets = ref(parseFeePresets(''))
@@ -657,6 +1147,8 @@ onMounted(async () => {
     const settings = await aiSettingsApi.getSettings()
     configured.agnes = Boolean(settings?.agnes_api_key_configured)
     configured.glm = Boolean(settings?.glm_api_key_configured)
+    for (const item of SEARCH_KEYS) configured[item.id] = Boolean(settings?.[`${item.field}_configured`])
+    loadSearchSources()
     if (settings?.gold_daily_count) {
       form.gold_daily_count = Number(settings.gold_daily_count) || 50
     }
@@ -666,6 +1158,24 @@ onMounted(async () => {
     if (settings?.market_fetch_interval) {
       form.market_fetch_interval = Number(settings.market_fetch_interval) || 30000
     }
+    try {
+      const list = JSON.parse(settings?.ai_custom_models || '[]')
+      customModels.value = Array.isArray(list) ? list.filter(item => item && typeof item === 'object') : []
+    } catch (_) { customModels.value = [] }
+    // 每个自定义模型的 Key 是否已配置（服务端只回传布尔值，不回传明文）
+    for (const item of customModels.value) {
+      if (item.keyField) customKeyConfigured[item.keyField] = Boolean(settings?.[`${item.keyField}_configured`])
+    }
+    try {
+      const saved = JSON.parse(settings?.ai_model_catalog || '{}')
+      catalog.value = saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {}
+    } catch (_) { catalog.value = {} }
+    try {
+      const routes = JSON.parse(settings?.ai_model_routes || '{}')
+      for (const key of Object.keys(modelRoutes)) {
+        if (modelOptions.value.includes(routes[key])) modelRoutes[key] = routes[key]
+      }
+    } catch (_) {}
     // 标语库：读取用户维护的标语列表
     tipList.value = parseMetricTips(settings?.[METRIC_TIPS_KEY])
     // 佣金档位：读取用户维护的列表，并定位当前生效档位
@@ -970,6 +1480,7 @@ async function save() {
   const fee = activeFee.value
   payload.stock_commission_rate = String(fee && fee.rate > 0 ? fee.rate : feeConfig.commissionRate)
   payload.stock_min_commission = String(fee ? Math.max(0, Number(fee.min) || 0) : feeConfig.minCommission)
+  payload.ai_model_routes = JSON.stringify({ ...modelRoutes })
   saving.value = true
   error.value = ''
   try {
@@ -1005,6 +1516,192 @@ async function testModel() {
   } finally {
     testingModel.value = false
   }
+}
+
+// 解析用户粘贴的模型文档，生成接入配置预览
+async function parseModelDoc() {
+  if (parsingDoc.value) return
+  const text = docText.value.trim()
+  docError.value = ''
+  docParseNote.value = ''
+  docSavedMsg.value = ''
+  parsedConfig.value = null
+  if (!text) { docError.value = '请先粘贴模型文档内容'; return }
+  parsingDoc.value = true
+  try {
+    const data = await aiSettingsApi.parseModelDoc({ text })
+    const config = data?.config || {}
+    parsedConfig.value = {
+      id: config.id || '',
+      name: config.name || '',
+      baseUrl: config.baseUrl || '',
+      path: config.path || '/chat/completions',
+      authStyle: config.authStyle === 'x-api-key' ? 'x-api-key' : 'bearer',
+      apiStyle: config.apiStyle === 'anthropic' ? 'anthropic' : 'openai',
+      keyField: config.keyField || '',
+    }
+    parsedModelsText.value = Array.isArray(config.models) ? config.models.join(', ') : ''
+    parsedKey.value = ''
+    const notes = Array.isArray(data?.notes) ? data.notes.filter(Boolean) : []
+    docParseNote.value = `${data?.source === 'ai' ? 'AI 解析完成' : '规则解析完成'}${notes.length ? `：${notes.join('；')}` : ''}`
+  } catch (err) {
+    docError.value = err.response?.data?.error || '解析失败，请检查文档内容'
+  } finally {
+    parsingDoc.value = false
+  }
+}
+
+// 保存接入：写入自定义模型列表与对应密钥
+async function saveParsedModel() {
+  const cfg = parsedConfig.value
+  if (!cfg || savingDoc.value) return
+  docError.value = ''
+  docSavedMsg.value = ''
+  const models = parsedModelsText.value.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+  if (!cfg.baseUrl.trim()) { docError.value = '请填写 Base URL'; return }
+  if (!models.length) { docError.value = '请填写至少一个模型名称'; return }
+  if (!cfg.keyField) { docError.value = '配置标识缺失，请重新解析'; return }
+  savingDoc.value = true
+  try {
+    const entry = {
+      id: cfg.id || `custom-${cfg.keyField.replace(/^custom_|_api_key$/g, '')}`,
+      name: cfg.name.trim() || models[0],
+      baseUrl: cfg.baseUrl.trim().replace(/\/+$/, ''),
+      path: cfg.path.trim() || '/chat/completions',
+      authStyle: cfg.authStyle,
+      apiStyle: cfg.apiStyle,
+      models,
+      keyField: cfg.keyField,
+    }
+    const list = customModels.value.filter(m => m.id !== entry.id)
+    list.push(entry)
+    const payload = { ai_custom_models: JSON.stringify(list) }
+    const key = parsedKey.value.trim()
+    if (key) payload[entry.keyField] = key
+    await aiSettingsApi.updateSettings(payload)
+    customModels.value = list
+    if (key && entry.keyField) customKeyConfigured[entry.keyField] = true
+    parsedKey.value = ''
+    docSavedMsg.value = `已接入「${entry.name}」，可在上方模型分配中选用`
+  } catch (err) {
+    docError.value = err.response?.data?.error || '保存失败，请稍后重试'
+  } finally {
+    savingDoc.value = false
+  }
+}
+
+// 按厂商接口自动获取模型清单：Base URL + 认证方式一致即可通用
+async function requestModels(cfg, key) {
+  const result = await aiSettingsApi.fetchModels({
+    baseUrl: cfg.baseUrl,
+    path: cfg.path,
+    authStyle: cfg.authStyle,
+    apiStyle: cfg.apiStyle,
+    keyField: cfg.keyField,
+    apiKey: key || '',
+  })
+  return result.models || []
+}
+
+// 解析面板：一键获取模型 ID，填入输入框后即可保存接入
+async function fetchParsedModels() {
+  const cfg = parsedConfig.value
+  if (!cfg || fetchingModels.value) return
+  docError.value = ''
+  fetchModelsMsg.value = ''
+  if (!cfg.baseUrl.trim()) { docError.value = '请先填写 Base URL'; return }
+  if (!cfg.keyField) { docError.value = '配置标识缺失，请重新解析文档'; return }
+  fetchingModels.value = true
+  try {
+    const models = await requestModels(cfg, parsedKey.value.trim())
+    parsedModelsText.value = models.join(', ')
+    fetchModelsMsg.value = `已获取 ${models.length} 个模型，可直接保存接入`
+  } catch (err) {
+    docError.value = err.response?.data?.error || '获取模型列表失败'
+  } finally {
+    fetchingModels.value = false
+  }
+}
+
+// 已接入条目：刷新其模型清单（厂商上线新模型后可一键同步）
+async function refreshCustomModel(item) {
+  if (!item || fetchingId.value) return
+  docError.value = ''
+  fetchModelsMsg.value = ''
+  fetchingId.value = item.id
+  try {
+    const key = parsedConfig.value?.id === item.id ? parsedKey.value.trim() : ''
+    const models = await requestModels(item, key)
+    if (!models.length) throw new Error('接口未返回可识别的模型')
+    // 读-改-写：只更新该条目的 models，保留其它接入配置与已分配的模型路由
+    const list = customModels.value.map(m => (m.id === item.id ? { ...m, models } : m))
+    await aiSettingsApi.updateSettings({ ai_custom_models: JSON.stringify(list) })
+    customModels.value = list
+    // 原先分配的模型若已下线，回退到仍可用的模型，避免继续报 401/404
+    for (const routeKey of Object.keys(modelRoutes)) {
+      if (!modelOptions.value.includes(modelRoutes[routeKey])) modelRoutes[routeKey] = modelOptions.value[0] || BUILTIN_MODELS[0]
+    }
+    if (!modelOptions.value.includes(form.default_model)) form.default_model = modelOptions.value[0] || BUILTIN_MODELS[0]
+    fetchModelsMsg.value = `「${item.name}」已刷新为 ${models.length} 个模型`
+  } catch (err) {
+    docError.value = err.response?.data?.error || err.message || '刷新模型列表失败'
+  } finally {
+    fetchingId.value = ''
+  }
+}
+
+// 一键获取所有已配置厂商的模型清单，按厂商分组展示并缓存到设置
+async function fetchAllVendorModels() {
+  if (fetchingAll.value) return
+  fetchingAll.value = true
+  modelCenterMsg.value = ''
+  try {
+    const result = await aiSettingsApi.fetchAllModels()
+    const groups = Array.isArray(result?.groups) ? result.groups : []
+    vendorGroups.value = groups
+    // 读-改-写：把成功获取的清单并入缓存，供下方模型分配的分组下拉使用
+    const next = { ...catalog.value }
+    for (const group of groups) {
+      if (group.ok && group.models.length) next[group.id] = { name: group.name, kind: group.kind, models: group.models }
+    }
+    catalog.value = next
+    await aiSettingsApi.updateSettings({ ai_model_catalog: JSON.stringify(next) })
+    const okCount = groups.filter(group => group.ok).length
+    const failed = groups.length - okCount
+    modelCenterMsg.value = `获取完成：${okCount} 个厂商共 ${result?.totalModels ?? 0} 个模型${failed ? `；${failed} 个厂商未取到（多为未配置 Key 或该厂商不提供模型清单接口）` : ''}`
+    // 已分配的模型若不在清单内则回退，避免继续调用报错
+    for (const routeKey of Object.keys(modelRoutes)) {
+      if (!modelOptions.value.includes(modelRoutes[routeKey])) modelRoutes[routeKey] = modelOptions.value[0] || BUILTIN_MODELS[0]
+    }
+    if (!modelOptions.value.includes(form.default_model)) form.default_model = modelOptions.value[0] || BUILTIN_MODELS[0]
+  } catch (err) {
+    modelCenterMsg.value = err.response?.data?.error || '获取失败，请稍后重试'
+  } finally {
+    fetchingAll.value = false
+  }
+}
+
+// 移除已接入的自定义模型（同时删除其密钥）
+async function removeCustomModel(id) {
+  const target = customModels.value.find(m => m.id === id)
+  if (!target) return
+  if (!window.confirm(`确定移除「${target.name}」？移除后其 API Key 同时删除。`)) return
+  const list = customModels.value.filter(m => m.id !== id)
+  const payload = { ai_custom_models: JSON.stringify(list) }
+  if (target.keyField) payload[target.keyField] = null
+  try {
+    await aiSettingsApi.updateSettings(payload)
+    customModels.value = list
+    if (target.keyField) {
+      customKeyConfigured[target.keyField] = false
+      draftKeys[target.keyField] = ''
+    }
+    for (const key of Object.keys(modelRoutes)) {
+      if (!modelOptions.value.includes(modelRoutes[key])) modelRoutes[key] = BUILTIN_MODELS[0]
+    }
+    if (!modelOptions.value.includes(form.default_model)) form.default_model = BUILTIN_MODELS[0]
+    docSavedMsg.value = `已移除「${target.name}」`
+  } catch { docError.value = '移除失败，请稍后重试' }
 }
 
 async function clearKey(field) {

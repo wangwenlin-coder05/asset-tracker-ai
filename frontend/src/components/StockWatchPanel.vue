@@ -1,21 +1,24 @@
 <template>
-  <!-- 浮动触发按钮 -->
-  <button
-    @click="showPanel = true"
+  <!-- 浮动触发按钮：在新页面打开每日分析（独立页面模式下不显示） -->
+  <a
+    v-if="!pageMode"
+    :href="dailyAnalysisUrl"
+    target="_blank"
+    rel="noopener noreferrer"
     class="watch-fab-btn"
-    title="每日观察 & 分析"
+    title="每日观察 & 分析（在新页面打开）"
   >
     <span class="watch-fab-icon">
       <TrendingUp class="h-4 w-4" :stroke-width="1.6" />
     </span>
     <span class="watch-fab-text">每日分析</span>
     <span v-if="todayCount > 0" class="watch-fab-badge">{{ todayCount }}</span>
-  </button>
+  </a>
 
-  <!-- 全屏弹层 -->
+  <!-- 全屏弹层 / 独立页面 -->
   <Transition name="watch-panel">
-    <div v-if="showPanel" class="watch-overlay" @click.self="closePanel">
-      <div class="watch-shell">
+    <div v-if="pageMode || showPanel" class="watch-overlay" :class="{ 'is-page': pageMode }" @click.self="closePanel">
+      <div class="watch-shell" :class="{ 'is-page': pageMode }">
         <!-- 顶部头部 -->
         <header class="watch-header">
           <div class="watch-header-glow"></div>
@@ -27,7 +30,17 @@
                 <Sparkles class="w-5 h-5" :stroke-width="1.5" />
               </div>
               <div class="watch-brand-text">
-                <h2 class="watch-title">每日观察 &amp; 分析</h2>
+                <h2 class="watch-title">
+                  每日观察 &amp; 分析
+                  <span
+                    v-if="todayTotalPnl != null"
+                    class="watch-head-pnl"
+                    :class="[todayTotalPnl >= 0 ? 'is-up' : 'is-down', { 'is-masked': !showHeadPnl }]"
+                    :style="pnlTone(todayTotalPnl, 1000)"
+                    :title="showHeadPnl ? '点击隐藏今日收益' : '点击查看今日收益（持仓浮动 + 今日做T纯利）'"
+                    @click="showHeadPnl = !showHeadPnl"
+                  >今日收益 {{ showHeadPnl ? (todayTotalPnl >= 0 ? '+' : '') + todayTotalPnl.toFixed(2) : '••••' }}</span>
+                </h2>
                 <p class="watch-subtitle">前一日看盘记录 · 当日操作计划 · 次日复盘</p>
               </div>
             </div>
@@ -74,7 +87,7 @@
                 <span>添加</span>
               </button>
 
-              <button @click="closePanel" class="watch-btn-ghost" title="关闭">
+              <button v-if="!pageMode" @click="closePanel" class="watch-btn-ghost" title="关闭">
                 <X class="w-4 h-4" :stroke-width="1.7" />
               </button>
             </div>
@@ -204,8 +217,8 @@
 
                 <!-- 分析内容 -->
                 <div class="watch-card-body watch-triple">
-                  <!-- 昨日 -->
-                  <section class="watch-card-section is-yesterday" :class="{ 'is-empty': !getPrevAnalysis(item) }">
+                  <!-- 昨日（无记录则整块隐藏） -->
+                  <section v-if="getPrevAnalysis(item)" class="watch-card-section is-yesterday">
                     <header class="watch-section-head">
                       <div class="watch-yest-left">
                         <span class="watch-section-title">
@@ -222,48 +235,42 @@
                       </div>
                       <button @click="openHistory(item)" class="watch-history-text" :title="`历史每日记录（${(item.analyses || []).length} 条）`">历史</button>
                     </header>
-                    <template v-if="getPrevAnalysis(item)">
-                      <div v-if="hasPriceTargets(getPrevAnalysis(item))" class="watch-card-targets">
-                        <div v-if="getPrevAnalysis(item).targetBuyPrice != null" class="watch-target is-buy">
-                          <span class="watch-target-key">买</span>
-                          <span class="watch-target-val tone-up">{{ priceRangeText(getPrevAnalysis(item), 'targetBuyPrice', 'targetBuyPriceHigh') }}</span>
-                          <span v-if="getPrevAnalysis(item).buyShareCount" class="watch-target-shares">{{ getPrevAnalysis(item).buyShareCount }}股</span>
-                        </div>
-                        <div v-if="getPrevAnalysis(item).targetSellPrice != null" class="watch-target is-sell">
-                          <span class="watch-target-key">卖</span>
-                          <span class="watch-target-val tone-down">{{ priceRangeText(getPrevAnalysis(item), 'targetSellPrice', 'targetSellPriceHigh') }}</span>
-                          <span v-if="getPrevAnalysis(item).sellShareCount" class="watch-target-shares">{{ getPrevAnalysis(item).sellShareCount }}股</span>
-                        </div>
-                        <div v-if="getPrevAnalysis(item).stopLossPrice != null" class="watch-target is-loss">
-                          <span class="watch-target-key">损</span>
-                          <span class="watch-target-val tone-warn">{{ priceRangeText(getPrevAnalysis(item), 'stopLossPrice', 'stopLossPriceHigh') }}</span>
-                        </div>
+                    <div v-if="hasPriceTargets(getPrevAnalysis(item))" class="watch-card-targets">
+                      <div v-if="getPrevAnalysis(item).targetBuyPrice != null" class="watch-target is-buy">
+                        <span class="watch-target-key">买</span>
+                        <span class="watch-target-val tone-up">{{ priceRangeText(getPrevAnalysis(item), 'targetBuyPrice', 'targetBuyPriceHigh') }}<small v-if="getAnalysisLimitLabel(item, getPrevAnalysis(item), 'targetBuyPrice')" class="watch-target-limit-label" :class="{ 'is-down': getAnalysisLimitLabel(item, getPrevAnalysis(item), 'targetBuyPrice') === '跌停' }">{{ getAnalysisLimitLabel(item, getPrevAnalysis(item), 'targetBuyPrice') }}</small></span>
+                        <span v-if="getPrevAnalysis(item).buyShareCount" class="watch-target-shares">{{ getPrevAnalysis(item).buyShareCount }}股</span>
                       </div>
-                      <p v-if="getPrevAnalysis(item).note" class="watch-section-note">{{ getPrevAnalysis(item).note }}</p>
-                      <p v-if="getPrevAnalysis(item).nextDayNote" class="watch-section-next">
-                        <span class="watch-section-next-key">明日看法</span>{{ getPrevAnalysis(item).nextDayNote }}
-                      </p>
-                      <!-- 对昨日计划的验证（复盘标记） -->
-                      <div class="watch-today-verify">
-                        <div class="watch-verify-row">
-                          <button
-                            v-for="r in reviewResults"
-                            :key="r.value"
-                            class="watch-verify-btn"
-                            :class="['rv-' + r.value, { 'is-active': todayAnalysis(item)?.reviewResult === r.value, 'is-suggest': !todayAnalysis(item)?.reviewResult && suggestedVerdict(getPrevAnalysis(item), item.code) === r.value }]"
-                            :title="'标记复盘：' + reviewLabel(r.value)"
-                            @click="setReview(item.id, currentDate, r.value)"
-                          >
-                            <span>{{ r.short }}</span>
-                          </button>
-                          <button v-if="todayAnalysis(item)?.reviewResult" class="watch-review-clear" title="清除复盘标记" @click="setReview(item.id, currentDate, '')">
-                            <X class="w-2.5 h-2.5" :stroke-width="2" />
-                          </button>
-                        </div>
-                        <p v-if="getTodayAnalysis(item)?.reviewNote" class="watch-review-note-inline">复盘 · {{ getTodayAnalysis(item).reviewNote }}</p>
+                      <div v-if="getPrevAnalysis(item).targetSellPrice != null" class="watch-target is-sell">
+                        <span class="watch-target-key">卖</span>
+                        <span class="watch-target-val tone-down">{{ priceRangeText(getPrevAnalysis(item), 'targetSellPrice', 'targetSellPriceHigh') }}<small v-if="getAnalysisLimitLabel(item, getPrevAnalysis(item), 'targetSellPrice')" class="watch-target-limit-label" :class="{ 'is-down': getAnalysisLimitLabel(item, getPrevAnalysis(item), 'targetSellPrice') === '跌停' }">{{ getAnalysisLimitLabel(item, getPrevAnalysis(item), 'targetSellPrice') }}</small></span>
+                        <span v-if="getPrevAnalysis(item).sellShareCount" class="watch-target-shares">{{ getPrevAnalysis(item).sellShareCount }}股</span>
                       </div>
-                    </template>
-                    <p v-else class="watch-section-empty">暂无昨日记录</p>
+                      <div v-if="getPrevAnalysis(item).stopLossPrice != null" class="watch-target is-loss">
+                        <span class="watch-target-key">损</span>
+                        <span class="watch-target-val tone-warn">{{ priceRangeText(getPrevAnalysis(item), 'stopLossPrice', 'stopLossPriceHigh') }}<small v-if="getAnalysisLimitLabel(item, getPrevAnalysis(item), 'stopLossPrice')" class="watch-target-limit-label" :class="{ 'is-down': getAnalysisLimitLabel(item, getPrevAnalysis(item), 'stopLossPrice') === '跌停' }">{{ getAnalysisLimitLabel(item, getPrevAnalysis(item), 'stopLossPrice') }}</small></span>
+                      </div>
+                    </div>
+                    <p v-if="getPrevAnalysis(item)?.note" class="watch-section-note">{{ getPrevAnalysis(item).note }}</p>
+                    <!-- 对昨日计划的验证（复盘标记） -->
+                    <div class="watch-today-verify">
+                      <div class="watch-verify-row">
+                        <button
+                          v-for="r in reviewResults"
+                          :key="r.value"
+                          class="watch-verify-btn"
+                          :class="['rv-' + r.value, { 'is-active': todayAnalysis(item)?.reviewResult === r.value, 'is-suggest': !todayAnalysis(item)?.reviewResult && suggestedVerdict(getPrevAnalysis(item), item.code) === r.value }]"
+                          :title="'标记复盘：' + reviewLabel(r.value)"
+                          @click="setReview(item.id, currentDate, r.value)"
+                        >
+                          <span>{{ r.short }}</span>
+                        </button>
+                        <button v-if="todayAnalysis(item)?.reviewResult" class="watch-review-clear" title="清除复盘标记" @click="setReview(item.id, currentDate, '')">
+                          <X class="w-2.5 h-2.5" :stroke-width="2" />
+                        </button>
+                      </div>
+                      <p v-if="getTodayAnalysis(item)?.reviewNote" class="watch-review-note-inline">复盘 · {{ getTodayAnalysis(item).reviewNote }}</p>
+                    </div>
                   </section>
 
                   <!-- 今日总结 -->
@@ -275,12 +282,85 @@
                       </span>
                     </header>
                     <textarea
-                      :value="getTodayAnalysis(item)?.note || ''"
-                      @blur="saveInlineNote(item, $event.target.value)"
+                      :value="noteDraftValue(item)"
+                      @input="onNoteInput(item, $event)"
+                      @blur="onNoteBlur(item, $event)"
                       class="watch-today-input"
                       rows="2"
                       placeholder="盘后总结…（失焦自动保存）"
                     ></textarea>
+                  </section>
+
+                  <!-- 今日操作记录（简版）：金额为主 + T组配对 -->
+                  <section class="watch-card-section watch-today-ops">
+                    <header class="watch-section-head">
+                      <span class="watch-section-title">
+                        <Clock4 class="w-3 h-3" :stroke-width="1.7" />
+                        <span>今日操作</span>
+                        <span
+                          v-if="todayFloatPnl(item) != null"
+                          class="watch-today-ops-float"
+                          :class="[todayFloatPnl(item) >= 0 ? 'is-up' : 'is-down', { 'is-masked': !showHeadPnl }]"
+                          :style="pnlTone(todayFloatPnl(item), 200)"
+                          :title="showHeadPnl ? '点击隐藏今日浮盈' : '点击查看今日浮盈'"
+                          @click="showHeadPnl = !showHeadPnl"
+                        >今日{{ todayFloatPnl(item) >= 0 ? '浮盈' : '浮亏' }}{{ showHeadPnl ? (todayFloatPnl(item) >= 0 ? '+' : '') + todayFloatPnl(item).toFixed(2) : '••••' }}</span>
+                      </span>
+                      <span v-if="todayOpsSummary(item).count > 0" class="watch-today-ops-pnl" :class="{ 'is-up': todayOpsSummary(item).pnl >= 0, 'is-down': todayOpsSummary(item).pnl < 0 }">
+                        {{ todayOpsSummary(item).pnl >= 0 ? '+' : '' }}{{ todayOpsSummary(item).pnl.toFixed(2) }}
+                        <em v-if="todayOpsSummary(item).tGroups > 0" class="watch-today-ops-tg">T*{{ todayOpsSummary(item).tGroups }}</em>
+                      </span>
+                    </header>
+                    <div class="watch-today-ops-list">
+                      <template v-if="todayOpsSummary(item).count > 0">
+                        <template v-for="(op, i) in todayOpsSummary(item).display" :key="i">
+                          <!-- T 组配对：黄色线框圈住买/卖两条记录 -->
+                          <div v-if="op.kind === 'group'" class="watch-tgroup">
+                            <div class="watch-tgroup-head">
+                              <span class="watch-today-ops-ttag" :class="op.sellFirst ? 'is-rt' : 'is-t'">{{ op.tType }}</span>
+                              <span class="watch-tgroup-net" :class="op.profit >= 0 ? 'tone-up' : 'tone-down'" :title="op.netTip">纯利 {{ op.profit >= 0 ? '+' : '' }}{{ op.profit.toFixed(2) }}</span>
+                            </div>
+                            <div v-for="(leg, k) in op.legs" :key="k" class="watch-today-ops-row is-in-group">
+                              <span class="watch-today-ops-side" :class="'is-' + leg.side">{{ leg.side === 'buy' ? '买' : '卖' }}</span>
+                              <span class="watch-today-ops-amount" :class="leg.side === 'buy' ? 'is-buy' : 'is-sell'">¥{{ fmtAmt(leg.amt) }}</span>
+                              <span class="watch-today-ops-shares">{{ leg.count }}股@{{ leg.price }}</span>
+                              <span class="watch-today-ops-time">{{ leg.time }}</span>
+                            </div>
+                          </div>
+                          <!-- 独立买卖 -->
+                          <div v-else class="watch-today-ops-row">
+                            <span class="watch-today-ops-side" :class="'is-' + op.side">{{ op.side === 'buy' ? '买' : '卖' }}</span>
+                            <span class="watch-today-ops-amount" :class="op.side === 'buy' ? 'is-buy' : 'is-sell'">¥{{ fmtAmt(op.amt) }}</span>
+                            <span class="watch-today-ops-shares">{{ op.count }}股@{{ op.price }}</span>
+                            <!-- 今日买入行内联快速做T卖价：填了价格，时间位置变成「录入」按钮 -->
+                            <input
+                              v-if="op.side === 'buy'"
+                              :value="getRowQuickPrice(op)"
+                              type="number"
+                              step="0.001"
+                              placeholder="T卖价"
+                              title="输入做T卖出价，回车或点「录入」登记"
+                              class="watch-tquick-inline-input"
+                              @input="setRowQuickPrice(op, $event.target.value)"
+                              @keyup.enter="onRowQuickSell(item, op)"
+                            />
+                            <button
+                              v-if="op.side === 'buy' && getRowQuickPrice(op)"
+                              class="watch-tquick-inline-btn"
+                              title="登记卖出"
+                              @click="onRowQuickSell(item, op)"
+                            >录入</button>
+                            <!-- 录入按钮后实时预显示这笔做T的净盈利（扣买卖双边手续费） -->
+                            <span
+                              v-if="op.side === 'buy' && getRowQuickPrice(op) && rowQuickEstProfit(op) !== null"
+                              class="watch-tquick-inline-preview"
+                              :class="rowQuickEstProfit(op) >= 0 ? 'is-up' : 'is-down'"
+                            >{{ rowQuickEstProfit(op) >= 0 ? '+' : '' }}{{ rowQuickEstProfit(op).toFixed(2) }}</span>
+                            <span v-if="!(op.side === 'buy' && getRowQuickPrice(op))" class="watch-today-ops-time">{{ op.time }}</span>
+                          </div>
+                        </template>
+                      </template>
+                    </div>
                   </section>
 
                   <!-- 明日 -->
@@ -306,21 +386,20 @@
                     <div v-if="hasPriceTargets(getTodayAnalysis(item))" class="watch-card-targets">
                       <div v-if="getTodayAnalysis(item).targetBuyPrice != null" class="watch-target is-buy">
                         <span class="watch-target-key">买</span>
-                        <span class="watch-target-val tone-up">{{ priceRangeText(getTodayAnalysis(item), 'targetBuyPrice', 'targetBuyPriceHigh') }}</span>
+                        <span class="watch-target-val tone-up">{{ priceRangeText(getTodayAnalysis(item), 'targetBuyPrice', 'targetBuyPriceHigh') }}<small v-if="getAnalysisLimitLabel(item, getTodayAnalysis(item), 'targetBuyPrice')" class="watch-target-limit-label" :class="{ 'is-down': getAnalysisLimitLabel(item, getTodayAnalysis(item), 'targetBuyPrice') === '跌停' }">{{ getAnalysisLimitLabel(item, getTodayAnalysis(item), 'targetBuyPrice') }}</small></span>
                         <span v-if="getTodayAnalysis(item).buyShareCount" class="watch-target-shares">{{ getTodayAnalysis(item).buyShareCount }}股</span>
                       </div>
                       <div v-if="getTodayAnalysis(item).targetSellPrice != null" class="watch-target is-sell">
                         <span class="watch-target-key">卖</span>
-                        <span class="watch-target-val tone-down">{{ priceRangeText(getTodayAnalysis(item), 'targetSellPrice', 'targetSellPriceHigh') }}</span>
+                        <span class="watch-target-val tone-down">{{ priceRangeText(getTodayAnalysis(item), 'targetSellPrice', 'targetSellPriceHigh') }}<small v-if="getAnalysisLimitLabel(item, getTodayAnalysis(item), 'targetSellPrice')" class="watch-target-limit-label" :class="{ 'is-down': getAnalysisLimitLabel(item, getTodayAnalysis(item), 'targetSellPrice') === '跌停' }">{{ getAnalysisLimitLabel(item, getTodayAnalysis(item), 'targetSellPrice') }}</small></span>
                         <span v-if="getTodayAnalysis(item).sellShareCount" class="watch-target-shares">{{ getTodayAnalysis(item).sellShareCount }}股</span>
                       </div>
                       <div v-if="getTodayAnalysis(item).stopLossPrice != null" class="watch-target is-loss">
                         <span class="watch-target-key">损</span>
-                        <span class="watch-target-val tone-warn">{{ priceRangeText(getTodayAnalysis(item), 'stopLossPrice', 'stopLossPriceHigh') }}</span>
+                        <span class="watch-target-val tone-warn">{{ priceRangeText(getTodayAnalysis(item), 'stopLossPrice', 'stopLossPriceHigh') }}<small v-if="getAnalysisLimitLabel(item, getTodayAnalysis(item), 'stopLossPrice')" class="watch-target-limit-label" :class="{ 'is-down': getAnalysisLimitLabel(item, getTodayAnalysis(item), 'stopLossPrice') === '跌停' }">{{ getAnalysisLimitLabel(item, getTodayAnalysis(item), 'stopLossPrice') }}</small></span>
                       </div>
                     </div>
-                    <p v-if="getTodayAnalysis(item)?.nextDayNote" class="watch-tomorrow-text">{{ getTodayAnalysis(item).nextDayNote }}</p>
-                    <p v-if="!getTodayAnalysis(item)?.actionType && !getTodayAnalysis(item)?.sentiment && !hasPriceTargets(getTodayAnalysis(item)) && !getTodayAnalysis(item)?.nextDayNote" class="watch-section-empty">暂无明日计划</p>
+                    <p v-if="!getTodayAnalysis(item)?.actionType && !getTodayAnalysis(item)?.sentiment && !hasPriceTargets(getTodayAnalysis(item))" class="watch-section-empty">暂无明日计划</p>
                   </section>
                 </div>
 
@@ -539,8 +618,14 @@
 
         <!-- 底部 -->
         <footer class="watch-footer">
-          <span class="watch-footer-hint">每只股票每天一条分析记录 · 支持回看历史与次日复盘 · 拖动卡片可自由排序（置顶卡片固定在顶部）</span>
-          <button @click="closePanel" class="watch-btn-ghost is-wide">收起面板</button>
+          <div class="watch-footer-hint">
+            <div class="watch-tip-viewport">
+              <div class="watch-tip-roll" :style="{ transform: `translateY(-${footerTipIndex * 100}%)` }">
+                <span v-for="(t, i) in metricTips" :key="`footer-${i}`" class="watch-tip-line">{{ t }}</span>
+              </div>
+            </div>
+          </div>
+          <button @click="closePanel" class="watch-btn-ghost is-wide">{{ pageMode ? '关闭页面' : '收起面板' }}</button>
         </footer>
 
         <!-- 添加抽屉：从卡片层下方自右侧拉出 -->
@@ -709,7 +794,7 @@
                     <span v-if="currentHoldingShares" class="watch-field-hint">· 当前持仓 {{ currentHoldingShares }} 股</span>
                   </span>
                   <div class="watch-grid-3">
-                    <label class="watch-price">
+                    <label class="watch-price" @focusout="clearPriceQuickFocus">
                       <span class="watch-price-key is-buy">目标买入</span>
                       <div class="watch-price-row">
                         <input
@@ -720,6 +805,7 @@
                           class="watch-input is-price tone-up"
                           @keydown="onRangeKeydown"
                           @input="onPriceText('buy')"
+                          @focus="priceQuickFocus = 'buy-price'"
                         />
                         <input
                           v-if="buyPriceText"
@@ -728,9 +814,17 @@
                           min="0"
                           :placeholder="'股数' + (currentHoldingShares ? '（持仓' + currentHoldingShares + '）' : '')"
                           class="watch-input is-price is-shares"
+                          @focus="priceQuickFocus = 'buy-shares'"
                         />
                       </div>
-                      <div v-if="buyPriceText" class="watch-shares-quick">
+                      <div v-if="priceQuickFocus === 'buy-price'" class="watch-shares-quick" @mousedown.prevent>
+                        <button type="button" class="watch-shares-qbtn" :disabled="!stockPriceQuickValue('buy')" @click="fillPriceByQuote('buy')" title="收盘价">收盘</button>
+                        <button type="button" class="watch-shares-qbtn" :disabled="!stockPriceQuickValue('low')" @click="fillPriceByQuote('buy', 'low')" title="最低价">最低价</button>
+                        <button type="button" class="watch-shares-qbtn" :disabled="!stockPriceQuickValue('high')" @click="fillPriceByQuote('buy', 'high')" title="最高价">最高价</button>
+                        <button type="button" class="watch-shares-qbtn is-limit is-limit-down" :disabled="!limitPrices" @click="fillPriceByLimit('buy', 'down')" :title="limitPrices ? '跌停参考价：' + limitPrices.down : '暂无昨收价'">跌停</button>
+                        <button type="button" class="watch-shares-qbtn is-limit" :disabled="!limitPrices" @click="fillPriceByLimit('buy', 'up')" :title="limitPrices ? '涨停参考价：' + limitPrices.up : '暂无昨收价'">涨停</button>
+                      </div>
+                      <div v-else-if="priceQuickFocus === 'buy-shares' && buyPriceText" class="watch-shares-quick" @mousedown.prevent>
                         <button type="button" class="watch-shares-qbtn" :disabled="!currentHoldingShares" @click="fillBuyShares('half')" :title="'一半：' + Math.floor(currentHoldingShares / 2) + '股'">一半</button>
                         <button type="button" class="watch-shares-qbtn" :disabled="!currentHoldingShares" @click="fillBuyShares('1x')" :title="'一倍：' + currentHoldingShares + '股'">一倍</button>
                         <button type="button" class="watch-shares-qbtn" :disabled="!currentHoldingShares" @click="fillBuyShares('2x')" :title="'两倍：' + (currentHoldingShares * 2) + '股'">两倍</button>
@@ -740,7 +834,7 @@
                         <button type="button" class="watch-shares-qbtn" @click="fillBuyShares(400)">400</button>
                       </div>
                     </label>
-                    <label class="watch-price">
+                    <label class="watch-price" @focusout="clearPriceQuickFocus">
                       <span class="watch-price-key is-sell">目标卖出</span>
                       <div class="watch-price-row">
                         <input
@@ -751,6 +845,7 @@
                           class="watch-input is-price tone-down"
                           @keydown="onRangeKeydown"
                           @input="onPriceText('sell')"
+                          @focus="priceQuickFocus = 'sell-price'"
                         />
                         <input
                           v-if="sellPriceText"
@@ -759,9 +854,17 @@
                           min="0"
                           :placeholder="'股数' + (currentHoldingShares ? '（持仓' + currentHoldingShares + '）' : '')"
                           class="watch-input is-price is-shares"
+                          @focus="priceQuickFocus = 'sell-shares'"
                         />
                       </div>
-                      <div v-if="sellPriceText" class="watch-shares-quick">
+                      <div v-if="priceQuickFocus === 'sell-price'" class="watch-shares-quick" @mousedown.prevent>
+                        <button type="button" class="watch-shares-qbtn" :disabled="!stockPriceQuickValue('buy')" @click="fillPriceByQuote('sell')" title="收盘价">收盘</button>
+                        <button type="button" class="watch-shares-qbtn" :disabled="!stockPriceQuickValue('low')" @click="fillPriceByQuote('sell', 'low')" title="最低价">最低价</button>
+                        <button type="button" class="watch-shares-qbtn" :disabled="!stockPriceQuickValue('high')" @click="fillPriceByQuote('sell', 'high')" title="最高价">最高价</button>
+                        <button type="button" class="watch-shares-qbtn is-limit is-limit-down" :disabled="!limitPrices" @click="fillPriceByLimit('sell', 'down')" :title="limitPrices ? '跌停参考价：' + limitPrices.down : '暂无昨收价'">跌停</button>
+                        <button type="button" class="watch-shares-qbtn is-limit" :disabled="!limitPrices" @click="fillPriceByLimit('sell', 'up')" :title="limitPrices ? '涨停参考价：' + limitPrices.up : '暂无昨收价'">涨停</button>
+                      </div>
+                      <div v-else-if="priceQuickFocus === 'sell-shares' && sellPriceText" class="watch-shares-quick" @mousedown.prevent>
                         <button type="button" class="watch-shares-qbtn" :disabled="!currentHoldingShares" @click="fillSellShares('half')" :title="'半仓：' + Math.floor(currentHoldingShares / 2) + '股'">半仓</button>
                         <button type="button" class="watch-shares-qbtn" :disabled="!currentHoldingShares" @click="fillSellShares('full')" :title="'全仓：' + currentHoldingShares + '股'">全仓</button>
                         <button type="button" class="watch-shares-qbtn" :disabled="!currentHoldingShares" @click="fillSellShares(100)">100</button>
@@ -770,7 +873,7 @@
                         <button type="button" class="watch-shares-qbtn" :disabled="!currentHoldingShares" @click="fillSellShares(400)">400</button>
                       </div>
                     </label>
-                    <label class="watch-price">
+                    <label class="watch-price" @focusout="clearPriceQuickFocus">
                       <span class="watch-price-key is-loss">止损价</span>
                       <div class="watch-price-row">
                         <input
@@ -781,13 +884,15 @@
                           class="watch-input is-price tone-warn"
                           @keydown="onRangeKeydown"
                           @input="onPriceText('loss')"
+                          @focus="priceQuickFocus = 'loss-price'"
                         />
                       </div>
-                      <div class="watch-shares-quick">
-                        <button type="button" class="watch-shares-qbtn" :disabled="!editForm.targetBuyPrice" @click="fillStopLossByPct(0.03)" :title="'买入价 -3%'">-3%</button>
-                        <button type="button" class="watch-shares-qbtn" :disabled="!editForm.targetBuyPrice" @click="fillStopLossByPct(0.05)" :title="'买入价 -5%'">-5%</button>
-                        <button type="button" class="watch-shares-qbtn" :disabled="!editForm.targetBuyPrice" @click="fillStopLossByPct(0.08)" :title="'买入价 -8%'">-8%</button>
-                        <button type="button" class="watch-shares-qbtn" :disabled="!editForm.targetBuyPrice" @click="fillStopLossByPct(0.10)" :title="'买入价 -10%'">-10%</button>
+                      <div v-if="priceQuickFocus === 'loss-price'" class="watch-shares-quick" @mousedown.prevent>
+                        <button type="button" class="watch-shares-qbtn" :disabled="!stockPriceQuickValue('buy')" @click="fillPriceByQuote('loss')" title="收盘价">收盘</button>
+                        <button type="button" class="watch-shares-qbtn" :disabled="!stockPriceQuickValue('low')" @click="fillPriceByQuote('loss', 'low')" title="最低价">最低价</button>
+                        <button type="button" class="watch-shares-qbtn" :disabled="!stockPriceQuickValue('high')" @click="fillPriceByQuote('loss', 'high')" title="最高价">最高价</button>
+                        <button type="button" class="watch-shares-qbtn is-limit is-limit-down" :disabled="!limitPrices" @click="fillPriceByLimit('loss', 'down')" :title="limitPrices ? '跌停参考价：' + limitPrices.down : '暂无昨收价'">跌停</button>
+                        <button type="button" class="watch-shares-qbtn is-limit" :disabled="!limitPrices" @click="fillPriceByLimit('loss', 'up')" :title="limitPrices ? '涨停参考价：' + limitPrices.up : '暂无昨收价'">涨停</button>
                       </div>
                     </label>
                   </div>
@@ -962,9 +1067,10 @@ import {
   Pin, Pencil, Trash2, Loader2, Lightbulb, Target, Calendar, History, Save,
   Search, Layers, Check,
   ClipboardList, Copy, RefreshCw, CornerDownLeft, Clock, PenLine, FileText,
-  ArrowUpRight, ArrowDownRight, Minus, TrendingDown
+  ArrowUpRight, ArrowDownRight, Minus, TrendingDown, Clock4
 } from 'lucide-vue-next'
 import { fmtNum, getStockBoard, isValidStockCode } from '../utils/formatter'
+import { buyFeeParts, sellFeeParts } from '../utils/feeConfig'
 import { metricTips, loadMetricTips } from '../utils/metricTips'
 import { isClosedDay, nearestTradingDay } from '../utils/tradingDay'
 import { calculateDailyProfit } from '../utils/dailyProfit'
@@ -972,7 +1078,9 @@ import { calculateDailyProfit } from '../utils/dailyProfit'
 const props = defineProps({
   stockPrices: { type: Object, default: () => ({}) },
   holdingStocks: { type: Array, default: () => [] },
-  clearedStocks: { type: Array, default: () => [] }
+  clearedStocks: { type: Array, default: () => [] },
+  // 独立页面模式：内容直接作为页面渲染（非遮罩弹层），并隐藏浮动按钮
+  pageMode: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['refresh-price', 'buy', 'sell'])
@@ -981,9 +1089,32 @@ function formatNumber(val, decimals = 2) {
   return fmtNum(val, decimals)
 }
 
+// 金额越大颜色越深：绿(亏损)与红(盈利)各自从浅到深，按 |金额| 的量级插值
+function pnlTone(value, ref = 500) {
+  const v = Number(value)
+  if (!Number.isFinite(v)) return {}
+  if (v === 0) return { color: 'var(--txt-3)', background: 'rgba(255, 255, 255, 0.06)', borderColor: 'var(--hair-2)' }
+  const t = Math.min(1, Math.log10(Math.abs(v) + 1) / Math.log10(ref + 1))
+  const gain = v >= 0
+  const from = gain ? [252, 165, 165] : [134, 239, 172]
+  const to = gain ? [176, 28, 28] : [21, 128, 61]
+  const rgb = from.map((c, i) => Math.round(c + (to[i] - c) * t)).join(', ')
+  return {
+    color: `rgb(${rgb})`,
+    background: `rgba(${rgb}, ${(0.12 + 0.2 * t).toFixed(3)})`,
+    borderColor: `rgba(${rgb}, ${(0.28 + 0.34 * t).toFixed(3)})`
+  }
+}
+
 const watchlist = ref([])
 const loading = ref(true)
 const showPanel = ref(false)
+// 在新页面打开每日分析（与左侧 Dock 的“每日分析”一致）
+const dailyAnalysisUrl = (() => {
+  const url = new URL(window.location.href)
+  url.searchParams.set('page', 'daily-analysis')
+  return url.toString()
+})()
 const showAddDialog = ref(false)
 const showEditDialog = ref(false)
 const currentDate = ref(nearestTradingDay(toLocalDateStr(new Date())))
@@ -1007,6 +1138,7 @@ const copiedTip = ref(false)
 
 // 指标栏标语：竖向轮播，每 6s 换一条（标语库在「设置 → 标语库」里维护）
 const tipIndex = ref(0)
+const footerTipIndex = computed(() => metricTips.value.length > 1 ? (tipIndex.value + 1) % metricTips.value.length : tipIndex.value)
 let tipTimer = null
 function startTipRoll() {
   stopTipRoll()
@@ -1064,8 +1196,11 @@ function onRangeKeydown(e) {
     e.preventDefault()
     const input = e.target
     const val = input.value
-    if (!val.endsWith('~')) {
-      input.value = val + '~'
+    if (!val.includes('~')) {
+      const start = input.selectionStart ?? val.length
+      const end = input.selectionEnd ?? start
+      input.value = `${val.slice(0, start)}~${val.slice(end)}`
+      input.setSelectionRange(start + 1, start + 1)
       input.dispatchEvent(new Event('input', { bubbles: true }))
     }
   }
@@ -1117,14 +1252,79 @@ function fillBuyShares(mode) {
   }
 }
 
-// 止损价快捷填充（基于目标买入低价的跌幅百分比）
-function fillStopLossByPct(pct) {
-  const buyLow = editForm.value.targetBuyPrice
-  if (!buyLow) return
-  const price = Number((buyLow * (1 - pct)).toFixed(3))
-  lossPriceText.value = String(price)
-  editForm.value.stopLossPrice = price
-  editForm.value.stopLossPriceHigh = null
+const priceQuickFocus = ref('')
+
+function clearPriceQuickFocus(event) {
+  if (!event.currentTarget.contains(event.relatedTarget)) priceQuickFocus.value = ''
+}
+
+// 涨跌停幅度：按 A 股板块与 ST 标记计算
+// 主板 ±10% / 创业板(30x)、科创板(68x) ±20% / ST、*ST ±5%
+function getLimitPct(code, name) {
+  const c = String(code || '')
+  const n = String(name || '')
+  if (n.includes('ST')) return 0.05
+  if (/^(30|68)/.test(c)) return 0.20
+  return 0.10
+}
+
+// 当前编辑股票的涨停/跌停参考价（基于昨收）
+const limitPrices = computed(() => {
+  const code = String(editingItem.value?.code || '').trim()
+  if (!code) return null
+  const info = props.stockPrices[code]
+  const prevClose = Number(info?.prevClose)
+  if (!Number.isFinite(prevClose) || prevClose <= 0) return null
+  const pct = getLimitPct(code, info?.name || editingItem.value?.name || '')
+  const round2 = (v) => Number(v.toFixed(2))
+  return {
+    up: round2(prevClose * (1 + pct)),
+    down: round2(prevClose * (1 - pct))
+  }
+})
+
+// 用涨跌停价填充价格输入框
+function fillPriceByLimit(field, kind) {
+  if (!limitPrices.value) return
+  const price = kind === 'up' ? limitPrices.value.up : limitPrices.value.down
+  fillPriceText(field, price)
+}
+
+function stockPriceQuickValue(kind = 'buy') {
+  const code = String(editingItem.value?.code || '').trim()
+  const info = props.stockPrices[code]
+  const value = kind === 'low' ? info?.low : kind === 'high' ? info?.high : info?.price
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 ? number : null
+}
+
+function fillPriceByQuote(field, kind = 'buy') {
+  const price = stockPriceQuickValue(kind)
+  if (price != null) fillPriceText(field, price)
+}
+
+function fillPriceText(field, price) {
+  const textRefs = { buy: buyPriceText, sell: sellPriceText, loss: lossPriceText }
+  const textRef = textRefs[field]
+  const next = String(price)
+  textRef.value = textRef.value.endsWith('~') ? textRef.value + next : next
+  onPriceText(field)
+}
+
+function getAnalysisLimitLabel(item, analysis, field) {
+  if (!analysis) return ''
+  const code = String(item?.code || '').trim()
+  const info = props.stockPrices[code]
+  const prevClose = Number(info?.prevClose)
+  if (!code || !Number.isFinite(prevClose) || prevClose <= 0) return ''
+  const pct = getLimitPct(code, info?.name || item?.name || '')
+  const up = Number((prevClose * (1 + pct)).toFixed(2))
+  const down = Number((prevClose * (1 - pct)).toFixed(2))
+  const low = Number(analysis[field])
+  const high = analysis[`${field}High`] == null ? null : Number(analysis[`${field}High`])
+  if (low === up || high === up) return '涨停'
+  if (low === down || high === down) return '跌停'
+  return ''
 }
 
 const todayStr = toLocalDateStr(new Date())
@@ -1141,8 +1341,8 @@ const sentimentFilters = [
 
 const actionTypes = [
   { value: 'hold', label: '继续持仓' },
-  { value: 'buy_t', label: '正T' },
-  { value: 'sell_t', label: '反T' },
+  { value: 'buy_t', label: 'T入' },
+  { value: 'sell_t', label: 'T出' },
   { value: 'buy', label: '买入' },
   { value: 'sell', label: '卖出' },
   { value: 'wait', label: '观望' },
@@ -1282,6 +1482,207 @@ const reviewStats = computed(() => {
     }
   }
   return { total, hit, rate: total ? Math.round((hit / total) * 100) : 0 }
+})
+
+// 今日操作记录（简版）：汇总当日买入/卖出，T 组按 tGroupId 配对成组并展示每组利润
+function todayOpsSummary(item) {
+  const allStocks = [...props.holdingStocks, ...props.clearedStocks]
+  const s = allStocks.find(x => String(x?.code || '').trim() === String(item.code || '').trim())
+  if (!s) return { count: 0, pnl: 0, tGroups: 0, display: [] }
+  const todayStr = toLocalDateStr(new Date())
+  const rows = []
+  for (const r of s.buyRecords || []) {
+    if (String(r.buyDate || '').slice(0, 10) === todayStr) rows.push({ ...r, side: 'buy' })
+  }
+  for (const r of s.sellRecords || []) {
+    if (String(r.sellDate || '').slice(0, 10) === todayStr) rows.push({ ...r, side: 'sell' })
+  }
+  const sortKey = r => String(r.createdAt || r.buyDate || r.sellDate || '')
+  rows.sort((a, b) => sortKey(a).localeCompare(sortKey(b)))
+  const fmtTime = r => (r.createdAt ? new Date(r.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) : (r.buyDate || r.sellDate || ''))
+
+  // tGroupId 配对：买卖齐全 → 组块；缺另一腿 → 仍按单行展示
+  const groupsMap = {}
+  const singles = []
+  for (const r of rows) {
+    if (r.tGroupId) (groupsMap[r.tGroupId] || (groupsMap[r.tGroupId] = [])).push(r)
+    else singles.push(r)
+  }
+  let pnl = 0
+  const groups = []
+  for (const g of Object.values(groupsMap)) {
+    const buy = g.find(x => x.side === 'buy')
+    const sell = g.find(x => x.side === 'sell')
+    if (buy && sell) {
+      // 组内纯利 = 卖出净收入 - 买入总成本（含买卖双边手续费，按配对股数折算）
+      const qty = Math.min(Number(buy.buyCount) || 0, Number(sell.sellCount) || 0)
+      const buyFees = (Number(buy.commission) || 0) + (Number(buy.transferFee) || 0) + (Number(buy.handlingFee) || 0) + (Number(buy.regulatoryFee) || 0) + (Number(buy.otherFee) || 0)
+      const sellFees = (Number(sell.sellCommission) || 0) + (Number(sell.sellTransferFee) || 0) + (Number(sell.stampTax) || 0) + (Number(sell.handlingFee) || 0) + (Number(sell.regulatoryFee) || 0) + (Number(sell.otherFee) || 0)
+      const buyRatio = Number(buy.buyCount) ? qty / Number(buy.buyCount) : 0
+      const sellRatio = Number(sell.sellCount) ? qty / Number(sell.sellCount) : 0
+      const buyCost = Number(buy.buyPrice) * qty + buyFees * buyRatio
+      const sellNet = Number(sell.sellPrice) * qty - sellFees * sellRatio
+      const profit = Number((sellNet - buyCost).toFixed(2))
+      pnl += profit
+      // 先录的那条腿排在前面（T出在前 = 高卖低买回；T入在前 = 低买高卖），方向不看标签看时间
+      const sellFirst = String(sortKey(sell)) < String(sortKey(buy))
+      const buyLeg = { side: 'buy', price: buy.buyPrice, count: buy.buyCount, amt: Number((buy.buyPrice * buy.buyCount).toFixed(2)), time: fmtTime(buy) }
+      const sellLeg = { side: 'sell', price: sell.sellPrice, count: sell.sellCount, amt: Number((sell.sellPrice * sell.sellCount).toFixed(2)), time: fmtTime(sell) }
+      groups.push({
+        kind: 'group',
+        tType: 'T组',
+        sellFirst,
+        legs: sellFirst ? [sellLeg, buyLeg] : [buyLeg, sellLeg],
+        profit: Number(profit.toFixed(2)),
+        qty,
+        buyFee: Number((buyFees * buyRatio).toFixed(2)),
+        sellFee: Number((sellFees * sellRatio).toFixed(2)),
+        netTip: `组内纯利（已扣买卖双边手续费）\n买入 ${buy.buyCount}股@${buy.buyPrice}，买入费用 ¥${(buyFees * buyRatio).toFixed(2)}\n卖出 ${sell.sellCount}股@${sell.sellPrice}，卖出费用 ¥${(sellFees * sellRatio).toFixed(2)}\n配对股数 ${qty}股\n卖出净收入 ¥${sellNet.toFixed(2)} - 买入总成本 ¥${buyCost.toFixed(2)} = ¥${profit.toFixed(2)}`,
+        sortKey: sortKey(sell)
+      })
+    } else {
+      for (const r of g) {
+        if (r.side === 'sell') pnl += (r.tProfit != null ? Number(r.tProfit) : 0)
+        singles.push(r)
+      }
+    }
+  }
+
+  const singleRows = singles.map(r => ({
+    kind: 'row',
+    rowId: String(r.id ?? `${sortKey(r)}-${r.side}`),
+    buyRecordId: r.id ?? null,
+    tGroupId: r.tGroupId || null,
+    side: r.side,
+    price: r.buyPrice ?? r.sellPrice,
+    count: r.buyCount ?? r.sellCount,
+    amt: Number(((r.buyPrice ?? r.sellPrice) * (r.buyCount ?? r.sellCount)).toFixed(2)),
+    time: fmtTime(r),
+    sortKey: sortKey(r)
+  }))
+  const display = [...groups, ...singleRows].sort((a, b) => String(a.sortKey).localeCompare(String(b.sortKey)))
+
+  return {
+    count: rows.length,
+    pnl: Number(pnl.toFixed(2)),
+    tGroups: groups.length,
+    display
+  }
+}
+
+// ===== 行内快速做T卖出（只出现在今日买入的单行内）=====
+// rowQuickPrices: Map<rowId, 卖价>
+// 仅记录「卖价」；股数直接取该笔买入记录的股数
+const rowQuickPrices = ref(new Map())
+
+function getRowQuickPrice(op) {
+  return rowQuickPrices.value.get(op.rowId) ?? null
+}
+function setRowQuickPrice(op, raw) {
+  if (raw === '' || raw == null) rowQuickPrices.value.delete(op.rowId)
+  else rowQuickPrices.value.set(op.rowId, Number(raw))
+}
+
+// 行内快速做T：按填写的卖价预估这笔配对盈亏（算法与 StockBoard.handleQuickSell 完全一致，
+// 卖出净收入 - 买入总成本，买卖双边手续费都扣掉），用于在「录入」按钮后实时预显示
+function rowQuickEstProfit(op) {
+  const price = Number(getRowQuickPrice(op))
+  const count = Number(op?.count)
+  const buyPrice = Number(op?.price)
+  if (!(price > 0) || !(count > 0) || !(buyPrice > 0)) return null
+  const sellAmount = price * count
+  const buyAmount = buyPrice * count
+  const fee = sellFeeParts(sellAmount).total + buyFeeParts(buyAmount).total
+  return Number((sellAmount - buyAmount - fee).toFixed(2))
+}
+
+function onRowQuickSell(item, op) {
+  const price = getRowQuickPrice(op)
+  if (!price) return
+  emit('sell', {
+    code: item.code,
+    name: item.name,
+    quickSell: {
+      price,
+      count: op.count,
+      buyPrice: op.price,
+      buyRecordId: op.buyRecordId,
+      tGroupId: op.tGroupId
+    }
+  })
+  rowQuickPrices.value.delete(op.rowId)
+}
+
+// 持仓股的今日浮盈浮亏：以「实际介入价」为基准，而不是一律用昨收（开盘）当基准
+// - 昨日及以前持有的老仓份额：现价 - 昨收
+// - 今日买入且仍持有的份额：现价 - 当日买入均价
+// 这样今天才建仓的股票，不会把买入之前的涨跌算进自己的浮盈
+function floatPnlOf(stock, quote) {
+  const price = Number(quote?.price)
+  const total = Number(stock?.count) || 0
+  if (!(total > 0) || !Number.isFinite(price) || price <= 0) return null
+
+  const todayStr = toLocalDateStr(new Date())
+  const sameDay = d => String(d || '').slice(0, 10) === todayStr
+  let buyQty = 0
+  let buyAmt = 0
+  let sellQty = 0
+  for (const r of stock.buyRecords || []) {
+    if (!sameDay(r.buyDate)) continue
+    const q = Number(r.buyCount) || 0
+    buyQty += q
+    buyAmt += q * (Number(r.buyPrice) || 0)
+  }
+  for (const r of stock.sellRecords || []) {
+    if (sameDay(r.sellDate)) sellQty += Number(r.sellCount) || 0
+  }
+
+  const fromToday = Math.max(0, Math.min(total, buyQty - sellQty))
+  const fromBefore = total - fromToday
+  const todayAvg = buyQty > 0 ? buyAmt / buyQty : price
+  const prevClose = Number(quote?.prevClose)
+  // 缺昨收（如次新股首日）时老仓份额以介入价兜底，避免凭空算出一段浮盈
+  const beforeBase = Number.isFinite(prevClose) && prevClose > 0 ? prevClose : price
+
+  const pnl = fromBefore * (price - beforeBase) + fromToday * (price - todayAvg)
+  return Number(pnl.toFixed(2))
+}
+
+function todayFloatPnl(item) {
+  const s = props.holdingStocks.find(x => String(x?.code || '').trim() === String(item.code || '').trim())
+  if (!s) return null
+  return floatPnlOf(s, props.stockPrices[item.code])
+}
+
+function fmtAmt(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '—'
+  return n >= 1000 ? n.toFixed(0) : n.toFixed(2)
+}
+
+// 顶部「今日收益」= 全部持仓当日浮动盈亏（与卡片徽标同一套介入价基准）+ 观察列表内今日做T纯利
+const showHeadPnl = ref(false)
+const todayTotalPnl = computed(() => {
+  let total = 0
+  let has = false
+  let holdingCount = 0
+  let pricedCount = 0
+  for (const s of props.holdingStocks) {
+    const c = Number(s?.count) || 0
+    if (c > 0) holdingCount++
+    const v = floatPnlOf(s, props.stockPrices?.[s?.code])
+    if (v == null) continue
+    if (c > 0) pricedCount++
+    total += v
+    has = true
+  }
+  // 有持仓但行情还没到：先不显示，避免出现「先红后绿」的中间值
+  if (holdingCount > 0 && pricedCount === 0) return null
+  for (const item of watchlist.value) {
+    const p = todayOpsSummary(item).pnl
+    if (p) { total += p; has = true }
+  }
+  return has ? Number(total.toFixed(2)) : null
 })
 
 // 按情绪分类的复盘命中率（全局），帮你发现哪类判断最准
@@ -1454,6 +1855,22 @@ function getTodayAnalysis(item) {
 }
 
 function todayAnalysis(item) { return getTodayAnalysis(item) }
+
+// 盘后总结草稿：行情轮询会频繁重渲染，若直接单向绑定服务器值会把正在输入的文字冲掉
+const noteDrafts = ref({})
+function noteDraftKey(item) { return `${item.id}:${currentDate.value}` }
+function noteDraftValue(item) {
+  const v = noteDrafts.value[noteDraftKey(item)]
+  return v !== undefined ? v : (getTodayAnalysis(item)?.note || '')
+}
+function onNoteInput(item, e) { noteDrafts.value[noteDraftKey(item)] = e.target.value }
+// 保存成功后撤销草稿，让编辑抽屉/其他标签页的改动能正常回显
+async function onNoteBlur(item, e) {
+  const key = noteDraftKey(item)
+  const value = e.target.value
+  noteDrafts.value[key] = value
+  if (await saveInlineNote(item, value)) delete noteDrafts.value[key]
+}
 
 // 获取前一天的分析记录（用于显示昨日备注）
 function getPrevAnalysis(item) {
@@ -1646,20 +2063,24 @@ async function saveQuickNote(item) {
 }
 
 // 内联保存：盘后分析（失焦自动保存）
+// note 与 nextDayNote 同为「分析备注」内容，与编辑抽屉保持一致：两者一起写
 async function saveInlineNote(item, value) {
-  await saveInlineField(item, 'note', value)
-}
-async function saveInlineField(item, field, value) {
-  if (!item) return
+  if (!item) return false
+  let ok = false
   try {
     const res = await fetch(`/api/stock/watchlist/${item.id}/analysis`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ date: currentDate.value, [field]: value })
+      body: JSON.stringify({ date: currentDate.value, note: value, nextDayNote: value })
     })
     const json = await res.json()
-    if (json.ok) await loadWatchlist()
+    if (json.ok) { await loadWatchlist(); ok = true }
   } catch (e) { console.error('内联保存失败:', e) }
+  // 编辑抽屉若正打开同一只股票，同步其「分析备注 / 明日看法」
+  if (ok && showEditDialog.value && editingItem.value?.id === item.id) {
+    editForm.value.nextDayNote = value
+  }
+  return ok
 }
 
 // === 盘后总结 ===
@@ -1809,7 +2230,13 @@ async function loadWatchlist() {
   }
 }
 
-function closePanel() { showPanel.value = false }
+function closePanel() {
+  // 弹层模式：收起面板
+  if (!props.pageMode) { showPanel.value = false; return }
+  // 独立页面模式：关闭当前页面；若被浏览器拦截脚本关闭，则返回应用首页
+  window.close()
+  setTimeout(() => { if (!window.closed) window.location.href = '/' }, 80)
+}
 
 // === 横向翻页 ===
 const stageRef = ref(null)
@@ -1936,9 +2363,10 @@ async function confirmAdd(keepOpen = false) {
 
 // === 编辑 ===
 function openEditDialog(item) {
+  priceQuickFocus.value = ''
   editingItem.value = item
   const a = getTodayAnalysis(item)
-  const mergedNote = [a?.nextDayNote, a?.note].filter(Boolean).join('\n')
+  // 只取 nextDayNote；note 是保存时同步写入的备份，不要拼接（否则内容重复）
   editForm.value = {
     actionType: a?.actionType || '',
     sentiment: a?.sentiment || '',
@@ -1950,7 +2378,7 @@ function openEditDialog(item) {
     stopLossPriceHigh: a?.stopLossPriceHigh ?? null,
     buyShareCount: a?.buyShareCount ?? null,
     sellShareCount: a?.sellShareCount ?? null,
-    nextDayNote: mergedNote,
+    nextDayNote: a?.nextDayNote || '',
     reviewResult: a?.reviewResult || ''
   }
   buyPriceText.value = formatRangeText(editForm.value.targetBuyPrice, editForm.value.targetBuyPriceHigh)
@@ -2022,9 +2450,10 @@ async function removeItem(item) {
   } catch (e) { console.error('删除失败:', e) }
 }
 
-// === 遮罩打开时锁定页面滚动，避免滚轮穿透到底层页面 ===
+// === 遮罩打开时锁定页面滚动，避免滚轮穿透到底层页面（独立页面模式下不锁） ===
+const panelVisible = computed(() => props.pageMode || showPanel.value)
 const overlayOpen = computed(() =>
-  showPanel.value || showAddDialog.value || showEditDialog.value || showHistoryDrawer.value
+  !props.pageMode && (panelVisible.value || showAddDialog.value || showEditDialog.value || showHistoryDrawer.value)
 )
 
 function setPageScrollLocked(locked) {
@@ -2035,7 +2464,7 @@ function setPageScrollLocked(locked) {
 watch(overlayOpen, setPageScrollLocked)
 
 // 面板打开后再按需拉取行情验证数据，避免无谓请求
-watch(showPanel, (v) => {
+watch(panelVisible, (v) => {
   if (v) { loadDayChanges(watchlist.value.map(w => w.code), 120); startTipRoll() }
   else { stopTipRoll() }
 })
@@ -2046,11 +2475,15 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', updateStageScroll)
 })
 
-onMounted(() => {
-  loadWatchlist()
+onMounted(async () => {
+  await loadWatchlist()
   loadMetricTips()
   window.addEventListener('resize', updateStageScroll)
-  if (showPanel.value) startTipRoll()
+  // 独立页面模式下 panelVisible 初始即为 true，watch 不会触发，故在此主动初始化
+  if (panelVisible.value) {
+    loadDayChanges(watchlist.value.map(w => w.code), 120)
+    startTipRoll()
+  }
   nextTick(() => updateStageScroll())
 })
 
@@ -2083,6 +2516,8 @@ defineExpose({ loadWatchlist })
   font-size: 14px;
   font-weight: 500;
   letter-spacing: 0.02em;
+  text-decoration: none;
+  cursor: pointer;
   box-shadow:
     0 10px 28px rgba(0, 0, 0, 0.32),
     0 1px 0 rgba(255, 255, 255, 0.06) inset;
@@ -2171,6 +2606,24 @@ defineExpose({ loadWatchlist })
   color: var(--txt-1);
 }
 
+/* 独立页面模式：内容直接铺满视口，不再是居中遮罩弹窗 */
+.watch-overlay.is-page {
+  position: relative;
+  inset: auto;
+  z-index: 1;
+  display: block;
+  padding: 0;
+  background: transparent;
+}
+.watch-shell.is-page {
+  width: 100%;
+  max-width: none;
+  height: 100vh;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 /* ---------- 头部 ---------- */
 .watch-header {
   position: relative;
@@ -2225,6 +2678,27 @@ defineExpose({ loadWatchlist })
   color: #F2F5FA;
   line-height: 1.15;
 }
+/* 标题后的「今日收益」胶囊 */
+.watch-head-pnl {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  vertical-align: 2px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: filter 0.15s ease;
+}
+.watch-head-pnl:hover { filter: brightness(1.15); }
+.watch-head-pnl.is-masked { letter-spacing: 0.14em; }
+.watch-head-pnl.is-up { color: #FCA5A5; background: rgba(239, 68, 68, 0.14); border: 1px solid rgba(239, 68, 68, 0.3); }
+.watch-head-pnl.is-down { color: #86EFAC; background: rgba(34, 197, 94, 0.14); border: 1px solid rgba(34, 197, 94, 0.3); }
 .watch-subtitle {
   margin-top: 3px;
   font-size: 11px;
@@ -2692,10 +3166,6 @@ defineExpose({ loadWatchlist })
   background: rgba(255, 255, 255, 0.025);
   position: relative;
 }
-.watch-card-section.is-empty {
-  align-items: center;
-  justify-content: center;
-}
 /* 今日区域：占据卡片主体剩余空间，textarea 自适应撑满 */
 .watch-card-section.is-today.watch-today-compact {
   flex: 1 1 auto;
@@ -2706,6 +3176,187 @@ defineExpose({ loadWatchlist })
   min-height: 38px;
   resize: none;
 }
+/* 今日操作记录（简版） */
+.watch-today-ops {
+  padding: 5px 8px;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.035);
+}
+.watch-today-ops-pnl {
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.watch-today-ops-pnl.is-up { color: var(--up); }
+.watch-today-ops-pnl.is-down { color: var(--down); }
+.watch-today-ops-float {
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 7px;
+  border-radius: 999px;
+  margin-left: 2px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: filter 0.15s ease;
+}
+.watch-today-ops-float:hover { filter: brightness(1.15); }
+.watch-today-ops-float.is-masked { letter-spacing: 0.12em; }
+.watch-today-ops-float.is-up { color: var(--up); background: rgba(242, 85, 90, 0.14); border: 1px solid rgba(242, 85, 90, 0.25); }
+.watch-today-ops-float.is-down { color: var(--down); background: rgba(47, 191, 113, 0.14); border: 1px solid rgba(47, 191, 113, 0.25); }
+.watch-today-ops-tg {
+  font-style: normal;
+  font-size: 10px;
+  margin-left: 4px;
+  color: #fde047;
+}
+.watch-today-ops-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.watch-today-ops-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--txt-2);
+  padding: 2.5px 6px;
+  border-radius: 6px;
+  transition: background 0.15s ease;
+}
+.watch-today-ops-row:hover { background: rgba(255, 255, 255, 0.05); }
+/* 一组 T：整组（买+卖两条）用黄色线框圈起来 */
+.watch-tgroup {
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  background: rgba(251, 191, 36, 0.06);
+  border-radius: 6px;
+  padding: 1px 0 2px;
+}
+.watch-tgroup:hover {
+  background: rgba(251, 191, 36, 0.1);
+  border-color: rgba(251, 191, 36, 0.6);
+}
+.watch-tgroup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 6px 1px;
+}
+.watch-tgroup-net { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.watch-today-ops-row.is-in-group { background: transparent; }
+.watch-today-ops-row.is-in-group:hover { background: rgba(255, 255, 255, 0.05); }
+.watch-today-ops-flow {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+  row-gap: 1px;
+}
+.watch-today-ops-side {
+  width: 16px;
+  text-align: center;
+  border-radius: 4px;
+  font-weight: 600;
+  line-height: 18px;
+  flex-shrink: 0;
+}
+.watch-today-ops-side.is-buy { background: rgba(242, 85, 90, 0.16); color: var(--up); }
+.watch-today-ops-side.is-sell { background: rgba(47, 191, 113, 0.16); color: var(--down); }
+.watch-today-ops-amount {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.watch-today-ops-amount.is-buy { color: var(--up); }
+.watch-today-ops-amount.is-sell { color: var(--down); }
+.watch-today-ops-shares {
+  font-size: 10px;
+  color: var(--txt-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.watch-today-ops-arrow {
+  color: var(--txt-3);
+  font-size: 10px;
+  margin: 0 1px;
+}
+.watch-today-ops-time {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--txt-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.watch-today-ops-gain {
+  margin-left: auto;
+  font-weight: 700;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.watch-today-ops-ttag {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(99, 102, 241, 0.18);
+  color: #a5b4fc;
+}
+.watch-today-ops-ttag.is-t { background: rgba(242, 85, 90, 0.14); color: var(--up); }
+.watch-today-ops-ttag.is-rt { background: rgba(47, 191, 113, 0.14); color: var(--down); }
+
+/* 今日买入行内的快速做T卖价输入框 */
+.watch-tquick-inline-input {
+  width: 62px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 11px;
+  color: #fff;
+  text-align: right;
+  outline: none;
+  font-variant-numeric: tabular-nums;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.watch-tquick-inline-input::placeholder { color: rgba(251, 191, 36, 0.45); text-align: right; }
+.watch-tquick-inline-input:focus {
+  border-color: rgba(251, 191, 36, 0.6);
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.15);
+}
+/* 填入卖价后，时间位置显示的「录入」按钮 */
+.watch-tquick-inline-btn {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 0.15s, transform 0.1s;
+}
+.watch-tquick-inline-btn:hover { opacity: 0.88; }
+.watch-tquick-inline-btn:active { transform: scale(0.96); }
+/* 「录入」按钮后的做T预估净盈利 */
+.watch-tquick-inline-preview {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+.watch-tquick-inline-preview.is-up { color: var(--up); }
+.watch-tquick-inline-preview.is-down { color: var(--down); }
 .watch-section-head {
   display: flex;
   align-items: center;
@@ -2760,10 +3411,24 @@ defineExpose({ loadWatchlist })
   font-size: 10.5px;
   border-radius: 7px;
 }
+/* 昨日（历史）整块：中性微提亮 + 仅左侧一条金色细轨标示「历史」，避免整块泛黄 */
+.watch-card-section.is-yesterday {
+  background: rgba(255, 255, 255, 0.035);
+  border-left: 2px solid rgba(224, 164, 88, 0.5);
+}
+.watch-card-section.is-yesterday .watch-section-title {
+  color: var(--txt-1);
+}
+/* 昨日记录正文：全块最亮的一级文字，中性引用轨 + 浅底，与上方标签拉开层次 */
 .watch-section-note {
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--txt-2);
+  margin: 2px 0 0;
+  padding: 5px 9px 5px 10px;
+  border-left: 2px solid rgba(255, 255, 255, 0.22);
+  border-radius: 0 7px 7px 0;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--txt-1);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -3261,11 +3926,25 @@ defineExpose({ loadWatchlist })
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 3px 18px;
+  flex-shrink: 0;
+  padding: 2px 18px;
   border-top: 1px solid var(--hair);
   background: rgba(255, 255, 255, 0.015);
 }
-.watch-footer-hint { font-size: 10.5px; letter-spacing: 0.04em; color: var(--txt-3); }
+.watch-footer-hint {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--txt-3);
+}
+/* 底部标语：固定单行高度，上下轮动，每次只显示一条 */
+.watch-footer-hint .watch-tip-viewport { width: min(360px, 46vw); height: 14px; }
+.watch-footer-hint .watch-tip-line { line-height: 14px; }
+/* 底部按钮收窄，避免撑高 footer */
+.watch-footer .watch-btn-ghost { height: 21px; min-height: 21px; border-radius: 7px; padding: 0 9px; font-size: 10.5px; }
 
 /* ---------- 抽屉 ---------- */
 .watch-drawer-layer {
@@ -3622,6 +4301,14 @@ defineExpose({ loadWatchlist })
 .watch-price-key.is-sell { color: #8FE5B4; }
 .watch-price-key.is-loss { color: #EBC98A; }
 .watch-price-row { display: flex; align-items: center; gap: 6px; }
+.watch-target-limit-label {
+  margin-left: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  color: #FF9EA1;
+}
+.watch-target-limit-label.is-down { color: #8FE5B4; }
 .watch-price-row .watch-input.is-price { flex: 0 0 108px; width: 108px; min-width: 0; transition: flex-grow 0.18s ease; }
 /* 未填价格时股数框不渲染，价格框占满整行；填价后收缩，股数框出现 */
 .watch-price-row .watch-input.is-price:only-child { flex-grow: 1; }
@@ -3662,6 +4349,22 @@ defineExpose({ loadWatchlist })
 .watch-shares-qbtn:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+.watch-shares-qbtn.is-limit {
+  color: #FF9EA1;
+  border-color: rgba(255, 158, 161, 0.35);
+  background: rgba(255, 158, 161, 0.08);
+  font-weight: 600;
+}
+.watch-shares-qbtn.is-limit.is-limit-down {
+  color: #8FE5B4;
+  border-color: rgba(143, 229, 180, 0.35);
+  background: rgba(143, 229, 180, 0.08);
+}
+.watch-shares-qbtn.is-limit:hover {
+  color: var(--gold-2);
+  border-color: rgba(212, 175, 55, 0.45);
+  background: rgba(212, 175, 55, 0.1);
 }
 
 /* 模板 */
@@ -3949,8 +4652,8 @@ defineExpose({ loadWatchlist })
 .watch-today-verify .watch-verify-row { display: flex; gap: 4px; min-width: 0; flex-wrap: nowrap; }
 .watch-today-verify .watch-review-clear { margin-left: auto; }
 .watch-verify-btn {
-  height: 23px;
-  padding: 0 8px;
+  height: 24px;
+  padding: 0 9px;
   border-radius: 8px;
   border: 1px solid var(--hair-2);
   background: rgba(255, 255, 255, 0.05);
@@ -3958,22 +4661,39 @@ defineExpose({ loadWatchlist })
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.02em;
-  transition: all 0.16s;
+  transition: all 0.16s ease;
   display: inline-flex;
   align-items: center;
   gap: 3px;
+  cursor: pointer;
 }
-.watch-verify-btn.is-active {
-  color: var(--gold-2);
-  border-color: rgba(212, 175, 55, 0.65);
-  background: rgba(212, 175, 55, 0.18);
-}
-.watch-verify-btn:hover { color: #FFFFFF; border-color: rgba(255, 255, 255, 0.34); background: rgba(255, 255, 255, 0.1); }
+/* 各复盘结果用各自的淡色标识：未选中也能一眼区分，但不喧宾夺主 */
+.watch-verify-btn.rv-hit { color: #8FE5B4; border-color: rgba(47, 191, 113, 0.28); background: rgba(47, 191, 113, 0.08); }
+.watch-verify-btn.rv-partial { color: #EBC98A; border-color: rgba(224, 164, 88, 0.28); background: rgba(224, 164, 88, 0.08); }
+.watch-verify-btn.rv-miss { color: #FF9EA1; border-color: rgba(242, 85, 90, 0.28); background: rgba(242, 85, 90, 0.08); }
+.watch-verify-btn.rv-stopped { color: var(--txt-2); border-color: var(--hair-2); background: rgba(255, 255, 255, 0.05); }
+.watch-verify-btn:hover { transform: translateY(-1px); }
+.watch-verify-btn.rv-hit:hover { color: #CFFBE3; border-color: rgba(47, 191, 113, 0.6); background: rgba(47, 191, 113, 0.16); }
+.watch-verify-btn.rv-partial:hover { color: #FBE3B4; border-color: rgba(224, 164, 88, 0.6); background: rgba(224, 164, 88, 0.16); }
+.watch-verify-btn.rv-miss:hover { color: #FFD1D3; border-color: rgba(242, 85, 90, 0.6); background: rgba(242, 85, 90, 0.16); }
+.watch-verify-btn.rv-stopped:hover { color: #FFFFFF; border-color: rgba(255, 255, 255, 0.4); background: rgba(255, 255, 255, 0.13); }
+/* 选中：对应色的实心高亮 + 光环，状态一眼可辨 */
+.watch-verify-btn.is-active { font-weight: 700; transform: translateY(-1px); }
+.watch-verify-btn.rv-hit.is-active { color: #CFFBE3; border-color: rgba(47, 191, 113, 0.9); background: linear-gradient(180deg, rgba(47, 191, 113, 0.55), rgba(47, 191, 113, 0.3)); box-shadow: 0 0 0 2px rgba(47, 191, 113, 0.34), 0 4px 10px rgba(47, 191, 113, 0.26); }
+.watch-verify-btn.rv-partial.is-active { color: #FBE3B4; border-color: rgba(224, 164, 88, 0.9); background: linear-gradient(180deg, rgba(224, 164, 88, 0.55), rgba(224, 164, 88, 0.3)); box-shadow: 0 0 0 2px rgba(224, 164, 88, 0.34), 0 4px 10px rgba(224, 164, 88, 0.26); }
+.watch-verify-btn.rv-miss.is-active { color: #FFD1D3; border-color: rgba(242, 85, 90, 0.9); background: linear-gradient(180deg, rgba(242, 85, 90, 0.55), rgba(242, 85, 90, 0.3)); box-shadow: 0 0 0 2px rgba(242, 85, 90, 0.34), 0 4px 10px rgba(242, 85, 90, 0.26); }
+.watch-verify-btn.rv-stopped.is-active { color: #FFFFFF; border-color: rgba(255, 255, 255, 0.6); background: linear-gradient(180deg, rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.16)); box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.24), 0 4px 10px rgba(0, 0, 0, 0.3); }
 .watch-verify-btn:active { transform: translateY(1px); }
-.watch-verify-btn.rv-hit.is-suggest { color: #A6F0C8; border-color: rgba(47, 191, 113, 0.65); background: rgba(47, 191, 113, 0.16); }
-.watch-verify-btn.rv-partial.is-suggest { color: #F0D49B; border-color: rgba(224, 164, 88, 0.65); background: rgba(224, 164, 88, 0.16); }
-.watch-verify-btn.rv-miss.is-suggest { color: #FFAEB1; border-color: rgba(242, 85, 90, 0.65); background: rgba(242, 85, 90, 0.16); }
-.watch-verify-btn.rv-stopped.is-suggest { color: #FFFFFF; border-color: rgba(255, 255, 255, 0.34); background: rgba(255, 255, 255, 0.12); }
+/* 系统建议项（未选中时）：虚线 + 小圆点提示，不抢焦点 */
+.watch-verify-btn.is-suggest:not(.is-active) { border-style: dashed; border-color: rgba(232, 200, 106, 0.6); }
+.watch-verify-btn.is-suggest:not(.is-active)::after {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--gold-2);
+  box-shadow: 0 0 6px rgba(232, 200, 106, 0.8);
+}
 .watch-verify-tip { font-size: 10.5px; letter-spacing: 0.04em; color: var(--gold-2); opacity: 0.85; }
 .watch-review-clear {
   display: inline-flex;

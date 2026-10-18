@@ -42,14 +42,57 @@ function publicUser(user) {
   return { id: Number(user.id), email: user.email, role: user.role, capabilities: { localFeatures: local } };
 }
 
-async function createSession(user, res) {
+async function createSessionRecord(user, database = getRawPool()) {
   const token = crypto.randomBytes(32).toString('hex');
   const csrfToken = crypto.randomBytes(32).toString('hex');
-  await getRawPool().execute('DELETE FROM user_sessions WHERE expires_at < NOW()');
-  await getRawPool().execute('INSERT INTO user_sessions (token_hash, user_id, csrf_token, expires_at) VALUES (?, ?, ?, ?)',
+  await database.execute('INSERT INTO user_sessions (token_hash, user_id, csrf_token, expires_at) VALUES (?, ?, ?, ?)',
     [crypto.createHash('sha256').update(token).digest('hex'), user.id, csrfToken, new Date(Date.now() + SESSION_MS)]);
-  res.cookie(COOKIE, token, { httpOnly: true, secure: process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production', sameSite: 'lax', path: '/', maxAge: SESSION_MS });
-  return { user: publicUser(user), csrfToken };
+  return { token, user: publicUser(user), csrfToken };
+}
+
+function applySessionCookie(session, res) {
+  res.cookie(COOKIE, session.token, { httpOnly: true, secure: process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production', sameSite: 'lax', path: '/', maxAge: SESSION_MS });
+  return { user: session.user, csrfToken: session.csrfToken };
+}
+
+async function createSession(user, res) {
+  await getRawPool().execute('DELETE FROM user_sessions WHERE expires_at < NOW()');
+  return applySessionCookie(await createSessionRecord(user), res);
+}
+
+async function updateCredentials(req, res, next, kind) {
+  let connection;
+  try {
+    const currentPassword = req.body.currentPassword;
+    if (typeof currentPassword !== 'string' || !currentPassword || Buffer.byteLength(currentPassword) > 72) return res.status(400).json({ error: '请输入当前密码' });
+    const email = kind === 'account' ? String(req.body.email || '').trim().toLowerCase() : null;
+    const newPassword = req.body.newPassword;
+    if (kind === 'account' && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254)) return res.status(400).json({ error: '请输入有效的邮箱账号' });
+    if (kind === 'password' && (typeof newPassword !== 'string' || newPassword.length < 8 || Buffer.byteLength(newPassword) > 72)) return res.status(400).json({ error: '新密码至少 8 字符且不超过 72 字节' });
+    if (kind === 'password' && newPassword === currentPassword) return res.status(400).json({ error: '新密码不能与当前密码相同' });
+    connection = await getRawPool().getConnection();
+    await connection.beginTransaction();
+    const [users] = await connection.execute('SELECT id, email, role, password_hash, disabled FROM users WHERE id = ? FOR UPDATE', [req.user.id]);
+    const user = users[0];
+    if (!user || user.disabled || !await bcrypt.compare(currentPassword, user.password_hash)) {
+      await connection.rollback();
+      return res.status(401).json({ error: '当前密码错误' });
+    }
+    if (kind === 'account') {
+      await connection.execute('UPDATE users SET email = ? WHERE id = ?', [email, user.id]);
+      user.email = email;
+    } else {
+      await connection.execute('UPDATE users SET password_hash = ? WHERE id = ?', [await bcrypt.hash(newPassword, 12), user.id]);
+    }
+    await connection.execute('DELETE FROM user_sessions WHERE user_id = ?', [user.id]);
+    const session = await createSessionRecord(user, connection);
+    await connection.commit();
+    res.json(applySessionCookie(session, res));
+  } catch (error) {
+    if (connection) await connection.rollback().catch(() => {});
+    if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: '该邮箱已被其他账号使用' });
+    next(error);
+  } finally { if (connection) connection.release(); }
 }
 
 async function authenticate(req, res, next) {
@@ -85,7 +128,7 @@ function installAuth(app) {
       if (process.env.REGISTRATION_OPEN !== 'true') return res.status(403).json({ error: '暂未开放注册' });
       const email = String(req.body.email || '').trim().toLowerCase();
       const password = req.body.password;
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || typeof password !== 'string' || password.length < 12 || Buffer.byteLength(password) > 72) return res.status(400).json({ error: '请输入有效邮箱，密码至少 12 字符且不超过 72 字节' });
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || typeof password !== 'string' || password.length < 8 || Buffer.byteLength(password) > 72) return res.status(400).json({ error: '请输入有效邮箱，密码至少 8 字符且不超过 72 字节' });
       const hash = await bcrypt.hash(password, 12);
       let result;
       try { [result] = await getRawPool().execute('INSERT INTO users (email, password_hash, role) VALUES (?, ?, ?)', [email, hash, 'user']); }
@@ -106,6 +149,8 @@ function installAuth(app) {
     } catch (error) { next(error); }
   });
   router.get('/me', authenticate, (req, res) => res.json({ user: publicUser(req.user), csrfToken: req.user.csrf_token }));
+  router.post('/account', authenticate, rateLimit, (req, res, next) => updateCredentials(req, res, next, 'account'));
+  router.post('/password', authenticate, rateLimit, (req, res, next) => updateCredentials(req, res, next, 'password'));
   router.post('/logout', authenticate, async (req, res, next) => {
     try {
       await getRawPool().execute('DELETE FROM user_sessions WHERE token_hash = ?', [req.sessionHash]);

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.DailyTaskMapper">
+
+  <select id="listAll" resultType="com.wangwenlin.stock.model.DailyTaskRow">
+    SELECT id, title, description, due_date, priority, repeat_type, reminder, tag, created_at
+    FROM daily_tasks ORDER BY created_at DESC
+  </select>
+
+  <select id="findById" resultType="com.wangwenlin.stock.model.DailyTaskRow">
+    SELECT id, title, description, due_date, priority, repeat_type, reminder, tag, created_at
+    FROM daily_tasks WHERE id = #{id} LIMIT 1
+  </select>
+
+  <insert id="insert">
+    INSERT INTO daily_tasks (id, title, description, due_date, priority, repeat_type, reminder, tag, created_at)
+    VALUES (#{id}, #{title}, #{description}, #{dueDate}, #{priority}, #{repeat}, #{reminder}, #{tag}, #{createdAt})
+  </insert>
+
+  <update id="update">
+    UPDATE daily_tasks SET title = #{title}, description = #{description}, due_date = #{dueDate},
+      priority = #{priority}, repeat_type = #{repeat}, reminder = #{reminder}, tag = #{tag}
+    WHERE id = #{id}
+  </update>
+
+  <delete id="deleteById">
+    DELETE FROM daily_tasks WHERE id = #{id}
+  </delete>
+
+</mapper>

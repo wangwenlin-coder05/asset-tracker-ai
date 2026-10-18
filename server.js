@@ -3,7 +3,9 @@ const express = require('express');
 const { getPool, getRawPool } = require('./backend/tenant-db');
 const { context } = require('./backend/context');
 const { installAuth, allowedOrigins } = require('./backend/auth');
-const { getUserSecret, saveSettings, PROVIDERS } = require('./backend/ai-settings');
+const { getUserSecret, getCustomModels, saveSettings, PROVIDERS } = require('./backend/ai-settings');
+const { webSearch, formatSearchContext, resetSearchSession, setSourceOrder, getSourceOrder } = require('./backend/web-search');
+const { startSearchStack } = require('./backend/search-env');
 const { isSecret } = require('./backend/secrets');
 const { tenantUploadDir, tenantUploadPath } = require('./backend/uploads');
 const cors = require('cors');
@@ -106,6 +108,8 @@ app.use('/uploads', (req, res) => {
 });
 
 const pool = getPool();
+const { initTaskTables, installTaskRoutes } = require('./backend/daily-tasks');
+installTaskRoutes(app, pool);
 
 function genId() {
   return Date.now() + Math.random().toString(36).slice(2);
@@ -238,9 +242,9 @@ async function migrateOldTGroups() {
                 - (sellTx.record.sellCommission || 0) - (sellTx.record.sellTransferFee || 0) - (sellTx.record.stampTax || 0)
                 - tx.record.commission - tx.record.transferFee;
               
-              await pool.execute(`UPDATE buy_records SET t_group_id = ?, t_type = '正T', t_profit = ?, cost_change = ? WHERE id = ?`, 
+              await pool.execute(`UPDATE buy_records SET t_group_id = ?, t_type = 'T入', t_profit = ?, cost_change = ? WHERE id = ?`, 
                 [groupId, profit, profit, tx.record.id]);
-              await pool.execute(`UPDATE sell_records SET t_group_id = ?, t_type = '反T' WHERE id = ?`, 
+              await pool.execute(`UPDATE sell_records SET t_group_id = ?, t_type = 'T出' WHERE id = ?`, 
                 [groupId, sellTx.record.id]);
               
               matched = true;
@@ -261,10 +265,10 @@ async function migrateOldTGroups() {
                 - tx.record.sellCommission - tx.record.sellTransferFee - tx.record.stampTax
                 - buyTx.record.commission - buyTx.record.transferFee;
               
-              await pool.execute(`UPDATE buy_records SET t_group_id = ?, t_type = '正T', t_profit = ?, cost_change = ? WHERE id = ?`, 
+              await pool.execute(`UPDATE buy_records SET t_group_id = ?, t_type = 'T入', t_profit = ?, cost_change = ? WHERE id = ?`, 
                 [groupId, profit, profit, buyTx.record.id]);
-              await pool.execute(`UPDATE sell_records SET t_group_id = ?, t_type = ? WHERE id = ?`, 
-                [groupId, '', tx.record.id]);
+              await pool.execute(`UPDATE sell_records SET t_group_id = ?, t_type = 'T出' WHERE id = ?`, 
+                [groupId, tx.record.id]);
               
               matched = true;
               break;
@@ -2471,14 +2475,14 @@ async function migrate() {
   // 修复已有数据的 board 字段（ALTER TABLE 后旧行可能为 NULL）
   await pool.execute(`UPDATE stocks SET board = 'stock' WHERE board IS NULL OR board = ''`);
 
-  // 买入记录表添加 t_type 字段（正T/反T）
+  // 买入记录表添加 t_type 字段（T入）
   try {
     await pool.execute(`ALTER TABLE buy_records ADD COLUMN t_type VARCHAR(10) DEFAULT ''`);
   } catch (err) {
     if (err.code !== 'ER_DUP_FIELDNAME') throw err;
   }
 
-  // 卖出记录表添加 t_type 字段（反T）
+  // 卖出记录表添加 t_type 字段（T出）
   try {
     await pool.execute(`ALTER TABLE sell_records ADD COLUMN t_type VARCHAR(10) DEFAULT ''`);
   } catch (err) {
@@ -2504,7 +2508,7 @@ async function migrate() {
     if (err.code !== 'ER_DUP_FIELDNAME') throw err;
   }
 
-  // 卖出记录表添加 t_pending 字段（反T欠着标记）
+  // 卖出记录表添加 t_pending 字段（T出欠着标记，历史字段，配对方向改由组内腿推导）
   try {
     await pool.execute(`ALTER TABLE sell_records ADD COLUMN t_pending TINYINT(1) DEFAULT 0`);
   } catch (err) {
@@ -2532,6 +2536,14 @@ async function migrate() {
 
   // 旧数据适配：为没有 t_group_id 的旧交易记录自动配对
   await migrateOldTGroups();
+
+  // 做T记录统一成「T入 / T出」两个标签（不再区分正T/反T），旧标签一次性迁移
+  try {
+    await pool.execute(`UPDATE buy_records SET t_type = 'T入' WHERE t_type IN ('正T', '反T承接')`);
+    await pool.execute(`UPDATE sell_records SET t_type = 'T出' WHERE t_type IN ('正T卖出', '反T')`);
+  } catch (err) {
+    console.error('做T标签迁移失败:', err.message);
+  }
 
   // 股票表添加冻结持仓天数字段
   try {
@@ -2830,6 +2842,340 @@ async function migrate() {
   for (const col of ['request_content TEXT', 'response_content TEXT']) {
     try { await pool.execute(`ALTER TABLE ai_logs ADD COLUMN ${col}`); } catch (_) {}
   }
+
+  // 人生规划节点表（AI 与用户共同维护的规划网络）
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_plan_nodes (
+      id VARCHAR(64) NOT NULL,
+      user_id INT UNSIGNED NOT NULL,
+      parent_id VARCHAR(64) NOT NULL DEFAULT '',
+      kind VARCHAR(16) NOT NULL DEFAULT 'goal',
+      domain VARCHAR(32) NOT NULL DEFAULT '成长',
+      title VARCHAR(200) NOT NULL DEFAULT '',
+      detail TEXT,
+      status VARCHAR(16) NOT NULL DEFAULT 'todo',
+      horizon VARCHAR(32) NOT NULL DEFAULT '',
+      weight INT NOT NULL DEFAULT 50,
+      source VARCHAR(8) NOT NULL DEFAULT 'ai',
+      sort_order INT NOT NULL DEFAULT 0,
+      created_at BIGINT NOT NULL DEFAULT 0,
+      updated_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (id),
+      INDEX idx_life_nodes_user (user_id, created_at)
+    )
+  `);
+  // 兼容旧表：补 time_group（时序分组）、deps（前置依赖节点 id 列表）、step_no（时序步骤序号）、risk（任务表「风险提示」列）、priority（P0-P3 优先级）、series（所属主线，横向条带分组）
+  // content_type：节点内容载体类型，前端据此渲染对应 UI（text/table/link/checklist/progress/branch/calc/doc）
+  // reference_ids：横向网状关联（跨赛道联动、时间冲突、精力冲突、任务互相影响），存 JSON 数组
+  // is_shared：公共节点标记（复盘 / 方法 / 资料 / 模板只生成一次，全网络复用，不重复冗余）
+  // progress_note：任务「部分完成」的完成情况 —— 用户写清哪些做完了、哪些还没做，用于刻画大脑（执行力按进度折算）
+  // start_date：节点开始日期（YYYY-MM-DD），与 horizon（截止日期）分开存，用户可以各自修改
+  for (const col of ["time_group VARCHAR(16) NOT NULL DEFAULT ''", 'deps TEXT', 'step_no INT NOT NULL DEFAULT 0', "risk VARCHAR(200) NOT NULL DEFAULT ''", "priority VARCHAR(4) NOT NULL DEFAULT ''", "series VARCHAR(64) NOT NULL DEFAULT ''", "content_type VARCHAR(24) NOT NULL DEFAULT ''", 'content_body TEXT', 'reference_ids TEXT', 'is_shared TINYINT NOT NULL DEFAULT 0', 'progress_note TEXT', "start_date VARCHAR(10) NOT NULL DEFAULT ''"]) {
+    try { await pool.execute(`ALTER TABLE life_plan_nodes ADD COLUMN ${col}`); }
+    catch (err) { if (err.code !== 'ER_DUP_FIELDNAME') console.warn('[alter life_plan_nodes]', col, err.message); }
+  }
+
+  // 人生规划对话记录表
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_chat_messages (
+      id VARCHAR(64) NOT NULL,
+      user_id INT UNSIGNED NOT NULL,
+      role VARCHAR(16) NOT NULL DEFAULT 'user',
+      content TEXT,
+      created_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (id),
+      INDEX idx_life_chat_user (user_id, created_at)
+    )
+  `);
+
+  // 人生规划 · 模块2 每日细分任务表
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_daily_tasks (
+      id VARCHAR(64) NOT NULL,
+      user_id INT UNSIGNED NOT NULL,
+      task_date VARCHAR(10) NOT NULL DEFAULT '',
+      title VARCHAR(200) NOT NULL DEFAULT '',
+      est_minutes INT NOT NULL DEFAULT 0,
+      priority VARCHAR(4) NOT NULL DEFAULT 'P1',
+      status VARCHAR(8) NOT NULL DEFAULT 'todo',
+      pre_task VARCHAR(120) NOT NULL DEFAULT '',
+      blocker VARCHAR(200) NOT NULL DEFAULT '',
+      support VARCHAR(200) NOT NULL DEFAULT '',
+      node_id VARCHAR(64) NOT NULL DEFAULT '',
+      repeat_type VARCHAR(10) NOT NULL DEFAULT '',
+      sort_order INT NOT NULL DEFAULT 0,
+      created_at BIGINT NOT NULL DEFAULT 0,
+      updated_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (id),
+      INDEX idx_life_daily_date (task_date)
+    )
+  `);
+
+  // 人生规划 · 模块15 任务进度快照
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_plan_snapshots (
+      id VARCHAR(64) NOT NULL,
+      user_id INT UNSIGNED NOT NULL,
+      snap_date VARCHAR(10) NOT NULL DEFAULT '',
+      progress INT NOT NULL DEFAULT 0,
+      payload MEDIUMTEXT,
+      diff_note TEXT,
+      created_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (id),
+      INDEX idx_life_snap_date (snap_date)
+    )
+  `);
+
+  // 人生规划 · 模块16 精力负荷评估表
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_energy_logs (
+      id VARCHAR(64) NOT NULL,
+      user_id INT UNSIGNED NOT NULL,
+      log_date VARCHAR(10) NOT NULL DEFAULT '',
+      planned_minutes INT NOT NULL DEFAULT 0,
+      capacity_minutes INT NOT NULL DEFAULT 0,
+      overload TINYINT NOT NULL DEFAULT 0,
+      distractions VARCHAR(200) NOT NULL DEFAULT '',
+      sleep_hours DECIMAL(4,1) NOT NULL DEFAULT 0,
+      health VARCHAR(100) NOT NULL DEFAULT '',
+      note TEXT,
+      created_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (id),
+      INDEX idx_life_energy_date (log_date)
+    )
+  `);
+
+  // 人生规划 · 模块3 个人技能档案表
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_skill_profile (
+      id VARCHAR(64) NOT NULL,
+      user_id INT UNSIGNED NOT NULL,
+      category VARCHAR(8) NOT NULL DEFAULT 'own',
+      name VARCHAR(120) NOT NULL DEFAULT '',
+      level VARCHAR(32) NOT NULL DEFAULT '',
+      note VARCHAR(200) NOT NULL DEFAULT '',
+      sort_order INT NOT NULL DEFAULT 0,
+      created_at BIGINT NOT NULL DEFAULT 0,
+      updated_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (id),
+      INDEX idx_life_skill_cat (category)
+    )
+  `);
+
+  // 人生规划 · 模块18 个人学习知识库
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_knowledge (
+      id VARCHAR(64) NOT NULL,
+      user_id INT UNSIGNED NOT NULL,
+      subject VARCHAR(32) NOT NULL DEFAULT '',
+      topic VARCHAR(120) NOT NULL DEFAULT '',
+      content TEXT,
+      wrong_questions TEXT,
+      tags VARCHAR(120) NOT NULL DEFAULT '',
+      review_stage INT NOT NULL DEFAULT 0,
+      next_review_date VARCHAR(10) NOT NULL DEFAULT '',
+      source VARCHAR(16) NOT NULL DEFAULT 'ai',
+      created_at BIGINT NOT NULL DEFAULT 0,
+      updated_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (id),
+      INDEX idx_life_knowledge_next (next_review_date)
+    )
+  `);
+
+  // 人生规划 · 模块19 外部事件日历
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_calendar_events (
+      id VARCHAR(64) NOT NULL,
+      user_id INT UNSIGNED NOT NULL,
+      title VARCHAR(120) NOT NULL DEFAULT '',
+      event_date VARCHAR(10) NOT NULL DEFAULT '',
+      category VARCHAR(32) NOT NULL DEFAULT '',
+      level VARCHAR(8) NOT NULL DEFAULT 'mid',
+      remind_days VARCHAR(32) NOT NULL DEFAULT '30,7,1',
+      status VARCHAR(16) NOT NULL DEFAULT 'pending',
+      note TEXT,
+      created_at BIGINT NOT NULL DEFAULT 0,
+      updated_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (id),
+      INDEX idx_life_event_date (event_date)
+    )
+  `);
+
+  // 人生规划 · 模块17 变更日志
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_change_logs (
+      id VARCHAR(64) NOT NULL,
+      user_id INT UNSIGNED NOT NULL,
+      module VARCHAR(32) NOT NULL DEFAULT '',
+      content VARCHAR(400) NOT NULL DEFAULT '',
+      reason VARCHAR(200) NOT NULL DEFAULT '',
+      affected VARCHAR(200) NOT NULL DEFAULT '',
+      snapshot_id VARCHAR(64) NOT NULL DEFAULT '',
+      created_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (id),
+      INDEX idx_life_change_time (created_at)
+    )
+  `);
+  // 人生规划 · 「不要了」清单：用户手动删掉的节点标题记在这里。
+  // 之后 AI 更新或重新生成规划时，这些标题不再自动加回；除非用户明确点名要它，或自己手动再新增回来
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_plan_rejects (
+      title VARCHAR(200) NOT NULL,
+      kind VARCHAR(32) NOT NULL DEFAULT '',
+      created_at BIGINT NOT NULL DEFAULT 0,
+      user_id INT UNSIGNED NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, title)
+    )
+  `);
+  // 人生规划 · 全局人物画像（用户模型）：跨所有根目标的统一画像，AI 生成计划 / 判断短板 / 推演未来分支的数据源。
+  // 6 大维度各占一列，存「标签｜内容」逐行文本（TEXT），前端按行渲染、按行编辑，避免复杂 JSON UI
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_persona (
+      id VARCHAR(64) NOT NULL,
+      user_id INT UNSIGNED NOT NULL,
+      hard_skills TEXT,
+      time_habits TEXT,
+      traits TEXT,
+      resources TEXT,
+      values_pref TEXT,
+      risks TEXT,
+      source VARCHAR(8) NOT NULL DEFAULT 'user',
+      created_at BIGINT NOT NULL DEFAULT 0,
+      updated_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (id)
+    )
+  `);
+  // 人生规划 · 未来可选发展路径库（画像的衍生模块）：每条路径带适配得分、优势、代价、前置条件与长期推演
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_future_paths (
+      id VARCHAR(64) NOT NULL,
+      user_id INT UNSIGNED NOT NULL,
+      name VARCHAR(120) NOT NULL DEFAULT '',
+      advantages TEXT,
+      risks TEXT,
+      prerequisites TEXT,
+      evolution TEXT,
+      score INT NOT NULL DEFAULT 0,
+      node_id VARCHAR(64) NOT NULL DEFAULT '',
+      source VARCHAR(8) NOT NULL DEFAULT 'user',
+      sort_order INT NOT NULL DEFAULT 0,
+      created_at BIGINT NOT NULL DEFAULT 0,
+      updated_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (id)
+    )
+  `);
+
+  // 动态人物画像：由右侧规划网络的完成度反推（状态 / 能力 / 习惯 / 性格 / 资源 / 未来可做的事 / 相对优势）
+  // signature 存完成度指纹，规划没实质变化时直接复用上一版，不重复调模型
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_persona_derived (
+      id VARCHAR(64) NOT NULL,
+      user_id INT UNSIGNED NOT NULL DEFAULT 0,
+      state TEXT,
+      abilities TEXT,
+      habits TEXT,
+      traits TEXT,
+      resources TEXT,
+      future TEXT,
+      advantage TEXT,
+      progress_json MEDIUMTEXT,
+      signature VARCHAR(64) NOT NULL DEFAULT '',
+      updated_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (id)
+    )
+  `);
+
+  // 逻辑推演缺资料时只写 pending 条目，绝不自动调用付费检索；人工审批后才批量执行，结果永久缓存
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_retrieval_queue (
+      id VARCHAR(64) NOT NULL,
+      user_id INT UNSIGNED NOT NULL DEFAULT 0,
+      batch_id VARCHAR(64) NOT NULL DEFAULT '',
+      node_id VARCHAR(64) NOT NULL DEFAULT '',
+      series VARCHAR(64) NOT NULL DEFAULT '',
+      title VARCHAR(200) NOT NULL DEFAULT '',
+      query VARCHAR(400) NOT NULL DEFAULT '',
+      priority VARCHAR(4) NOT NULL DEFAULT '',
+      est_cost DECIMAL(8,4) NOT NULL DEFAULT 0,
+      status VARCHAR(16) NOT NULL DEFAULT 'pending',
+      result TEXT,
+      from_cache TINYINT NOT NULL DEFAULT 0,
+      created_at BIGINT NOT NULL DEFAULT 0,
+      decided_at BIGINT NOT NULL DEFAULT 0,
+      updated_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (id),
+      INDEX idx_life_rq_status (status, created_at)
+    )
+  `);
+
+  // 归集批次：每 30 分钟把 pending 条目打成一包，产出「检索清单 + 预估账单」，等待人工三种审批
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_retrieval_batches (
+      id VARCHAR(64) NOT NULL,
+      user_id INT UNSIGNED NOT NULL DEFAULT 0,
+      batch_no VARCHAR(32) NOT NULL DEFAULT '',
+      task_count INT NOT NULL DEFAULT 0,
+      est_cost DECIMAL(10,4) NOT NULL DEFAULT 0,
+      actual_cost DECIMAL(10,4) NOT NULL DEFAULT 0,
+      status VARCHAR(16) NOT NULL DEFAULT 'pending',
+      created_at BIGINT NOT NULL DEFAULT 0,
+      decided_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (id),
+      INDEX idx_life_rb_status (status, created_at)
+    )
+  `);
+
+  // 检索结果永久缓存：重复需求直接读缓存，不重复扣费
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_retrieval_cache (
+      query_key VARCHAR(64) NOT NULL,
+      user_id INT UNSIGNED NOT NULL DEFAULT 0,
+      query VARCHAR(400) NOT NULL DEFAULT '',
+      result TEXT,
+      hit_count INT NOT NULL DEFAULT 0,
+      created_at BIGINT NOT NULL DEFAULT 0,
+      updated_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (query_key)
+    )
+  `);
+
+  // 检索日志：留存审批记录、检索日志与账单流水
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS life_retrieval_logs (
+      id VARCHAR(64) NOT NULL,
+      user_id INT UNSIGNED NOT NULL DEFAULT 0,
+      batch_id VARCHAR(64) NOT NULL DEFAULT '',
+      action VARCHAR(24) NOT NULL DEFAULT '',
+      detail VARCHAR(400) NOT NULL DEFAULT '',
+      cost DECIMAL(10,4) NOT NULL DEFAULT 0,
+      created_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (id),
+      INDEX idx_life_rl_time (created_at)
+    )
+  `);
+
+  // 兼容旧表：结构化模块表统一要求租户列（tenant-db 会对每条 SQL 追加 user_id 条件），change_logs 另补 affected（本次受影响的模块清单）
+  for (const table of ['life_daily_tasks', 'life_plan_snapshots', 'life_energy_logs', 'life_skill_profile', 'life_knowledge', 'life_calendar_events', 'life_change_logs', 'life_retrieval_queue', 'life_retrieval_batches', 'life_retrieval_cache', 'life_retrieval_logs', 'life_plan_rejects']) {
+    try { await pool.execute(`ALTER TABLE ${table} ADD COLUMN user_id INT UNSIGNED NOT NULL DEFAULT 0`); }
+    catch (err) { if (err.code !== 'ER_DUP_FIELDNAME') console.warn(`[alter ${table}]`, err.message); }
+  }
+  try { await pool.execute("ALTER TABLE life_change_logs ADD COLUMN affected VARCHAR(200) NOT NULL DEFAULT ''"); }
+  catch (err) { if (err.code !== 'ER_DUP_FIELDNAME') console.warn('[alter life_change_logs.affected]', err.message); }
+  // 每日任务的重复类型：daily 每日 / weekday 工作日 / weekly 每周 / once 单次，'' 表示未设置（按标题关键词推断）
+  try { await pool.execute("ALTER TABLE life_daily_tasks ADD COLUMN repeat_type VARCHAR(10) NOT NULL DEFAULT ''"); }
+  catch (err) { if (err.code !== 'ER_DUP_FIELDNAME') console.warn('[alter life_daily_tasks.repeat_type]', err.message); }
+  // 该列最初上线时默认值是 'once'，会把「每日背 50 个单词」这类标题也存成「用户主动选的单次」。
+  // 这里做一次幂等的数据修正：标题里明确带每日 / 每周 / 工作日字样的，不允许停留在 'once'，一律清空让标题推断接管。
+  // 不查 information_schema（本服务禁止访问非业务表），用 UPDATE 自身的幂等性保证重复执行无副作用。
+  try {
+    await pool.execute(`UPDATE life_daily_tasks SET repeat_type = ''
+      WHERE repeat_type = 'once' AND (title LIKE '%每天%' OR title LIKE '%每日%' OR title LIKE '%天天%' OR title LIKE '%日常%'
+        OR title LIKE '%每周%' OR title LIKE '%工作日%')`);
+    await pool.execute("ALTER TABLE life_daily_tasks MODIFY COLUMN repeat_type VARCHAR(10) NOT NULL DEFAULT ''");
+  } catch (err) { console.warn('[alter life_daily_tasks.repeat_type default]', err.message); }
+  // 快照 payload 要装下整份节点 + 每日任务 JSON，TEXT 上限 64KB 会溢出（报 Data too long 并连带整轮同步失败）
+  try { await pool.execute('ALTER TABLE life_plan_snapshots MODIFY COLUMN payload MEDIUMTEXT'); }
+  catch (err) { console.warn('[alter life_plan_snapshots.payload]', err.message); }
 
   // 交易记录日志表（持仓股数变动审计）
   await pool.execute(`
@@ -3291,8 +3637,10 @@ async function migrate() {
       const text = JSON.stringify(messages, null, 2);
       const userPrompt = `以下是过去${daysNum}天白名单用户的行情分析类消息（已自动过滤营销推广内容）：\n\n${text}\n\n请生成分析报告。`;
 
-      // 调用 Agnes AI 进行汇总分析
-      const summary = await callAI(systemPrompt, userPrompt, null, 'agnes-2.0-flash', 60000, 2000);
+      const [routeRows] = await pool.query("SELECT setting_value FROM ai_settings WHERE setting_key = 'ai_model_routes' AND user_id = ?", [req.user.id]);
+      let marketModel = 'agnes-2.0-flash';
+      try { marketModel = JSON.parse(routeRows[0]?.setting_value || '{}').market || marketModel; } catch (_) {}
+      const summary = await callAI(systemPrompt, userPrompt, null, marketModel, 60000, 2000);
       res.json({
         summary,
         totalMessages: rows.length,
@@ -3376,7 +3724,10 @@ async function migrate() {
 
       const userPrompt = `以下是用户选择的微信消息（共${pickedEvents.length}条，时间范围约最近${daysNum}天）：\n\n${messages}${searchContext}\n\n${kwList ? `消息涉及关键词：${kwList}` : ''}\n\n请根据以上内容，结合联网搜索到的最新公开数据，生成一份详细的结构化A股行情分析报告。`;
 
-      const summary = await callAI(systemPrompt, userPrompt, null, 'agnes-2.0-flash', 120000, 4000);
+      const [routeRows] = await pool.query("SELECT setting_value FROM ai_settings WHERE setting_key = 'ai_model_routes' AND user_id = ?", [req.user.id]);
+      let marketModel = 'agnes-2.0-flash';
+      try { marketModel = JSON.parse(routeRows[0]?.setting_value || '{}').market || marketModel; } catch (_) {}
+      const summary = await callAI(systemPrompt, userPrompt, null, marketModel, 120000, 4000);
       res.json({
         summary,
         totalMessages: pickedEvents.length,
@@ -3653,6 +4004,140 @@ async function migrate() {
 }
 
 // ========== AI 设置 API ==========
+app.post('/api/ai/ask', async (req, res) => {
+  try {
+    const question = String(req.body?.question || '').trim();
+    if (!question || question.length > 4000) return res.status(400).json({ error: '问题不能为空且不能超过 4000 字' });
+    const [settings] = await pool.query("SELECT setting_value FROM ai_settings WHERE setting_key = 'ai_model_routes' AND user_id = ?", [req.user.id]);
+    let model = 'agnes-2.5-flash';
+    try { const routes = JSON.parse(settings[0]?.setting_value || '{}'); model = routes.assistant || model; } catch (_) {}
+    const answer = await callAI('你是一个耐心、谨慎的投研软件助手。解释功能和概念时使用通俗中文；涉及个股和交易时明确说明不构成投资建议，不预测确定收益。', question, null, model, 45000, 1200);
+    res.json({ answer, model });
+  } catch (error) { res.status(500).json({ error: error.message || 'AI 暂时不可用' }); }
+});
+
+function parseIpoCalendarHtml(html) {
+  const table = html.match(/<table[^>]+id=[\"']maintable[\"'][\s\S]*?<tbody[^>]*>([\s\S]*?)<\/tbody>/i)?.[1] || '';
+  const decode = value => String(value || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ').trim();
+  const rows = [];
+  for (const rowHtml of table.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells = [...rowHtml[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map(match => decode(match[1]));
+    if (cells.length < 11 || !/^\d{6}$/.test(cells[0])) continue;
+    rows.push({
+      code: cells[0], name: cells[1], applyCode: cells[2],
+      marketValue: cells[6], price: cells[7], date: cells[10],
+      lotteryDate: cells[13] || '', listingDate: cells[14] || '', limit: cells[5]
+    });
+  }
+  return rows;
+}
+
+async function fetchIpoCalendarFromThs() {
+  const response = await fetch('https://data.10jqka.com.cn/ipo/xgsgyzq/', {
+    headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'text/html,application/xhtml+xml', Referer: 'https://data.10jqka.com.cn/' },
+    signal: AbortSignal.timeout(15000)
+  });
+  if (!response.ok) throw new Error(`同花顺返回 HTTP ${response.status}`);
+  const buf = await response.arrayBuffer();
+  // 同花顺 GB2312/GBK 编码页面不能直接 response.text()，需要显式解码
+  const contentType = response.headers.get('content-type') || '';
+  let charset = 'utf-8';
+  const cs = contentType.match(/charset=([\w-]+)/i);
+  if (cs) charset = cs[1];
+  let html = new TextDecoder(charset, { fatal: false }).decode(new Uint8Array(buf));
+  // 如果解码后仍有大量乱码，回退到 GBK（同花顺常见编码）
+  if ((html.match(/�/g) || []).length > 5) {
+    html = new TextDecoder('gbk', { fatal: false }).decode(new Uint8Array(buf));
+  }
+  return parseIpoCalendarHtml(html);
+}
+
+// akshare 兜底：spawn 独立进程（pandas/akshare 导入较慢，仅在前端直连失败时用）
+function fetchIpoCalendarFromAkshare() {
+  return new Promise((resolve, reject) => {
+    const { spawn } = require('node:child_process');
+    const script = path.join(__dirname, 'quant', 'newstock_calendar.py');
+    // 优先 quant 自带 venv（已装 akshare），其次 PYTHON_BIN，最后全局 python
+    const pythonBin = process.env.PYTHON_BIN
+      || (require('fs').existsSync(path.join(__dirname, 'quant', '.venv', 'Scripts', 'python.exe')) ? path.join(__dirname, 'quant', '.venv', 'Scripts', 'python.exe') : 'python');
+    const child = spawn(pythonBin, [script], { cwd: __dirname, windowsHide: true });
+    let output = ''; let error = ''; let done = false;
+    const timer = setTimeout(() => { child.kill(); if (!done) { done = true; reject(new Error('akshare 超时')); } }, 30000);
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { error += chunk; });
+    child.on('error', err => { clearTimeout(timer); if (!done) { done = true; reject(err); } });
+    child.on('close', code => {
+      clearTimeout(timer); if (done) return; done = true;
+      if (code !== 0) return reject(new Error((error.trim() || '').split('\n').pop() || `akshare 退出码 ${code}`));
+      try {
+        const sourceMatch = error.match(/CALENDAR_SOURCE:(\S+)/);
+        resolve({ rows: JSON.parse(output), source: sourceMatch ? sourceMatch[1] : 'akshare' });
+      } catch (parseError) { reject(parseError); }
+    });
+  });
+}
+
+// 打新日历内存缓存：命中直接返回，后台按 TTL 静默刷新，避免每次请求都等 16 秒的 akshare
+const IPO_CALENDAR_TTL = 10 * 60 * 1000; // 10 分钟
+let _ipoCalendarCache = null;      // { rows, source, at }
+let _ipoCalendarInflight = null;   // 并发请求合并为一次刷新
+
+function refreshIpoCalendar() {
+  if (_ipoCalendarInflight) return _ipoCalendarInflight;
+  _ipoCalendarInflight = (async () => {
+    try {
+      const { rows, source } = await fetchIpoCalendarFromAkshare();
+      if (!Array.isArray(rows) || !rows.length) throw new Error('akshare 无数据');
+      _ipoCalendarCache = { rows, source, at: Date.now() };
+    } catch (akshareError) {
+      console.warn('[IpoCalendar] akshare 不可用，改用同花顺直连：', akshareError.message);
+      const rows = await fetchIpoCalendarFromThs();
+      _ipoCalendarCache = { rows, source: '10jqka', at: Date.now() };
+    }
+    return _ipoCalendarCache;
+  })();
+  // 用 .finally().catch() 收尾：即使刷新失败也不会产生未处理的 Promise 拒绝（否则会拖垮整个进程）
+  _ipoCalendarInflight.finally(() => { _ipoCalendarInflight = null; }).catch(() => {});
+  return _ipoCalendarInflight;
+}
+
+app.get('/api/newstock-calendar', async (req, res) => {
+  // 有缓存立即返回（即使过期也先给旧数据），过期时后台静默刷新
+  if (_ipoCalendarCache) {
+    res.json({ rows: _ipoCalendarCache.rows, source: _ipoCalendarCache.source, cached: true, ageMs: Date.now() - _ipoCalendarCache.at });
+    if (Date.now() - _ipoCalendarCache.at >= IPO_CALENDAR_TTL) refreshIpoCalendar().catch(() => {});
+    return;
+  }
+  try {
+    const cache = await refreshIpoCalendar();
+    res.json({ rows: cache.rows, source: cache.source });
+  } catch (error) {
+    res.status(503).json({ error: '打新日历暂不可用', detail: error.message });
+  }
+});
+
+// ===== 联网检索降级链顺序（系统设置里手动排序，设置优先于开机自检结论）=====
+// 存的是搜索引擎 id 数组（JSON 字符串），如 ["searxng","bing","tavily"]；
+// 未设置的引擎自动补在末尾，保证不会因为少写一个 id 就彻底丢掉某个搜索源。
+function parseSearchSourceOrder(value) {
+  if (Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(String(value || ''));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+// 前端设置面板据此渲染「可排序的搜索引擎清单」
+app.get('/api/search/sources', (req, res) => {
+  res.json({ sources: getSourceOrder() });
+});
+
 app.get('/api/ai/settings', async (req, res) => {
   try {
     const [rows] = await pool.query('SELECT setting_key, setting_value FROM ai_settings');
@@ -3684,6 +4169,239 @@ app.post('/api/ai/test-model', async (req, res) => {
   } catch (err) {
     console.error('模型测试失败:', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== 粘贴模型文档自动接入 =====
+// 确定性规则解析：即使一个 Key 都没配也能用（这是该功能的主要使用场景）
+function parseModelDocByRules(text) {
+  const notes = [];
+  let baseUrl = '';
+  const baseMatch = text.match(/Base\s*URL[^\n]{0,80}?(https?:\/\/[^\s`"'<>|\])]+)/i);
+  if (baseMatch) baseUrl = baseMatch[1];
+  if (!baseUrl) {
+    const first = text.match(/https?:\/\/[^\s`"'<>|\])]+/);
+    if (first) baseUrl = first[0];
+  }
+  baseUrl = baseUrl.replace(/[`"'<>|\])]+$/, '').replace(/\/+$/, '');
+  if (!baseUrl) notes.push('未识别到 Base URL，请手动填写');
+
+  let modelName = '';
+  const byLabel = text.match(/模型名称[\s\S]{0,120}?`([a-zA-Z0-9][a-zA-Z0-9._-]{1,60})`/);
+  if (byLabel) modelName = byLabel[1];
+  const models = [];
+  if (modelName) models.push(modelName);
+  for (const item of text.matchAll(/["']model["']\s*:\s*["']([^"']{2,60})["']/g)) {
+    if (!models.includes(item[1])) models.push(item[1]);
+  }
+  if (!models.length) notes.push('未识别到模型名称，请手动填写');
+
+  const titleMatch = text.match(/^\s*#\s+(.+)$/m);
+  const name = (titleMatch ? titleMatch[1].trim() : '') || modelName || '';
+
+  const hasChat = /chat\/completions/i.test(text);
+  const apiStyle = hasChat ? 'openai' : (/\/v1\/messages/i.test(text) || /anthropic-version/i.test(text) ? 'anthropic' : '');
+  if (!hasChat && apiStyle === 'anthropic') notes.push('文档仅提供 Anthropic Messages 接口，已按该风格接入');
+  const authStyle = (/x-api-key/i.test(text) && !/Authorization\s*:\s*Bearer/i.test(text)) ? 'x-api-key' : 'bearer';
+
+  return { partial: { name, baseUrl, authStyle, apiStyle, models }, notes };
+}
+
+// 归一化为可持久化的接入配置（缺失字段补默认值）
+function buildModelConfig(input) {
+  const cleanStr = value => typeof value === 'string' ? value.trim() : '';
+  const models = Array.isArray(input.models) ? input.models.map(cleanStr).filter(Boolean) : [];
+  const name = cleanStr(input.name) || models[0] || '自定义模型';
+  const slug = (models[0] || name).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 24).replace(/_+$/g, '') || 'model';
+  const baseUrl = cleanStr(input.baseUrl).replace(/\/+$/, '');
+  const apiStyle = cleanStr(input.apiStyle) === 'anthropic' ? 'anthropic' : 'openai';
+  let path = cleanStr(input.path);
+  if (!path.startsWith('/')) {
+    const baseHasV1 = /\/v1\/?$/.test(baseUrl);
+    path = apiStyle === 'anthropic'
+      ? (baseHasV1 ? '/messages' : '/v1/messages')
+      : (baseHasV1 ? '/chat/completions' : '/v1/chat/completions');
+  }
+  return {
+    id: `custom-${slug}`,
+    name,
+    baseUrl,
+    path,
+    authStyle: cleanStr(input.authStyle) === 'x-api-key' ? 'x-api-key' : 'bearer',
+    apiStyle,
+    models,
+    keyField: `custom_${slug}_api_key`
+  };
+}
+
+// 让 AI 从文档里精确抽取接入配置；失败则回退到规则解析
+async function extractModelConfigByAI(text, model) {
+  const system = `你是大模型 API 接入配置解析器。用户会粘贴某厂商的官方 API 文档文本，请阅读后只输出一个 JSON 对象，不要 markdown 代码块、不要任何解释文字。
+JSON 字段：
+{"name":"模型展示名称","baseUrl":"API Base URL（例如 https://apihub.agnes-ai.com/v1）","path":"对话补全接口路径（以 / 开头，例如 /chat/completions）","authStyle":"bearer 或 x-api-key","apiStyle":"openai 或 anthropic","models":["模型ID数组"],"notes":"一句话中文说明"}
+优先采用文档中的 Chat Completions（OpenAI 兼容）接口；若文档只有 Messages（Anthropic 兼容）接口，则 apiStyle 填 anthropic、path 填 /messages 或 /v1/messages。无法确定的字段填空字符串或空数组。`;
+  const content = await callAI(system, `文档内容：\n${text}`, null, model, 45000, 1500);
+  const start = content.indexOf('{');
+  const end = content.lastIndexOf('}');
+  if (start < 0 || end <= start) throw new Error('AI 未返回有效 JSON');
+  const guess = JSON.parse(content.slice(start, end + 1));
+  if (!guess || typeof guess !== 'object' || Array.isArray(guess)) throw new Error('AI 返回结构无效');
+  return guess;
+}
+
+app.post('/api/ai/parse-model-doc', async (req, res) => {
+  try {
+    const text = typeof req.body?.text === 'string' ? req.body.text.slice(0, 60000).trim() : '';
+    if (!text) return res.status(400).json({ error: '请粘贴模型文档内容' });
+
+    const { partial: rulePartial, notes } = parseModelDocByRules(text);
+    let source = 'rule';
+    try {
+      const [rows] = await pool.query("SELECT setting_value FROM ai_settings WHERE setting_key = 'default_model'");
+      const aiModel = rows[0]?.setting_value || 'agnes-2.5-flash';
+      const guess = await extractModelConfigByAI(text, aiModel);
+      const pick = (preferred, fallback) => {
+        if (Array.isArray(preferred)) return preferred.length ? preferred : fallback;
+        return typeof preferred === 'string' && preferred.trim() ? preferred : fallback;
+      };
+      const merged = {
+        name: pick(guess.name, rulePartial.name),
+        baseUrl: pick(guess.baseUrl, rulePartial.baseUrl),
+        path: pick(guess.path, ''),
+        authStyle: pick(guess.authStyle, rulePartial.authStyle),
+        apiStyle: pick(guess.apiStyle, rulePartial.apiStyle),
+        models: pick(guess.models, rulePartial.models)
+      };
+      if (typeof guess.notes === 'string' && guess.notes.trim()) notes.push(guess.notes.trim());
+      source = 'ai';
+      return res.json({ ok: true, source, config: buildModelConfig(merged), notes });
+    } catch (err) {
+      // 未配置任何 Key 或 AI 解析失败时静默回退到规则解析
+      notes.push(`AI 解析不可用，已使用规则解析（${err.message}）`);
+    }
+    res.json({ ok: true, source, config: buildModelConfig(rulePartial), notes });
+  } catch (err) {
+    console.error('解析模型文档失败:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 内置厂商的接口地址（与 callAI 中内置分支保持一致），供模型清单获取复用
+const AI_BUILTIN_ENDPOINTS = {
+  glm: { name: '智谱 GLM', keyField: 'glm_api_key', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', path: '/chat/completions', authStyle: 'bearer', apiStyle: 'openai' },
+  agnes: { name: 'Agnes', keyField: 'agnes_api_key', baseUrl: 'https://apihub.agnes-ai.com/v1', path: '/chat/completions', authStyle: 'bearer', apiStyle: 'openai' }
+};
+
+// 由对话补全路径推导模型清单路径：末段 chat/completions 换成 models，保留版本前缀
+function deriveModelsPath(chatPath) {
+  const derived = String(chatPath || '')
+    .replace(/\/chat\/completions?$/i, '/models')
+    .replace(/\/completions?$/i, '/models');
+  if (derived && derived !== chatPath) return derived;
+  // Gemini / Anthropic 等风格：/v1beta/models/xxx:generateContent 或 /v1/messages → /v1beta/models、/v1/models
+  const versionMatch = String(chatPath || '').match(/^\/(v\d+[a-z]*)\//i);
+  return versionMatch ? `/${versionMatch[1]}/models` : '/models';
+}
+
+// 拉取单个厂商的模型清单；返回 { ok, models } 或 { ok: false, error }
+async function fetchVendorModels(vendor) {
+  const baseUrl = String(vendor.baseUrl || '').trim().replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(baseUrl)) return { ok: false, error: '未配置有效的 Base URL' };
+  const authStyle = vendor.authStyle === 'x-api-key' ? 'x-api-key' : 'bearer';
+  const apiStyle = vendor.apiStyle === 'anthropic' ? 'anthropic' : 'openai';
+  const modelsPath = String(vendor.modelsPath || '').trim() || deriveModelsPath(vendor.path || '/chat/completions');
+  const key = String(vendor.apiKey || '').trim();
+  if (!key) return { ok: false, error: '未配置 API Key' };
+
+  const headers = {};
+  if (authStyle === 'x-api-key') headers['x-api-key'] = key;
+  else headers['Authorization'] = `Bearer ${key}`;
+  if (apiStyle === 'anthropic') headers['anthropic-version'] = '2023-06-01';
+
+  const url = baseUrl + (modelsPath.startsWith('/') ? modelsPath : `/${modelsPath}`);
+  try {
+    const response = await fetch(url, { headers, signal: AbortSignal.timeout(20000) });
+    if (!response.ok) {
+      const errText = await response.text();
+      const hint = response.status === 401 || response.status === 403 ? '（API Key 无效或已过期）' : '';
+      return { ok: false, error: `接口返回 ${response.status}${hint}${errText ? '：' + errText.slice(0, 160) : ''}`, url };
+    }
+    const data = await response.json();
+    const raw = Array.isArray(data) ? data
+      : (Array.isArray(data?.data) ? data.data
+        : (Array.isArray(data?.models) ? data.models : []));
+    const models = [...new Set(raw.map(item => {
+      if (typeof item === 'string') return item.trim();
+      return String(item?.id || item?.name || item?.model || '').trim();
+    }).filter(Boolean))];
+    if (!models.length) return { ok: false, error: '接口未返回可识别的模型列表', url };
+    return { ok: true, models, url };
+  } catch (err) {
+    return { ok: false, error: err.name === 'TimeoutError' ? '请求超时，请检查 Base URL 是否可达' : (err.message || '请求失败'), url };
+  }
+}
+
+// 从接口自动获取模型列表：支持内置厂商（provider）或自定义接入配置
+app.post('/api/ai/models/fetch', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const builtin = AI_BUILTIN_ENDPOINTS[String(body.provider || '')];
+    const vendor = builtin
+      ? { ...builtin, apiKey: await getUserSecret(builtin.keyField) }
+      : {
+        baseUrl: body.baseUrl,
+        path: body.path,
+        modelsPath: body.modelsPath,
+        authStyle: body.authStyle,
+        apiStyle: body.apiStyle,
+        apiKey: typeof body.apiKey === 'string' ? body.apiKey.trim() : ''
+      };
+    if (!builtin) {
+      const keyField = String(body.keyField || '');
+      if (!vendor.apiKey && /^custom_[a-z0-9_]{1,48}_api_key$/.test(keyField)) vendor.apiKey = await getUserSecret(keyField);
+      if (!vendor.apiKey) return res.status(400).json({ error: '请先填写该厂商的 API Key' });
+    }
+    const result = await fetchVendorModels(vendor);
+    if (!result.ok) return res.status(502).json({ error: `获取模型列表失败：${result.error}`, url: result.url });
+    res.json({ ok: true, url: result.url, models: result.models });
+  } catch (err) {
+    console.error('获取模型列表失败:', err);
+    res.status(500).json({ error: err.message || '获取失败' });
+  }
+});
+
+// 一次性获取所有已配置厂商的模型清单：内置厂商 + 全部自定义接入，按厂商分组返回
+app.post('/api/ai/models/fetch-all', async (req, res) => {
+  try {
+    const groups = [];
+    for (const [id, endpoint] of Object.entries(AI_BUILTIN_ENDPOINTS)) {
+      if (id === 'alapi') continue;
+      const apiKey = await getUserSecret(endpoint.keyField);
+      const configured = Boolean(apiKey);
+      const result = configured
+        ? await fetchVendorModels({ ...endpoint, apiKey })
+        : { ok: false, error: '未配置 API Key' };
+      groups.push({
+        id, name: endpoint.name, kind: 'builtin', keyField: endpoint.keyField, configured,
+        ok: result.ok, models: result.ok ? result.models : [], error: result.ok ? '' : result.error
+      });
+    }
+    for (const item of await getCustomModels()) {
+      const apiKey = item.keyField ? await getUserSecret(item.keyField) : '';
+      const configured = Boolean(apiKey);
+      const result = configured
+        ? await fetchVendorModels({ ...item, apiKey })
+        : { ok: false, error: '未配置 API Key' };
+      groups.push({
+        id: item.id, name: item.name || item.id, kind: 'custom', keyField: item.keyField || '', configured,
+        ok: result.ok, models: result.ok ? result.models : [], error: result.ok ? '' : result.error
+      });
+    }
+    const totalModels = groups.reduce((sum, group) => sum + group.models.length, 0);
+    res.json({ ok: true, groups, totalModels });
+  } catch (err) {
+    console.error('批量获取模型列表失败:', err);
+    res.status(500).json({ error: err.message || '获取失败' });
   }
 });
 
@@ -3821,6 +4539,8 @@ app.get('/api/stocks/tx-logs', async (req, res) => {
 app.put('/api/ai/settings', async (req, res) => {
   try {
     await saveSettings(req.body);
+    // 搜索降级链顺序改完立即生效，不用重启服务
+    if (req.body?.search_source_order !== undefined) setSourceOrder(parseSearchSourceOrder(req.body.search_source_order));
     res.json({ ok: true });
   } catch (err) {
     console.error('保存AI设置失败:', err);
@@ -4386,6 +5106,230 @@ app.delete('/api/stock/watchlist/:id/analysis/:date', async (req, res) => {
   } catch (err) {
     console.error('删除分析失败:', err);
     res.status(500).json({ error: '删除失败' });
+  }
+});
+
+// ===== 看图分析（K 线形态 + 指标）→ 信号 + 操作意见 =====
+
+// 简易指标工具
+function _ma(arr, n, i) {
+  if (i + 1 < n) return null;
+  let s = 0;
+  for (let j = i - n + 1; j <= i; j++) s += arr[j];
+  return s / n;
+}
+function _emaSeries(arr, n) {
+  const k = 2 / (n + 1);
+  const out = [];
+  let prev = arr[0];
+  for (let i = 0; i < arr.length; i++) {
+    prev = i === 0 ? arr[0] : arr[i] * k + prev * (1 - k);
+    out.push(prev);
+  }
+  return out;
+}
+function _r14(closes) {
+  let g = 0, l = 0;
+  for (let i = closes.length - 14; i < closes.length; i++) {
+    const d = closes[i] - closes[i - 1];
+    if (d > 0) g += d; else l -= d;
+  }
+  return l === 0 ? 100 : 100 - 100 / (1 + g / l);
+}
+function _macd(closes) {
+  const e12 = _emaSeries(closes, 12);
+  const e26 = _emaSeries(closes, 26);
+  const dif = e12.map((v, i) => v - e26[i]);
+  const dea = _emaSeries(dif, 9);
+  return { dif, dea, hist: dif.map((v, i) => (v - dea[i]) * 2) };
+}
+function _boll(closes) {
+  const n = 20;
+  const i = closes.length - 1;
+  if (i + 1 < n) return null;
+  const slice = closes.slice(i - n + 1, i + 1);
+  const mid = slice.reduce((a, b) => a + b, 0) / n;
+  const sd = Math.sqrt(slice.reduce((a, b) => a + (b - mid) ** 2, 0) / n);
+  return { mid, up: mid + 2 * sd, dn: mid - 2 * sd, price: closes[i] };
+}
+
+// 看图分析：K 线形态 + 指标 → 信号列表 + 明确的操作意见
+app.get('/api/ai/charts', async (req, res) => {
+  try {
+    const code = String(req.query.code || '').trim();
+    if (!code) return res.json({ ok: false, error: '缺少股票代码' });
+    const bars = await fetchStockDailyHistory(code, 90).catch(() => []);
+    if (bars.length < 30) return res.json({ ok: false, error: `本地无 ${code} 足够行情（需 ≥30 根日 K）` });
+
+    const closes = bars.map(b => b.close);
+    const highs = bars.map(b => b.high);
+    const lows = bars.map(b => b.low);
+    const vols = bars.map(b => Number(b.volume) || 0);
+    const price = closes[closes.length - 1];
+    const ma5 = _ma(closes, 5, closes.length - 1);
+    const ma10 = _ma(closes, 10, closes.length - 1);
+    const ma20 = _ma(closes, 20, closes.length - 1);
+    const ma60 = _ma(closes, 60, closes.length - 1);
+    const rsi = _r14(closes);
+    const macd = _macd(closes);
+    const dif = Number(macd.dif[macd.dif.length - 1]) || 0;
+    const dea = Number(macd.dea[macd.dea.length - 1]) || 0;
+    const prevDif = Number(macd.dif[macd.dif.length - 2]) || dif;
+    const prevDea = Number(macd.dea[macd.dea.length - 2]) || dea;
+    const boll = _boll(closes);
+    const recentHigh = Math.max(...highs.slice(-20));
+    const recentLow = Math.min(...lows.slice(-20));
+    const trendBase = closes.slice(-21, -1)[0] || price;
+    const trendPct = trendBase > 0 ? Number((((price - trendBase) / trendBase) * 100).toFixed(2)) : 0;
+
+    // 近 20 日 量比（当日 vs 均值）
+    const volAvg = vols.slice(-21, -1).reduce((a, b) => a + b, 0) / Math.max(1, Math.min(20, vols.length - 1));
+    const volRatio = volAvg > 0 ? Number((vols[vols.length - 1] / volAvg).toFixed(2)) : 1;
+
+    const signals = [];
+    let score = 0;      // 正=偏多，负=偏空
+    const add = (title, detail, s, group = 'trend') => {
+      score += s;
+      signals.push({ id: signals.length + 1, group, title, detail, score: s });
+    };
+
+    // 趋势
+    const maAlign = ma5 && ma20 && ma5 > ma20;
+    if (maAlign) add('均线多头排列', `MA5(${ma5.toFixed(2)}) > MA10(${ma10?.toFixed(2)}) > MA20(${ma20.toFixed(2)})，短期趋势向上`, 2, 'ma');
+    else if (ma5 && ma20 && ma5 < ma20) add('均线空头排列', `MA5 下穿 MA20，短期趋势偏弱`, -2, 'ma');
+
+    // 支撑/压力
+    const sup = Math.min(lows.slice(-10));
+    const resistance = Math.max(highs.slice(-10));
+    add('支撑与压力', `近 10 日支撑 ¥${sup.toFixed(2)} / 压力 ¥${resistance.toFixed(2)}，现价 ${price > (sup + resistance) / 2 ? '偏上轨' : '偏下轨'}`, price > (sup + resistance) / 2 ? 1 : -1, 'level');
+
+    // RSI
+    if (rsi >= 70) add('RSI 超买', `RSI14 = ${rsi.toFixed(1)} ≥ 70，短线过热`, -2, 'kdj');
+    else if (rsi <= 30) add('RSI 超卖', `RSI14 = ${rsi.toFixed(1)} ≤ 30，短线超跌`, 2, 'kdj');
+
+    // MACD
+    if (prevDif <= prevDea && dif > dea) add('MACD 金叉', `DIF(${dif.toFixed(2)}) 上穿 DEA(${dea.toFixed(2)})，动能转多`, 2, 'macd');
+    else if (prevDif >= prevDea && dif < dea) add('MACD 死叉', `DIF 下穿 DEA，动能转弱`, -2, 'macd');
+    else if (dif > dea) add('MACD 多头', `DIF 持续位于 DEA 上方`, 1, 'macd');
+    else add('MACD 空头', 'DIF 位于 DEA 下方', -1, 'macd');
+
+    // 量能
+    if (volRatio > 1.5) add('放量', `量比 ${volRatio}（>1.5），关注是否有效突破/跌破`, price > ma5 ? 1 : -1, 'volume');
+    else if (volRatio < 0.6) add('缩量', `量比 ${volRatio}（<0.6），观望情绪浓`, 0, 'volume');
+
+    // 布林
+    if (boll) {
+      if (price <= boll.dn) add('触及布林下轨', `现价 ¥${price.toFixed(2)} ≤ 下轨 ¥${boll.dn.toFixed(2)}，短线超跌`, 1, 'boll');
+      else if (price >= boll.up) add('触及布林上轨', `现价 ¥${price.toFixed(2)} ≥ 上轨 ¥${boll.up.toFixed(2)}，短线超涨`, -1, 'boll');
+    }
+
+    // 高点/低点
+    add('近 20 日高低', `区间 ¥${recentLow.toFixed(2)} – ¥${recentHigh.toFixed(2)}，现价距高点 ${(((price - recentHigh) / recentHigh) * 100).toFixed(1)}%`, 0, 'swing');
+
+    // 趋势
+    add('近 20 日趋势', trendPct >= 0
+      ? `区间 ${trendPct >= 0 ? '+' : ''}${trendPct}%，趋势偏多`
+      : `区间 ${trendPct}%，趋势偏空`, trendPct >= 0 ? 1 : -1, 'trend');
+
+    // 操作意见（基于分数）
+    let advice, adviceClass;
+    if (score >= 5) { advice = '建议：偏多。趋势与动能共振，可考虑逢低加仓 / 持有，止盈位参考布林上轨。'; adviceClass = 'bull'; }
+    else if (score >= 2) { advice = '建议：偏多观望。多头信号占优，但尚未形成共振，可持有观察放量确认。'; adviceClass = 'bull'; }
+    else if (score <= -5) { advice = '建议：偏空。空头信号共振，可考虑逢高减仓 / 落袋，止损位参考布林下轨。'; adviceClass = 'bear'; }
+    else if (score <= -2) { advice = '建议：偏空观望。空头信号占优，等待止跌信号再行动。'; adviceClass = 'bear'; }
+    else { advice = '建议：震荡观望。多空信号交织，等待方向选择，可围绕支撑/压力高抛低吸。'; adviceClass = 'neutral'; }
+
+    res.json({
+      ok: true,
+      code,
+      fetchedAt: Date.now(),
+      metrics: { price: Number(price.toFixed(3)), ma5: ma5 == null ? null : Number(ma5.toFixed(3)), ma10: ma10 == null ? null : Number(ma10.toFixed(3)), ma20: ma20 == null ? null : Number(ma20.toFixed(3)), ma60: ma60 == null ? null : Number(ma60.toFixed(3)), rsi: Number((rsi || 50).toFixed(1)), dif: Number(dif.toFixed(3)), dea: Number(dea.toFixed(3)), volRatio, trendPct },
+      signals,
+      advice,
+      adviceClass,
+      candles: bars.slice(-60).map(b => ({ date: b.date, o: b.open, c: b.close, h: b.high, l: b.low, v: b.amount }))
+    });
+  } catch (err) {
+    console.error('看图分析失败:', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ===== 个股资讯（东财新闻 + 巨潮公告）带缓存 =====
+const NEWS_CACHE = {};
+const NEWS_TTL = 3600 * 1000;   // 1h，防东财封 IP
+
+async function fetchNewsFromAkshare(code) {
+  // 走 Python（quant/.venv），与打新接口同一套技术栈，避免 Node 直接爬被封
+  const { spawn } = require('node:child_process');
+  const script = path.join(__dirname, 'quant', 'stock_news.py');
+  const pythonBin = process.env.PYTHON_BIN
+    || (require('fs').existsSync(path.join(__dirname, 'quant', '.venv', 'Scripts', 'python.exe'))
+        ? path.join(__dirname, 'quant', '.venv', 'Scripts', 'python.exe')
+        : 'python');
+  return new Promise((resolve, reject) => {
+    const child = spawn(pythonBin, [script, code], { cwd: __dirname, windowsHide: true });
+    let out = '', err = '';
+    child.stdout.on('data', d => { out += d; });
+    child.stderr.on('data', d => { err += d; });
+    child.on('close', code2 => {
+      if (code2 !== 0 && !out) return reject(new Error(err || `stock_news.py exit ${code2}`));
+      try { resolve(JSON.parse(out || '{}')); } catch (e) { reject(e); }
+    });
+    setTimeout(() => { child.kill(); reject(new Error('timeout')); }, 60000);
+  });
+}
+
+app.get('/api/stock/news/:code', async (req, res) => {
+  try {
+    const code = req.params.code;
+    const now = Date.now();
+    if (NEWS_CACHE[code] && now - NEWS_CACHE[code].t < NEWS_TTL) {
+      return res.json({ code: 200, cached: true, data: NEWS_CACHE[code].data });
+    }
+    const news = await fetchNewsFromAkshare(code);
+    NEWS_CACHE[code] = { data: news, t: now };
+    res.json({ code: 200, cached: false, data: news });
+  } catch (e) {
+    // 失败降级：有缓存就返回旧数据，明确标注
+    if (NEWS_CACHE[code]) {
+      return res.json({ code: 200, cached: true, stale: true, data: NEWS_CACHE[code].data });
+    }
+    console.error('个股资讯失败:', e);
+    res.status(503).json({ code: 503, error: e.message });
+  }
+});
+
+// ===== 情绪打分（利好/利空）：给前端资讯卡片标红绿 =====
+const POS_WORDS = ['增长', '上涨', '利好', '中标', '签约', '回购', '增持', '突破', '新高', '超预期', '盈利', '分红', '涨停', '放量', '机构买入', '北向加仓', '业绩预增', '订单', '合作'];
+const NEG_WORDS = ['下跌', '利空', '亏损', '违规', '处罚', '减持', '退市', '新低', '跌停', '缩量', '业绩预减', '质押', '立案', '调查', '退市风险', '商誉减值', '股东户数增加'];
+
+app.get('/api/stock/sentiment/:code', async (req, res) => {
+  try {
+    const code = req.params.code;
+    let items = [];
+    try {
+      const cached = NEWS_CACHE[code];
+      if (!cached || Date.now() - cached.t >= NEWS_TTL) {
+        const fresh = await fetchNewsFromAkshare(code);
+        NEWS_CACHE[code] = { data: fresh, t: Date.now() };
+        items = fresh.items || fresh;
+      } else items = cached.data.items || cached.data;
+    } catch (_) { items = NEWS_CACHE[code]?.data?.items || []; }
+
+    const scored = (items || []).slice(0, 20).map(it => {
+      const text = `${it.title || ''} ${it.summary || ''}`;
+      let pos = 0, neg = 0;
+      POS_WORDS.forEach(w => { if (text.includes(w)) pos++; });
+      NEG_WORDS.forEach(w => { if (text.includes(w)) neg++; });
+      const tone = pos > neg ? 'bull' : neg > pos ? 'bear' : 'neutral';
+      const score = pos - neg;
+      return { ...it, tone, score, hitPos: pos, hitNeg: neg };
+    });
+
+    res.json({ code, items: scored, at: Date.now() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -5039,6 +5983,4239 @@ app.post('/api/plans/reorder', async (req, res) => {
   }
 });
 
+// ========== 人生规划器 API ==========
+const LIFE_DOMAINS = ['学业', '职业', '财务', '健康', '家庭', '成长'];
+const LIFE_KINDS = ['self', 'domain', 'goal', 'action', 'milestone'];
+// 时序分组：紧急（30 天内）/ 中期（30~90 天）/ 远期储备（90 天以上），前端据此把节点按时间线聚拢
+const LIFE_TIME_GROUPS = ['urgent', 'mid', 'future'];
+
+// 时序分组一律由日期反推，不信模型自己填的值：
+//   有截止日期 / 开始日期的，按距【今天】的天数重算（≤30 紧急、≤90 中期、其余远期）；
+//   没有日期的赛道节点（domain / goal），继承同一条 series 里最早的截止日期 ——
+//   否则国考这种一个月后就笔试的赛道会被模型随手填成「中期 / 远期」，跟真实紧迫程度不符。
+// series='人生推演' 的结局分支固定留作远期，不参与重算。
+function normalizeLifeTimeGroups(items) {
+  if (!Array.isArray(items) || !items.length) return items;
+  const today = new Date();
+  const todayTs = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const dayMs = 86400000;
+  const parseDate = value => {
+    const hit = String(value || '').match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+    if (!hit) return null;
+    return new Date(Number(hit[1]), Number(hit[2]) - 1, Number(hit[3])).getTime();
+  };
+  const daysOf = item => {
+    const due = parseDate(item.horizon ?? item.dueDate);
+    if (due !== null) return Math.round((due - todayTs) / dayMs);
+    const start = parseDate(item.startDate ?? item.start_date);
+    return start === null ? null : Math.round((start - todayTs) / dayMs);
+  };
+  const toGroup = days => (days <= 30 ? 'urgent' : days <= 90 ? 'mid' : 'future');
+  const earliestBySeries = new Map();
+  for (const item of items) {
+    const days = daysOf(item);
+    if (days === null) continue;
+    const key = String(item.series || '').trim();
+    if (!key) continue;
+    const best = earliestBySeries.get(key);
+    if (best === undefined || days < best) earliestBySeries.set(key, days);
+  }
+  for (const item of items) {
+    if (String(item.series || '').trim() === '人生推演') continue;
+    const days = daysOf(item);
+    if (days !== null) { item.timeGroup = toGroup(days); continue; }
+    const key = String(item.series || '').trim();
+    const inherited = key ? earliestBySeries.get(key) : undefined;
+    if (inherited !== undefined) item.timeGroup = toGroup(inherited);
+  }
+  return items;
+}
+
+// deps 存 JSON 字符串，读取时容错解析
+function lifeParseDeps(value) {
+  if (!value) return [];
+  try {
+    const list = JSON.parse(value);
+    return Array.isArray(list) ? list.map(String).filter(Boolean) : [];
+  } catch (_) { return []; }
+}
+
+// 节点内容载体类型：同一个思维导图里不同节点自动匹配最合适的展示形式
+const LIFE_CONTENT_TYPES = ['text', 'table', 'link', 'checklist', 'progress', 'branch', 'calc', 'doc'];
+
+// AI 没显式给 content_type 时按节点内容推断，保证旧数据也能正常渲染
+function lifeContentType(row) {
+  const given = String(row.content_type || '').trim().toLowerCase();
+  if (LIFE_CONTENT_TYPES.includes(given)) return given;
+  const kind = String(row.kind || '');
+  if (kind === 'milestone') return 'branch';
+  const text = `${String(row.title || '')} ${String(row.detail || '')}`;
+  if (/对比表|汇总表|任务表|清单表|时间节点表/.test(text)) return 'table';
+  if (/完成率|进度|快照/.test(text)) return 'progress';
+  if (/正确率|测算|仓位|资金|时长统计|得分/.test(text)) return 'calc';
+  if (/简历|模板|范文|论文|自我介绍/.test(text)) return 'doc';
+  if (/官网|报名网址|题库链接|视频教程|资料链接/.test(text)) return 'link';
+  if (kind === 'action') return 'checklist';
+  return 'text';
+}
+
+// content_body：载体需要的结构化内容（表格行列、链接列表、分支条件等），存 JSON 字符串
+function lifeParseBody(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (_) { return null; }
+}
+
+// 标题归一化：忽略空白与常见中英文标点差异，用于「同名节点就地更新」的去重匹配，
+// 否则 AI 每轮措辞略有出入（多一个逗号、少一个空格）就会把同一件事重复建成新节点。
+function lifeTitleKey(value) {
+  return String(value || '')
+    .replace(/\s+/g, '')
+    .replace(/[，。、；：""''（）()【】\[\]…·,.;:!?~\-_/\\|]/g, '')
+    .toLowerCase();
+}
+
+// 从 AI 原文里直接抠 summary：即使 JSON 被 token 上限截断（nodes 数组断在中途），
+// 排在 JSON 最前面的 summary 字段依然完整，正则兜底取出，避免自然语言解读整段丢失。
+function extractLifeSummary(raw) {
+  const match = /"summary"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(String(raw || ''));
+  if (!match) return '';
+  try { return JSON.parse(`"${match[1]}"`); } catch (_) { return match[1]; }
+}
+
+function lifeNodeOut(row) {
+  return {
+    id: row.id,
+    parentId: row.parent_id || '',
+    kind: row.kind || 'goal',
+    domain: row.domain || '成长',
+    title: row.title || '',
+    detail: row.detail || '',
+    risk: row.risk || '',
+    priority: row.priority || '',
+    series: row.series || '',
+    status: row.status || 'todo',
+    horizon: row.horizon || '',
+    // 开始日期与截止日期分开展示：horizon＝截止日期，startDate＝开始日期
+    startDate: row.start_date || '',
+    weight: Number(row.weight) || 50,
+    timeGroup: LIFE_TIME_GROUPS.includes(row.time_group) ? row.time_group : '',
+    deps: lifeParseDeps(row.deps),
+    // 横向网状关联：跨赛道联动 / 时间冲突 / 精力冲突 / 任务互相影响
+    referenceIds: lifeParseDeps(row.reference_ids),
+    // 公共节点：复盘 / 方法 / 资料 / 模板只生成一次，全网络复用
+    shared: Number(row.is_shared) === 1,
+    stepNo: Number(row.step_no) || 0,
+    contentType: lifeContentType(row),
+    contentBody: lifeParseBody(row.content_body),
+    progressNote: row.progress_note || '',
+    source: row.source || 'ai',
+    sortOrder: Number(row.sort_order) || 0,
+    createdAt: Number(row.created_at) || 0,
+    updatedAt: Number(row.updated_at) || 0
+  };
+}
+
+async function listLifeNodes() {
+  const [rows] = await pool.query('SELECT * FROM life_plan_nodes ORDER BY sort_order ASC, created_at ASC');
+  return rows.map(lifeNodeOut);
+}
+
+// 「大脑」中心节点（kind=self）兜底：它必须永远存在，是整张规划网络的起点锚。
+// 任何一次读取规划前都先确保它存在 —— 历史数据被清掉 / 误删时自动补回，用户永远能看到根节点
+async function ensureLifeSelfNode() {
+  const [rows] = await pool.query("SELECT id FROM life_plan_nodes WHERE kind = 'self' ORDER BY created_at ASC LIMIT 1");
+  if (rows.length) {
+    // 「大脑」只能有一个：模型某轮把中心节点改叫「我」（而不是「我的人生画像」）时，按标题匹配会再插一个 self，
+    // 画布上就散出两个根、赛道挂在哪个根上全看运气。这里在每次读取规划前收口：
+    // 保留最早的那个当大脑，把重复大脑下面的子节点改挂回来，再清掉重复节点。
+    const keep = String(rows[0].id);
+    const [dupes] = await pool.query("SELECT id FROM life_plan_nodes WHERE kind = 'self' AND id <> ?", [keep]);
+    for (const dupe of dupes) {
+      await pool.execute('UPDATE life_plan_nodes SET parent_id = ? WHERE parent_id = ?', [keep, String(dupe.id)]);
+      await pool.execute('DELETE FROM life_plan_nodes WHERE id = ?', [String(dupe.id)]);
+      console.log(`[life-self] 发现重复的大脑节点 ${dupe.id}（子节点已改挂到 ${keep}），已清理`);
+    }
+    return keep;
+  }
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  await pool.execute(
+    'INSERT INTO life_plan_nodes (id, parent_id, kind, domain, title, detail, status, horizon, weight, content_type, source, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, '', 'self', '成长', '我的人生画像', '方法：把所有赛道挂在它下面统一推进；验收：各条赛道闭环；资源：', 'doing', '', 100, 'text', 'ai', 0, now, now]
+  );
+  return id;
+}
+
+async function resolveLifeModel() {
+  const [rows] = await pool.query("SELECT setting_key, setting_value FROM ai_settings WHERE setting_key IN ('ai_model_routes', 'default_model')");
+  const map = new Map(rows.map(row => [row.setting_key, row.setting_value]));
+  let model = '';
+  try {
+    const routes = JSON.parse(map.get('ai_model_routes') || '{}');
+    model = routes.life || routes.assistant || '';
+  } catch (_) { /* 路由配置异常时退回默认模型 */ }
+  // 优先用板块分配的模型，其次用设置里的默认模型，最后才退回内置默认
+  return model || map.get('default_model') || 'agnes-2.5-flash';
+}
+
+// 节点清单分两层喂给 AI，解决「节点一多模型就看不全、越规划越乱」：
+//   ① detail：真正需要完整字段的节点（骨架 / 未来 60 天 / 高权重），最多 80 条 —— 供模型决定改哪个字段
+//   ② index：其余节点只给 id + 标题 + 状态（三列，很便宜）—— 判重靠它，
+//      保证「同一件事已有节点时一律 update」，所以节点长到几百条也不会再重复长出来
+function lifePlanBrief(nodes) {
+  const list = Array.isArray(nodes) ? nodes : [];
+  const brief = node => ({ id: node.id, kind: node.kind, domain: node.domain, title: node.title, status: node.status, startDate: node.startDate, horizon: node.horizon, weight: node.weight, priority: node.priority, series: node.series, timeGroup: node.timeGroup, deps: node.deps, stepNo: node.stepNo });
+  const soon = lifeDateShift(todayStr(), 60);
+  const needsDetail = node => node.kind === 'self' || node.kind === 'domain'
+    || (/^\d{4}-\d{2}-\d{2}$/.test(String(node.horizon || '')) && node.horizon <= soon)
+    || Number(node.weight) >= 70;
+  const detail = [];
+  const index = [];
+  for (const node of list) {
+    if (needsDetail(node)) detail.push(node);
+    else index.push({ id: node.id, title: node.title, status: node.status });
+  }
+  detail.sort((a, b) => String(a.horizon || '9999').localeCompare(String(b.horizon || '9999')) || Number(b.weight || 0) - Number(a.weight || 0));
+  return {
+    total: list.length,
+    note: 'detail 是可改字段的节点（骨架 / 未来 60 天 / 高权重）；index 是其余节点的标题索引，只用于判断「这件事是否已有节点」——同一件事在 detail 或 index 里出现过，就必须用 update，禁止再新增。',
+    detail: detail.slice(0, 80).map(brief),
+    index
+  };
+}
+
+// 全局人物画像 + 未来发展路径库的现有内容，供 AI 增量更新（没放进去的话 AI 会重复生成或覆盖错内容）
+async function lifePersonaContext() {
+  try {
+    const [personaRow] = await pool.query('SELECT * FROM life_persona ORDER BY updated_at DESC LIMIT 1');
+    const [pathRows] = await pool.query('SELECT * FROM life_future_paths ORDER BY sort_order ASC LIMIT 40');
+    return [
+      '【当前全局人物画像】',
+      JSON.stringify(lifePersonaOut(personaRow[0] || null)),
+      '',
+      '【当前未来发展路径库】',
+      JSON.stringify(pathRows.map(lifePathOut))
+    ].join('\n');
+  } catch (err) {
+    return '【当前全局人物画像】（暂无）\n\n【当前未来发展路径库】（暂无）';
+  }
+}
+
+// ===== 动态人物画像：不是手填的静态文本，而是由右侧规划网络的真实完成度反推 =====
+// 用户要求：画像要说明「我现在的状态 / 能力 / 行为习惯 / 性格 / 资源」，并据此推断
+// 「未来能做什么、做这些事的优势」，而且要随右侧规划持续变化。
+// 实现：① 先把节点与每日任务压成一份「完成度事实清单」（全是数字与标题，不让模型凭空想象）
+//      ② 再让模型据事实清单反推七维画像 ③ 结果落库，右侧规划一变就重算，前端挂在画像树最上面一层。
+const LIFE_PERSONA_DERIVED_DIMS = [
+  { key: 'state', label: '当前状态', hint: '整体推进节奏与压力水位' },
+  { key: 'abilities', label: '能力基线', hint: '从已完成部分看已经具备的能力' },
+  { key: 'habits', label: '行为习惯', hint: '执行节奏、打卡稳定性、延期情况' },
+  { key: 'traits', label: '性格特质', hint: '从完成与放弃的取舍反推的倾向' },
+  { key: 'resources', label: '资源盘点', hint: '已掌握的资料、工具、渠道、证书' },
+  { key: 'future', label: '未来可做的事', hint: '按当前状态未来 1~3 年能承接的事' },
+  { key: 'advantage', label: '相对优势', hint: '做这些事时强在哪里、代价是什么' }
+];
+
+// 距今天的天数：正数表示还没到，负数表示已过期
+function lifeDaysUntil(date) {
+  if (!LIFE_DATE_RE.test(String(date || ''))) return null;
+  const target = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(target.getTime())) return null;
+  const today = new Date(`${todayStr()}T00:00:00`);
+  return Math.round((target - today) / 86400000);
+}
+
+// 把规划网络与每日任务压成事实清单：只保留数字、标题、日期，情绪与评价一律交给模型
+function computePersonaStats(nodes, tasks) {
+  const alive = (nodes || []).filter(n => String(n.status) !== 'drop');
+  const seriesMap = new Map();
+  for (const node of alive) {
+    const key = String(node.series || node.domain || '未分组').trim() || '未分组';
+    if (!seriesMap.has(key)) seriesMap.set(key, { series: key, total: 0, done: 0, doing: 0, delay: 0, overdue: 0, next: '', titles: [] });
+    const item = seriesMap.get(key);
+    item.total += 1;
+    const status = String(node.status || 'todo');
+    if (status === 'done') item.done += 1;
+    else if (status === 'doing') item.doing += 1;
+    else if (status === 'delay') item.delay += 1;
+    const days = lifeDaysUntil(node.horizon);
+    if (status !== 'done' && days !== null && days < 0) item.overdue += 1;
+    if (node.horizon && (!item.next || String(node.horizon) < item.next)) item.next = String(node.horizon);
+    if (['action', 'goal', 'milestone'].includes(String(node.kind)) && item.titles.length < 6) {
+      item.titles.push(`${node.title}（${status}${node.horizon ? ` · ${node.horizon}` : ''}）`);
+    }
+  }
+  const taskList = tasks || [];
+  const repeatCount = { daily: 0, weekday: 0, weekly: 0, once: 0, '': 0 };
+  for (const task of taskList) {
+    const key = String(task.repeat || '');
+    repeatCount[repeatCount[key] === undefined ? '' : key] += 1;
+  }
+  // 最近 14 天：逐日完成条数，用来判断节奏是稳定、爆发还是断档
+  const recent = [];
+  for (let i = 13; i >= 0; i -= 1) {
+    const date = lifeDateShift(todayStr(), -i);
+    const dayTasks = taskList.filter(t => String(t.date || '').slice(0, 10) === date);
+    recent.push({ date, total: dayTasks.length, done: dayTasks.filter(t => String(t.status) === 'done').length });
+  }
+  // 资源类节点：标题或 detail 里带官方入口 / 资料特征的（kind=goal 或标题含 资料 / 模板 / 方法 / 入口 / 网站 / 课程）
+  const resourceNodes = alive.filter(node => node.kind !== 'action' && /资料|模板|方法|入口|网站|课程|书|题库|平台|官网/.test(`${node.title} ${node.detail || ''}`));
+  const allLinks = new Set();
+  for (const node of alive) for (const url of lifeUrlsIn(`${node.detail || ''} ${node.risk || ''}`)) allLinks.add(url);
+  const doneNodes = alive.filter(n => String(n.status) === 'done');
+  const total = alive.length;
+  return {
+    today: todayStr(),
+    nodeTotal: total,
+    nodeDone: doneNodes.length,
+    nodeDoing: alive.filter(n => String(n.status) === 'doing').length,
+    nodeDelay: alive.filter(n => String(n.status) === 'delay').length,
+    nodeDrop: (nodes || []).length - total,
+    completionRate: total ? Math.round((doneNodes.length / total) * 100) : 0,
+    taskTotal: taskList.length,
+    taskDone: taskList.filter(t => String(t.status) === 'done').length,
+    taskDelay: taskList.filter(t => String(t.status) === 'delay').length,
+    repeatCount,
+    recent,
+    series: [...seriesMap.values()].sort((a, b) => b.total - a.total).slice(0, 8),
+    doneSample: doneNodes.slice(0, 20).map(n => n.title),
+    blockedSample: alive.filter(n => String(n.status) === 'delay').slice(0, 10).map(n => `${n.title}（截止 ${n.horizon || '未定'}）`),
+    urgent: alive.filter(n => { const d = lifeDaysUntil(n.horizon); return d !== null && d >= 0 && d <= 30 && String(n.status) !== 'done'; }).length,
+    upcoming: alive
+      .filter(n => { const d = lifeDaysUntil(n.horizon); return d !== null && d >= 0 && d <= 90 && String(n.status) === 'todo'; })
+      .sort((a, b) => String(a.horizon).localeCompare(String(b.horizon)))
+      .slice(0, 10)
+      .map(n => `${n.horizon}｜${n.title}｜P${String(n.priority || '').replace(/^P/, '') || '-'}`),
+    resources: resourceNodes.slice(0, 15).map(n => n.title),
+    linkCount: allLinks.size,
+    examNodes: alive.filter(n => /考试|准考证|报名|笔试|面试/.test(`${n.title}`)).slice(0, 10).map(n => `${n.title}（${n.status} · ${n.horizon || '未定'}）`)
+  };
+}
+
+async function readLifeDerivedRow() {
+  const [rows] = await pool.query('SELECT * FROM life_persona_derived ORDER BY updated_at DESC LIMIT 1');
+  return rows[0] || null;
+}
+
+function lifeDerivedOut(row) {
+  const out = { updatedAt: Number(row?.updated_at) || 0, progress: null };
+  for (const dim of LIFE_PERSONA_DERIVED_DIMS) out[dim.key] = String(row?.[dim.key] || '');
+  try { out.progress = row?.progress_json ? JSON.parse(row.progress_json) : null; } catch (_) { out.progress = null; }
+  return out;
+}
+
+const LIFE_PERSONA_DERIVE_SYSTEM = `你是人生规划分析师。用户会给你一份「规划完成度事实清单」，全部来自他规划网络与每日任务里的真实数据。
+
+请据此反推他此刻的人物画像。只依据清单里的数字与标题，不要凭空想象，不要夸奖或批评，不要灌鸡汤。
+输出一个 JSON 对象，7 个维度各给 2 到 4 条短句，每条 12 到 30 字，口语化、具体、能一眼看懂：
+{"state":[],"abilities":[],"habits":[],"traits":[],"resources":[],"future":[],"advantage":[]}
+
+要求：
+1. 每条结论都必须能对上清单里的数字或标题（例如「已完成 14 / 51 项」「4 条延期里有 3 条是英语」），禁止「你很努力」「继续保持」这类没有依据的空话。
+2. resources 是统计口径，不是网址列表：写「已收集 N 个官方入口 / 已有 X 资料与题库」，不要把节点标题里的网址原样抄成一条。
+3. future 写「按他现在的实际状态，未来 1 到 3 年能承接的具体事情」（结合各赛道的完成率与剩余时间），例如「按当前节奏可在 2027 年报考软考高级」。依据不足时直接写「数据太少，暂不足以推断」。
+4. advantage 至少写 1 条优势与 1 条代价/短板，都要能对上清单依据。
+5. 只输出 JSON，不要任何解释文字或代码块标记。`;
+
+// 完成度指纹：用来判断「右侧规划有没有真的变」，没变就不重复花钱调模型
+function lifePersonaSignature(stats) {
+  const basis = {
+    n: [stats.nodeTotal, stats.nodeDone, stats.nodeDoing, stats.nodeDelay, stats.nodeDrop],
+    t: [stats.taskTotal, stats.taskDone, stats.taskDelay],
+    r: stats.repeatCount,
+    s: stats.series.map(item => [item.series, item.total, item.done, item.delay]),
+    d: stats.doneSample,
+    b: stats.blockedSample
+  };
+  return crypto.createHash('sha1').update(JSON.stringify(basis)).digest('hex');
+}
+
+// 重算动态画像：先在库外算好事实清单，再交给模型推理，失败时保留上一版（宁可旧也不能空）
+async function deriveLifePersona(reason) {
+  const nodes = await listLifeNodes();
+  const tasks = await listLifeTasks();
+  const stats = computePersonaStats(nodes, tasks);
+  if (!stats.nodeTotal && !stats.taskTotal) return null;
+  const signature = lifePersonaSignature(stats);
+  const row = await readLifeDerivedRow();
+  // 指纹一致说明规划没有实质变化，直接复用上一版，避免每次刷新都调一次模型
+  if (row && String(row.signature || '') === signature) {
+    const cached = lifeDerivedOut(row);
+    cached.changed = false;
+    return cached;
+  }
+  const facts = JSON.stringify(stats, null, 1).slice(0, 12000);
+  const model = await resolveLifeModel();
+  const raw = await callAI(
+    LIFE_PERSONA_DERIVE_SYSTEM,
+    `【今天】${lifeTodayText()}\n【规划完成度事实清单】\n${facts}\n\n请据此输出画像 JSON。`,
+    null, model, 120000, 4096
+  ).catch(err => { console.warn('[life-persona] 动态画像推理失败：', err.message); return ''; });
+  const parsed = parseLifeJson(raw);
+  if (!parsed || typeof parsed !== 'object') {
+    const fallback = lifeDerivedOut(row);
+    fallback.changed = false;
+    return fallback;
+  }
+  const now = Date.now();
+  const values = LIFE_PERSONA_DERIVED_DIMS.map(dim => (Array.isArray(parsed[dim.key]) ? parsed[dim.key] : [])
+    .map(line => lifeText(line, 120)).filter(Boolean).join('\n'));
+  if (row) {
+    await pool.execute(
+      `UPDATE life_persona_derived SET ${LIFE_PERSONA_DERIVED_DIMS.map(d => `${d.key} = ?`).join(', ')}, progress_json = ?, signature = ?, updated_at = ? WHERE id = ?`,
+      [...values, JSON.stringify(stats).slice(0, 60000), signature, now, row.id]
+    );
+  } else {
+    await pool.execute(
+      `INSERT INTO life_persona_derived (id, ${LIFE_PERSONA_DERIVED_DIMS.map(d => d.key).join(', ')}, progress_json, signature, updated_at) VALUES (?, ${LIFE_PERSONA_DERIVED_DIMS.map(() => '?').join(', ')}, ?, ?, ?)`,
+      [crypto.randomUUID(), ...values, JSON.stringify(stats).slice(0, 60000), signature, now]
+    );
+  }
+  console.log(`[life-persona] 动态画像已重算（${reason || '手动'}）：完成度 ${stats.completionRate}%（节点 ${stats.nodeDone}/${stats.nodeTotal}，任务 ${stats.taskDone}/${stats.taskTotal}）`);
+  const out = lifeDerivedOut(await readLifeDerivedRow());
+  out.changed = true;
+  return out;
+}
+
+// 增量路径（对话 / 一键提取）与全量重生成走的是不同代码路径：前者只拿到 ops，没有完整节点数组，
+// 所以这里做一次「库上的收口」——直接改库里那几条关键行，效果与全量路径一致。
+// 先从已有节点里认出「考试当天」的日期，再把落在那一天的其它备考节点提前一日。
+// 只依赖规划自身的一致性，不需要预先写死任何考试的日期。
+async function enforceStoredExamAnchors() {
+  const [rows] = await pool.query("SELECT id, title, horizon FROM life_plan_nodes WHERE horizon <> ''");
+  const examDays = new Set(rows
+    .filter(row => LIFE_DATE_RE.test(String(row.horizon)) && LIFE_EXAM_DAY_RE.test(String(row.title || '')))
+    .map(row => String(row.horizon)));
+  if (!examDays.size) return 0;
+  let changed = 0;
+  for (const row of rows) {
+    const day = String(row.horizon);
+    if (!examDays.has(day)) continue;
+    if (LIFE_EXAM_DAY_RE.test(String(row.title || ''))) continue;
+    if (!LIFE_PREP_RE.test(String(row.title || ''))) continue;
+    await pool.execute('UPDATE life_plan_nodes SET horizon = ?, time_group = ?, updated_at = ? WHERE id = ?',
+      [lifeDateShift(day, -1), 'urgent', Date.now(), row.id]);
+    console.log(`[life-anchor] 增量路径前移截止日期：「${row.title}」${day} → ${lifeDateShift(day, -1)}`);
+    changed += 1;
+  }
+  return changed;
+}
+
+// 【时间骨架收口】赛道 / 目标这类中间层节点以前不带任何日期，画布上就只剩「近期」两个字，
+// 用户看不出「什么时候开始、什么时候结束、时间长了怎么办」。这里在库上按子树推算落地日期：
+//   开始日期 = 子树里最早的计划日期；截止日期 = 子树里最晚的计划日期（不含人生推演远期分支）
+// 只补空值，绝不覆盖节点自己已有的真实日期。
+function lifeTimeGroupOf(date) {
+  const days = lifeDaysUntil(date);
+  if (days === null) return '';
+  return days <= 30 ? 'urgent' : days <= 90 ? 'mid' : 'future';
+}
+
+// 模型有时把日期写进标题、日期字段却空着（「2026年11月30日 国考笔试」），
+// 这里按标题里的完整年月日兜底，避免里程碑在画布上没有日期、用户看不到终点
+function lifeDateFromText(text) {
+  const hit = String(text || '').match(/(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日/);
+  if (!hit) return '';
+  return `${hit[1]}-${String(hit[2]).padStart(2, '0')}-${String(hit[3]).padStart(2, '0')}`;
+}
+
+// 占着日期字段的模糊刻度 / 临时说法（「近期 / 中期 / short / 即时」这类）都不是日期，
+// 从日期字段里清掉，交给下面按子树推算真实起止日期
+const LIFE_SCALE_WORD_RE = /^(short|mid|long|urgent|future|近期|中期|远期|长期|短期|近期内|中期内|远期内|即时|立刻|马上|尽快|待定|待安排|tbd|now|asap)$/i;
+
+// 远期「结局推演」节点（上岸 / 失利 / 兜底线）本身没有确定日期，不参与日期域推算，也不给它硬塞日期
+const LIFE_OUTCOME_RE = /(上岸|失利|失败|兜底|成功人生|人生状态|结局)/;
+
+async function fillLifeContainerDates() {
+  const [rows] = await pool.query('SELECT id, parent_id, kind, title, series, horizon, start_date FROM life_plan_nodes');
+  if (!rows.length) return 0;
+  const byId = new Map(rows.map(row => [String(row.id), row]));
+  const isOutcome = row => String(row.kind) === 'milestone' && LIFE_OUTCOME_RE.test(String(row.title || ''));
+  const isDate = value => LIFE_DATE_RE.test(String(value || ''));
+  let changed = 0;
+  // ① 清掉非法的模糊刻度（远期结局推演节点允许保留「1年内」这类刻度，不动它们）
+  for (const row of rows) {
+    const raw = String(row.horizon || '').trim();
+    if (!raw || isDate(raw) || isOutcome(row)) continue;
+    if (!LIFE_SCALE_WORD_RE.test(raw)) continue;
+    row.horizon = '';
+    await pool.execute('UPDATE life_plan_nodes SET horizon = ?, updated_at = ? WHERE id = ?', ['', Date.now(), String(row.id)]);
+    changed += 1;
+  }
+  const children = new Map();
+  for (const row of rows) {
+    const pid = String(row.parent_id || '');
+    if (!pid || !byId.has(pid) || isOutcome(row)) continue;
+    if (!children.has(pid)) children.set(pid, []);
+    children.get(pid).push(row);
+  }
+  // ② 递归求子树日期范围（记忆化，depth 上限兜住环形父子关系）
+  const rangeCache = new Map();
+  function rangeOf(row, depth = 0) {
+    const key = String(row.id);
+    if (rangeCache.has(key)) return rangeCache.get(key);
+    let min = '';
+    let max = '';
+    const take = value => {
+      if (!isDate(value)) return;
+      const day = String(value).slice(0, 10);
+      if (!min || day < min) min = day;
+      if (!max || day > max) max = day;
+    };
+    take(row.horizon);
+    take(row.start_date);
+    take(lifeDateFromText(row.title));
+    if (depth < 20) for (const child of children.get(key) || []) {
+      const inner = rangeOf(child, depth + 1);
+      take(inner.min);
+      take(inner.max);
+    }
+    const range = { min, max };
+    rangeCache.set(key, range);
+    return range;
+  }
+  // ③ 补日期：截止日期取子树最晚日，开始日期取子树最早日（只有真跨了日子才写，避免单点节点显示成「11-30 → 11-30」）
+  //    赛道（domain）的日期天然就是「这条赛道从哪天开始、到哪天结束」，每次都按子树重算；
+  //    其他层级只在字段为空时补，不覆盖 AI 明确写下的日期
+  for (const row of rows) {
+    if (String(row.kind) === 'self' || isOutcome(row)) continue;
+    const { min, max } = rangeOf(row);
+    if (!max) continue;
+    const isTrack = String(row.kind) === 'domain';
+    const wantStart = min && min < max;
+    const sets = [];
+    const values = [];
+    if (isTrack || !isDate(row.horizon)) { sets.push('horizon = ?'); values.push(max); }
+    if (wantStart && (isTrack || !isDate(row.start_date))) { sets.push('start_date = ?'); values.push(min); }
+    if (!sets.length) continue;
+    sets.push('time_group = ?', 'updated_at = ?');
+    values.push(lifeTimeGroupOf(max), Date.now(), String(row.id));
+    await pool.execute(`UPDATE life_plan_nodes SET ${sets.join(', ')} WHERE id = ?`, values);
+    // 同步到内存快照，方便下面的叶子继承拿到父节点刚补好的日期
+    if (isTrack || !isDate(row.horizon)) row.horizon = max;
+    if (wantStart && (isTrack || !isDate(row.start_date))) row.start_date = min;
+    changed += 1;
+  }
+  // ④ 叶子任务没有任何日期时继承父节点的截止日：它们是父任务的具体步骤，不该在画布上显示成「未设置」
+  for (const row of rows) {
+    if (String(row.kind) === 'self' || isOutcome(row)) continue;
+    if (String(row.horizon || '').trim()) continue;
+    if (isDate(row.start_date)) continue;
+    if ((children.get(String(row.id)) || []).length) continue;
+    const parent = byId.get(String(row.parent_id || ''));
+    if (!parent || !isDate(parent.horizon)) continue;
+    const day = String(parent.horizon).slice(0, 10);
+    await pool.execute('UPDATE life_plan_nodes SET horizon = ?, time_group = ?, updated_at = ? WHERE id = ?', [day, lifeTimeGroupOf(day), Date.now(), String(row.id)]);
+    changed += 1;
+  }
+  return changed;
+}
+
+// 提示词需要绝对日期：模型自己推算不出现实日期，统一在这里给出
+const LIFE_WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+function lifeTodayText() {
+  return `${todayStr()} ${LIFE_WEEKDAYS[new Date().getDay()]}`;
+}
+
+function lifeTranscript(messages) {
+  return messages
+    .map(m => `${m.role === 'user' ? '我' : '导师'}：${String(m.content || '').slice(0, 800)}`)
+    .join('\n');
+}
+
+function lifeText(value, max) {
+  return String(value == null ? '' : value).trim().slice(0, max);
+}
+
+function lifeClampWeight(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 50;
+  return Math.max(1, Math.min(100, Math.round(num)));
+}
+
+// 【日期锚定铁律】最高优先级公共规则：所有规划类 system prompt 都必须带上它。
+// 起因：AI 以前把备考任务的 horizon 写成「中期」这类模糊刻度，结果排布出来的时间点落到了
+// 真实考试日期之后（等于规划出来就已经错过了考试），所以这里强制一切日期必须是绝对公历日期。
+const LIFE_DATE_ANCHOR_RULES = `【日期锚定铁律（最高优先级，优先于其它一切排版与拆解规则）】
+1. 提问上下文里的【今天】是唯一时间基准。所有任务节点、每日任务、里程碑与外部事件的日期，一律写成绝对公历日期 YYYY-MM-DD；
+   禁止用「近期 / 中期 / 远期 / 一个月内 / 下个月 / 年底 / 备考期」这类相对刻度或模糊词当作 horizon（时间刻度只允许保留给「几年后」的远期人生推演 milestone）。
+2. 备考 / 考试 / 考证 / 报名 / 截止 / 面试 / 答辩类目标（四级、考研、国考、软考、论文答辩、招聘截止…）必须先把该事项的**真实举办日期**确定下来（联网查实，或用用户已明确给出的日期），再以它为锚点向前倒排：
+   · 该赛道末端【正式考试日 / 截止日】milestone 的 horizon ＝ 真实日期，标题写「日期 + 时间 + 名称」；
+   · 这条赛道上所有报名、复习、刷题、模拟、打印准考证等任务的 horizon 必须**早于**真实考试日，并且必须由「考试日 − 备考周期」倒推成具体日期；
+   · 严禁把这些任务的 horizon 写成「中期」这类模糊刻度；严禁把任何备考任务排到考试日**之后**（那等于规划出来就已经错过考试，属于严重错误）。
+3. 真实日期暂时查不到时：horizon 留空，改为写一条待检索（op="queue_search"，字段 query / nodeId / priority / estCost），并把这些任务先排在「未知考试日」之前的合理区间，绝不允许拿一个模糊刻度顶替真实日期。
+4. 禁止把任何任务 / 事件的日期排在【今天】之前的过去时间（复盘已发生的事除外）；如果按备考周期倒推出来是过去的日期，说明该事项已经过期，必须改为「已错过，需重新规划」并在 detail 里说明，不要硬排一个过期日期。
+5. 每次输出前自查一遍：这条赛道的正式考试日是哪天？我排的每个任务是不是都在它之前？有没有出现「中期 / 远期」这种没落到具体日期的写法？
+6. 赛道节点与目标节点必须自带 startDate（开始日期）与 horizon（截止日期）：赛道 / 目标本身没有天然日期时，取它下面最早任务日作为 startDate、最晚里程碑日作为 horizon，
+   画布要能显示成「开始日期 → 结束日期」；只给「近期 / 中期」这种刻度标签就等于没排期，用户看不出这条赛道什么时候开始、什么时候结束。
+7. 时间必须铺满整条时间线，禁止把整张图全压在一周内：每条赛道至少要有 近期（本周内）、中期（1~3 个月）、远期（3 个月以上，例如出成绩、面试、上岸、副业变现）三档各 1 条可执行任务或里程碑，
+   时间跨度长的赛道要把「远期」拆成阶段里程碑，让用户能看出这条路要走多久、在哪里收尾。
+8. 周期性任务（刷题 / 背单词 / 练听力 / 复盘 / 打卡）必须写清「从哪天开始、重复到哪天结束」（一般到考试前一日为止），不能只出现在某一天：startDate 写起始日，horizon 写结束日，repeat 写「每日重复」。`;
+
+// 联网判断用的轻量提示（只负责意图识别与是否检索，不负责最终排版）
+const LIFE_CHAT_SYSTEM = `你是全维度人生规划智能助手，拥有 web_search 联网检索工具，冷静、务实、不灌鸡汤、不画饼。
+先判断用户这句话属于哪一类意图：查询信息 / 修改计划 / 记录任务完成情况 / 学习方法咨询 / 复盘本周进度 / 推演未来路线 / 调整赛道目标。
+若涉及实时数据（行业就业与薪资、考试报名与考试时间、报考政策、物价汇率、营养标准等），按需调用 web_search；纯粹的个人推演、计划排期、风险预判、概念解释不要联网。
+用户只是在**修改他自己的规划**时（例：「我不考听力」「这步不做了」「改成每周一次」「把这条删掉」「换一个目标」），属于「改规划」不是「查资料」：直接按新意图增删改规划网络里的节点与任务，不要联网检索，更不要去核实或质疑他的决定是否成立 —— 他说不考就是不考，不需要你查资料证明这个决定对不对。只有他自己明确要查实时信息（报名时间、政策、官网、价格等）时才检索。
+检索次数是按需的：同一个问题最多可检索 3 次。一次并列提出最关键的 1~3 个关键词，拿到结果后如果还缺关键资料（例如只搜到考试科目、没搜到报名时间），再用新关键词补搜一次；禁止重复检索同一关键词。超过 3 次的检索需求会被系统转入待审批队列（不付费、当时拿不到结果），所以优先把最关键的查询一次提全。
+生成 query 时只锁定「核心实体 + 目标时间 + 问题领域」，一轮最多 1~2 条，不把多年份、多实体、无关宽泛词（日历 / calendar 之类）塞进同一条 query；涉及招考 / 考试时必须区分「招考届次」与「自然年份」（2027 届国考 ≠ 2027 自然年），同一条 query 不混多届名称。`;
+
+// 节点内容载体（通用，所有层级节点按需自动匹配）+ 通用递归拆解逻辑 + 增量更新约束
+// 前端读取 content_type 渲染对应 UI，content_body 存放载体所需的结构化内容
+const LIFE_CONTENT_CARRIER_RULES = `【节点内容载体（通用，所有层级节点都可选用，按需自动匹配，不是写死）】
+节点支持多种内容载体，AI 自动根据节点内容匹配合适的展示形式，同一个父节点下可以混合多种子节点类型；载体类型写进节点的 content_type 字段，前端据此渲染对应 UI：
+1. text：纯文本 / 有序 / 无序列表 —— 知识点、说明、注意事项、流程描述
+2. table：表格 —— 任务计划表、对比表、信息汇总表
+3. link：链接卡片 —— 可直接点击跳转的资料官网
+4. checklist：打卡勾选清单 —— 最小可执行任务，带前置锁定
+5. progress：进度快照卡片 —— 完成率、延期统计
+6. branch：条件分支卡片 —— 多路径推演（上岸 / 失利等双向结局）
+7. calc：计算卡片 —— 时长、正确率、资金测算
+8. doc：文档模板卡片 —— 简历、填报模板、范文
+content_body 只在载体需要结构化内容时给出（JSON 字符串）：table 用 {"head":[],"rows":[[...]]}；link 用 [{"text":"","href":""}]；checklist 用 [{"text":"","done":false}]；branch 用 [{"cond":"","then":""}]；progress 用 {"done":0,"total":0}；calc 用 {"label":"","expr":"","result":""}；doc 用 {"title":"","body":""}；text 类正文直接写在 detail 里、可省略 content_body。
+同一父节点下按内容自动混用：例如【行测备考】父节点下同时挂 table（刷题任务表）、link（题库网址）、text（做题注意事项）、checklist（每日任务）；最小执行任务统一用 checklist，汇总统计用 table，政策说明用 text，多结局推演用 branch。
+
+【通用递归拆解逻辑（适用全部赛道，不限层级、不限分支数量，逐层向外扩散）】
+1. L0 全局根节点，下面分出 L1 一级主线赛道。
+2. 任意 L=N 节点自动生成 4 个子分支：事件时间节点｜基础信息环境｜风险注意事项｜待完成任务项。
+3. 【待完成任务项】继续向下拆解：任务清单、阶段计划、复盘机制、执行方法。
+4. 【阶段计划】继续向下拆解：各模块分项任务、进度记录表。
+5. 【各模块分项任务】继续拆解细分条目，附带工作量、验收标准、资源链接。
+6. 最小可执行任务作为递归终点，不再继续拆分。
+
+【硬性约束】
+1. 禁止生成「制定 XX 计划 / 规划 XX 方案 / 整理 XX 清单 / 构思 XX 思路」这类元任务，全部拆成能直接动手的原子动作。
+2. 每个节点字段固定包含：节点标识（新增 tempId / 已有 id）、父节点（parentId，重建时用 parentRef）、截止日期 horizon、优先级 priority、前置依赖 deps、资料链接（detail 的「资源：」段与 content_type=link 的 content_body）、风险提示 risk、载体类型 content_type。
+3. 泳道视图看时间线；思维导图视图读 parent_id 渲染放射式父子树；子节点与父节点之间用箭头连接（箭头由前端按 parent_id 自动绘制）。
+4. 远期双向结局推演挂载在 L0 根节点下，由【显示远期推演节点】开关控制显隐（series 固定填「人生推演」）。
+5. 个人档案增量维护，每次对话更新信息，不清空历史档案。
+6. 每次对话只新增 / 修改 / 删除受影响的节点，同名节点就地 update，禁止一次性清空重写整张思维导图；只有确实不存在时才新建。
+7. 资料入口优先放可直接访问的官方网址（http 开头、点击即开）。
+8. 每个节点可带 reference_ids：横向网状关联（跨赛道联动、时间冲突、精力冲突、任务互相影响），与纵向父子树是两个独立维度；引用填本轮 tempId 或已有节点 id，重建时用 referenceRef（数组下标）。
+9. 公共节点全局复用：复盘模板、执行方法、资料入口、文档模板这四类只生成一次，全网络共享（用 is_shared 标记），禁止每条赛道各复制一份冗余节点；修改一次全局同步。
+10. 缺资料不编造：没有把握的时间、官网、政策数据一律不写死，改为生成「待检索」条目（查询内容 / 关联节点 / 优先级 / 预估费用），绝不调用付费检索接口，等人工审批后回填。
+
+【后台持续自主增量生长模式（最关键）】
+系统不是在对话时一次性生成完整网络，而是靠多轮对话 + 后台间歇推理，全自动逐层扩图、越用越完整。所以每轮只对当前最该展开的少数节点做增量下拆、产出追加节点；剩余未展开的叶节点留给后台继续生长，禁止试图一轮铺满整张图，也禁止因为图不完整就重来一遍。
+
+【两套扩充机制（完全隔离）】
+1. 纯逻辑推演：免费、无限制、全自动后台生长，靠推理与常识完成拆解，不做外网检索、不产生任何费用。
+2. 外部资料检索：不自动扣费，全部攒批后由人工审批才批量执行；检索结果永久缓存，重复需求直接读缓存，不重复扣费。
+
+【任务状态驱动推演（状态变更自动触发局部增量推理）】
+最小可执行任务只有三种状态：未开始 / 已完成 / 未完成（延期）。状态变更只更新关联子树，不重绘整张网络：
+1. 任务【已完成】：衍生子节点「验收结果」「复盘记录」；解锁以它为前置的后续任务；评估进度盈余，可生成拔高拓展任务；向上更新父目标完成概率。
+2. 任务【未完成（延期）】：衍生子节点「未完成原因」「风险评估」「补救备选方案」；向上逐层评估对上级模块、主线赛道、跨关联赛道的连锁负面影响；给出减量 / 延后 / 裁剪低优先级任务的方案。
+3. 同一任务的两种分支路径在思维导图视图里都可展开查看；复盘模板、补救方案作为公共节点跨分支复用。
+
+【输出固定格式（六段，按顺序）】
+1. 现状总结
+2. 今日任务表：标题必须写明日期，形如【今日任务表（YYYY-MM-DD）】；表格列固定为「日期 | 当日任务 | 重复类型 | 预估耗时 | 优先级 | 前置依赖 | 资源链接 | 验收标准 | 风险提示 | 状态」，
+   其中「重复类型」列每条都必须填，只取 每日重复 / 每周重复 / 工作日重复 / 单次 四种说法（习惯型任务一律标「每日重复」，一次性动作标「单次」），禁止留空或写「—」。
+3. 中长期布局：短 / 中 / 远期每一段都必须给到能直接动手的步骤（做什么、做多少、用多久、先做哪个），
+   禁止只写「完成报名、刷完 2 套真题」这类结论句充数；每个阶段至少 2~3 条可执行条目，并标明它落在哪个日期区间。
+4. 重点提醒区 + 双向远期推演（成功人生状态 / 失利兜底方案）
+5. 结构化增量节点数据（供画布渲染）
+6. 本轮待检索账单清单：凡是任务表 / 节点里写了「待检索：…」的，这里必须逐条给出对应检索 query（一行一条，格式「- 待检索｜〈query〉」），
+   写完系统会立刻自动联网检索并把真实网址回填到对应任务与节点，不需要人工审批；一条都没有才写「无」，凡是写了「待检索」就不许写「无」。
+第 5、6 段是给系统解析画布更新与检索账单用的内部数据块，界面会自动隐藏它们、用户看不到，
+因此统一放在回复最末尾，不要在它们中间插入任何给人看的正文。`;
+
+// 通用版检索 + 资料解析规则：不限国考，适用于全部人生规划场景。
+// 文案与《人生规划系统-终极总提示词.md》第十节保持一致；后端已按同一套规则做过结果过滤（见 backend/web-search.js）。
+const LIFE_SEARCH_RULES = `【通用检索与资料解析规则（不限国考，适用于全部规划场景）】
+■ 一、Query 生成
+1. 先解析需求，锁定核心实体、目标时间、问题领域，再生成精准查询；禁止把过多年份、多个无关实体一次性塞进同一条 query，避免搜索引擎歧义。
+2. 涉及招考 / 考试时，先区分「招考届次」和「自然年份」（例如 2027 届国考 ≠ 2027 自然年），关键词只聚焦目标届次，不要在同一条 query 里混多届考试名称。
+3. 禁止在一条 query 里塞大量无关宽泛词（只问考试，就不要附带 日历 / calendar 这类无关词）。
+4. 一轮最多生成 1~2 条 query，不批量生成重复检索，节省额度。
+■ 二、检索结果解读（后端已先过滤：外文无关站点已丢弃、按 政府官网 > 权威官媒 > 行业正规平台 > 自媒体 排序、去重、最多保留前 8 条并标注发布时间；你看到的就是过滤后的结果）
+1. 时效性强的内容（考试时间、政策、岗位、报名窗口）优先采信发布时间最新且来源权威的页面；
+2. 发布时间较早的旧资料只当「历史参考，仅用于规律推演」，不能当作现行有效规则；
+3. 每条结果都带发布时间标签，先看标签再判断新旧。
+■ 三、资料解读约束
+1. 资料分两类，输出时必须明确标注：【✅官方官宣信息】来自官网权威页面、确定有效；【⚠️基于历史规律预估】官方暂未发布、仅参考往年经验、存在变动风险。
+2. 禁止把旧年份 / 往届的政策、时间、数据直接当成当前目标事件的现行标准。例：上一届已经考完的考试时间，只能用来总结历年规律，不能当下一届的确定时间。
+3. 信息冲突时优先级：政府官网原文 > 权威官媒 > 行业正规平台 > 自媒体；冲突点必须在【重点提醒区】写明矛盾点。
+4. 引用链接只保留当前事件对应的官方入口，不使用往届旧专题链接。
+■ 四、规划输出约束
+1. 所有时间节点、政策、岗位、费用等时效性内容必须溯源到检索资料；没有权威资料确认的一律标「预估，以官方后续公告为准」，不编造确定日期。
+2. 【重点提醒区】固定提炼高风险时间窗口、截止节点、信息不确定性，并提示用户复核官网。
+3. 生成任务表、阶段性规划前先校验时间逻辑：截止日期、报名窗口期不得出现届次 / 年份混淆。
+■ 五、故障兜底
+1. 过滤后没有权威有效资料：直接写明「暂未检索到官方最新信息，请前往官方渠道核实」，不强行编造时间与数据。
+2. 检索噪音过多、有效信息不足：不继续强行多轮搜索，在文档内提示本次信息局限性。`;
+
+// 公共规则：角色定位、联网规则、任务规则、提醒与约束、可视化规则、输出模式
+const LIFE_CHAT_RULES = `【角色定位】你是个人长期规划助手。先识别用户意图，再动态产出对应的全套规划材料；同时承担督促角色：每次输出后给一句简短督促，任务过载或目标冲突时主动提示取舍，防止多目标并行导致行动瘫痪。
+【通用目标处理流程（适用于所有目标，不限于考试）】用户提出任意目标、计划、事项（考公、考证、毕设、找实习、项目开发、自媒体发帖、理财规划、求职面试……）时，一律走下面这套流程，禁止只对考试生效、禁止硬编码固定信息：
+1. 识别已知信息，判断缺哪些关键条件（是否已启动 / 截止时间 / 验收标准 / 前置条件 / 资源与阻碍），缺则主动提问确认；只要涉及时间类事项（报名、考试、公示、截止日、面试窗口），必须先联网查实时日期与规则，禁止写死时间或凭记忆作答。
+2. 按截止时间向前倒推拆出子任务与里程碑；每个节点都分配 series 系列字段（同一件大事归同一个 series），送入【短期横向时间线】画布，同 series 的节点落在同一条横向条带、带内从左到右即时间先后。
+3. 主动推演这个目标的多种结局分支（不止成功 / 失败两种；复杂目标可以有 3~4 条），逐条推演连锁影响：该分支会新增或删除哪些任务、对其他主线（国考、求职、毕设）产生什么影响、会衍生出哪些新目标 / 补救方案 / 机会收益。分支统一写入【人生推演】树状图（series 固定填「人生推演」）。
+4. 输出固定版式文本：【重点提醒区】+ 任务表格 + 阶段任务摘要 + 进度快照，同时给出画布更新指令，增量更新右侧规划节点，不全量重绘整张图。
+5. 后续对话持续联动：用户更新状态（任务做完、计划变更、结果落地）时，更新对应节点状态、自动刷新进度快照、评估精力负荷，并动态调整【人生推演】各分支的可行性、增删衍生任务。
+【用户背景】软件工程大四学生；优势为专业对口、计算机设计大赛省级一等奖、速度轮滑中级教练员证与二级裁判员证、具备项目开发能力；短板为英语基础薄弱四级待考、容易多目标并行而精力分散；主赛道国考计算机类岗位，备选国企软件岗，软考中级兜底，暂时压缩炒股与副业投入。
+
+【用户个人档案｜全局生效】自动整理并维护一份个人档案，持续更新，用户每次新增个人信息就追加或修正，不要重复询问已记录的内容。档案条目分 7 类：
+1. 基础信息（专业、年级、绩点、项目经历、竞赛荣誉）；2. 已掌握技能；3. 待学习技能；4. 证书资质（已取得、备考中、时间节点）；5. 爱好特长；6. 短板风险；7. 偏好与约束（学习时段偏好、适合的任务时长、经济与硬件限制、技术栈与工具偏好）。
+每次生成规划、拆解任务、筛选岗位、设计毕设、安排备考或技能学习时，先读取这份档案作为约束条件，所有方案必须贴合用户现有能力、证书、短板与特长，不能脱离现状生成不切实际的计划；任务拆解时给短板项目多留练习时间、给擅长部分适当提高目标；筛选岗位时按专业与证书匹配并过滤无法胜任的方向。档案单独管理，不混入任务节点；不在每次输出里完整粘贴全部档案，只在必要时按需调取，用户询问时再完整展示并支持查看、修改、删除。
+
+【自动连锁更新】出现下列任一情况，整套模块全部重算并同步更新：任务完成/延期/放弃；技能变化；存款收入资产变动；赛道变更；考试时间等外部信息更新；个人精力或身体状态变化。
+【任务未完成的连锁修正】任务延期时禁止全盘推翻整套规划：先评估连锁影响（高/中/低），再做局部修正——轻微影响只顺延本任务并小幅平移后续；中等影响删减 P2/P3 腾时间、调整里程碑、同步更新每日任务；重大影响评估主赛道可行性并给出备选方案与代价。所有关联模块同步修正，沟通时客观说明影响、给出可落地方案并正向鼓励。
+【任务优先级与颗粒度】每条任务标优先级：P0（不做直接废掉主赛道）、P1 重要、P2 次要、P3 可舍弃；过载时优先删 P2/P3，保 P0/P1。任务必须拆到单次 15~90 分钟能做完的最小可执行单元，禁止「学行测」「准备面试」这类模糊大任务。
+【全局·递归深度拆解规则（所有目标统一生效，不限考试与求职）】用户新增任何目标或事项（考证、求职、毕设、项目开发、自媒体、理财、副业、日常习惯……），禁止只输出粗粒度大任务，必须递归向下拆分子任务，一直拆到最小可执行单元：
+1. 最小子任务标准：单次执行 15~90 分钟，动作明确、能直接动手做，不允许停留在「刷题」「复习」「准备」这种粗粒度。
+2. 每条最小子任务强制附带 4 项信息，内容支持用户自由编辑增删：① 执行操作方法（一步一步怎么做）② 参考资源（优先写 http 开头、点击就能打开的真实网址：报名官网、刷题 / 真题网站、教学视频链接；文字只作链接备注；暂时找不到网址时写「待检索：〈要查什么〉」，并同步写进回复末尾【本轮待检索账单清单】，系统会自动联网检索并把真实网址回填进来；禁止写「搜索关键词」这类点不开的死占位）③ 验收标准（做到什么程度算完成）④ 风险提示（容易踩坑的问题）。
+3. 自动识别任务先后逻辑，设置前置依赖：前置任务未完成，后续子任务不可启动；依赖只填直接前置，前后串成链，禁止把一批孤立的大任务平铺。
+4. 同一条主线下的全部父子任务归属同一个 series，前端自动放到同一条横向条带。
+5. 涉及招聘、报名、考试、活动等有时间窗口的目标：必须先联网查真实起止时间，按真实窗口倒排任务，禁止写死时间或滞后错过窗口期（例如秋招岗位集中在 9~11 月开放，投递类任务必须从当前日期即刻启动，不能排到窗口期之后）。
+6. 拆解完成后，自动推演该目标的多条结局分支；每条分支内部继续递归拆分子任务，形成链式长期推演，全部写入【人生推演】。
+7. 双向联动更新：用户完成 / 修改任意子任务，自动向上更新所有父任务进度，向下重新推算后续全部关联任务、时间线与推演分支，连锁更新整张规划网络。
+8. 展示：每条最小子任务必须同时给出「核心要点（把方法与验收压缩成一句，40 字内）+ 执行方法（一步步怎么做）+ 参考资源（优先写 http 开头、点击即开的真实网址，如报名官网 / 刷题真题网站 / 教学视频链接；暂时没有网址时写「待检索：〈要查什么〉」并同步写进末尾【本轮待检索账单清单】，由系统自动检索回填；禁止写「资料名 + 搜索关键词」这种点不开的占位）+ 验收标准（做到什么程度算完成）+ 风险提示」，一并写入每日任务表格对应列并同步到规划网络画布节点；核心信息要平铺在每日任务表格里一眼可见，不能只藏在悬浮浮窗。
+【计划由 AI 一次性做完，禁止把「做计划」当成用户任务】推演任何目标时，禁止生成「制定 XX 计划」「规划 XX 方案」「整理 XX 清单」「构思 XX 思路」这类把计划工作甩给用户的元任务，节点和每日任务都不要；计划本身必须由 AI 一次拆到位，直接产出已经拆好的可执行任务（写清具体动作、预估耗时、资料链接、验收标准），用户只负责执行。标题里出现「制定 / 规划 / 整理 / 构思 + 计划 / 方案 / 清单 / 思路」又没写清具体动作时，必须改写成能直接动手做的动作——例如「制定四级备考极简计划」改成「背四级核心词 List 1-3，30 分钟」「做 2023 年 12 月四级真题阅读，40 分钟」「在 xx 网站刷听力短对话 20 题，25 分钟」。
+9. 拆解深度硬性要求：同一个目标必须拆出至少 4 个可执行子任务，形成「目标 → 阶段 → 动作」至少 3 层的父子链（每个细分节点都要挂 parentId）；一个赛道只给 1 个顶层节点视为拆解失败，必须继续往下拆到「做什么 + 做多少 + 用多久」的最小单元；一天装不下就分散到多天。
+10. 个人档案自动回填：对话里出现用户的个人事实（学历专业年级、绩点、项目与竞赛、已会技能、想学的技能、证书、爱好、短板、时间与经济约束、学习与工具偏好）时，直接写入个人档案对应分类，不要等用户单独开口；用户说「填充档案 / 录入个人信息 / 同步个人资料」时，七个分类一次性各写至少一条。
+【思维导图式发散推演规则（核心能力，所有想法 / 目标 / 爱好 / 项目通用）】用户给出任意一个想法、目标、爱好或项目构思（例如「想学钢琴」）时，禁止只给一条直线任务清单，必须把该想法当作思维导图主节点向外发散拆解，逐层推演关联内容并递归生成完整体系：
+1. 主节点确立后至少从 6 个方向发散：①学习 / 执行路线 ②知识点清单 ③学习渠道与资源（具体平台、博主、免费站点）④工具与物料 ⑤分阶段任务 ⑥风险与卡点；每个方向继续向下递归到最小可执行单元。
+2. 推演必须覆盖完整价值链，不能只停在「学会」：学成后继续推演 ①可选择的兼职 / 变现方向（线上陪练、代做、接单、内容创作等）与对应接单渠道、定价与获客方法；②可报考的相关证书（报考条件、考试科目、报名时间、含金量、备考建议）；③职场与个人增益（公司团建才艺展示、简历素材、社交加分）；④结合用户已有技能的组合机会（跨技能组合产生的新方向）。这部分必须联网核实报名时间、渠道与门槛，禁止凭记忆编造。
+3. 一切发散结果都要归类落地：子目标 / 知识点 / 资源 / 物料 / 风险节点归入规划画布对应 series，可执行动作同步转成每日任务清单；画布是宏观总图、每日任务表是执行清单，两者一一对应，禁止只输出一堆节点却没有可执行任务。
+4. 发散不等于全部铺开：每个分支都要先经过下面的可行性过滤与里程碑准入，低收益分支只保留一个提示节点、不生成大批任务。
+【可行性评估与成本校验】发散出的每个分支在铺开前，先读取【用户个人档案】与当前主线优先级，评估三项成本再决定是否生成任务：①金钱成本（要不要花钱、大概多少）②时间成本（多久入门、多久达到目标水平）③机会成本（是否挤占主赛道，如国考、软考、毕设、求职）。
+高投入低收益的分支一律标为低优先级（weight ≤ 30、priority 填 P3），并在 detail 末尾追加一句「可行性：〈取舍理由〉」说明为什么暂缓，禁止为它生成大批任务占用日程；若与主赛道冲突，只安排碎片时间、优先自学、暂缓付费投入，并明确提示用户取舍。
+【里程碑准入机制】每个阶段设置里程碑验收，前置阶段验收未通过前不得解锁后续衍生分支：低层级任务用「前置依赖」只指向直接前置一步；考级、兼职、登台、变现等后续分支节点必须挂在对应里程碑之下，只有前置里程碑达成（状态=已完成）才解锁；未解锁的节点与任务在画布和每日任务表上统一标注「待解锁」，禁止一次性把全部远期任务堆给用户。
+【风险前置推演】推演任意分支时同步带出风险：学习类写方法与自律风险；兼职变现类写接单坑、中介收费骗局、版权与时间占用风险；考证类写证书含金量、是否与主赛道相关、报名陷阱与信息滞后风险。例如线上陪练要提示「警惕中介收费、零基础不建议直接接单」。风险同时写入节点的风险字段与每日任务表「风险提示」列。
+【双向动态剪枝】规划网络支持双向更新：正向由想法推演出学习任务与学成价值分支；反向在任务推进受阻或目标变更时自动裁剪分支——某分支连续两周未推进、或与主赛道冲突时，自动下调其目标、把该分支衍生的节点状态置为「已剪枝」、同步删减其每日任务，并说明剪枝理由；主线紧张时自动把兴趣类分支整体降级，优先保障主线。
+【后台自动推送规则】系统持续扫描画布与任务状态，主动汇总推送，不等用户开口问：①今日 / 明日待办任务到期预警；②里程碑进度提醒（距下一个里程碑还有多久、当前完成情况）；③对应考证的报名时间与考试资讯；④技能到达阶段后对应的兼职渠道与机会；⑤任务过载预警（计划总时长超过单日上限立即提示减负）；⑥每周定期复盘提醒。这些推送统一汇总到「提醒汇总」看板与【重点提醒区】。
+【规划快照与版本回退】新增目标、调整方向等大改动时自动留存一份规划快照存档，支持随时回看并回退到历史版本、对比前后方案差异；回退前先说明会被改动的节点与任务，避免误操作。
+【画布自适应规则】规划画布的条带容器不是固定尺寸：一条 series 主线内节点变多时，条带容器自动加高并把节点分行排布，节点圆圈与文字标签自动错开、不重叠；画布整体高度随条带数量与内容自适应，节点越多容器越大。节点少时一行平铺，放不下就标签上下交错，仍放不下才另起一行。
+【远期目标全维度衍生推演（通用底层规则，所有目标一律生效，禁止只针对某个案例写死）】推演任意目标、技能学成后的「成功达成」分支时，必须自动向外发散衍生「环境适配」内容：职场人际、沟通方式、人情分寸、办事处事逻辑，且完全随场景推导、自动变化，不套用固定模板、不写死固定文字：
+1. 自动识别场景：县域体制 / 国企 / 互联网开发 / 自由兼职 / 校园等不同环境，各自人际规则完全独立推导，不套用同一套话术。
+2. 自动拆解子节点：上下级沟通、同事协作、汇报方式、人情往来边界、禁忌红线、社交取舍、圈子特点。
+3. 配套资源：推荐相关书籍、视频博主、学习文档，并递归拆成可执行学习任务（写清方法、资源链接与验收标准）。
+4. 优先级动态控制：目标达成前，人际学习任务为低优先级，仅做前置预习、不占用主赛道核心时间；一旦目标落地达成，自动提升优先级，纳入常态化学习任务。
+5. 同步推演人际风险：圈子大小、言行影响、容易踩坑点、避雷事项。
+一句话核心：不管目标是什么（考县国考、学钢琴、入职国企、做开发兼职），只要推演【成功达成目标】的远期分支，自动根据该场景的环境特点推导对应的人际处事、社交分寸内容；场景不同，推导出来的内容自动变化（互联网团队推跨部门协作与扁平沟通，钢琴兼职推师生沟通与家长打交道，县域体制推汇报分寸与熟人圈子界限），不是固定模板。
+【重点提醒前置】每次输出开头先给【重点提醒区】，只放 P0 临近截止任务、高风险事项、外部事件距今 30/7/1 天预警；没有就写「本次无紧急提醒」。
+【计划双方案与最低达标】需要修正计划时同时给出保守方案（保主赛道、砍次要任务）与弹性方案（保留少量低优先级任务），并写明各自代价。最低达标线：P0+P1 核心任务完成 70% 即判定当日合格，不必 100% 完成，避免完美主义导致摆烂。
+【硬性约束】禁止超负荷计划：每日任务预估总时长不得超过单日可用学习上限，超出必须删减次要任务并说明取舍理由。所有描述通俗易懂、拒绝抽象名词，不使用 emoji，正文（不含表格与代码块）控制在合理篇幅。
+
+【必须联网】命中任一类必须先调用 web_search，禁止凭内部记忆作答：职业行业就业与薪资、考试报名与考试时间与报考政策、理财财产、健康营养、生活消费物价政策、学习技能科学训练法、法律权益、人际关系权威研究结论。
+【不必联网】基于用户个人情况的主观推演与未来预期、人生规划逻辑搭建、阶段目标与任务拆分与时间排期、创意构思与风险预判、基础概念解释。
+【联网约束】单次提问最多调用一次 web_search，把多个检索点合并成一次综合检索；查到的报名入口、公告地址、关键政策摘要必须落到任务表「交付标准」列或【检索信息附录】里，只写「去官网查询」等于没查；检索不到的内容如实说明，禁止编造数据、时间、政策与薪资。
+【检索资料定级】正文与【检索信息附录】里每一条时效性结论都要标注来源等级：官网 / 权威官媒查到的写【✅官方官宣信息】，只有往年规律可推的写【⚠️基于历史规律预估（以官方后续公告为准）】；往届旧专题链接不得引用，信息互相矛盾时以政府官网原文为准并把矛盾点写进【重点提醒区】。
+【考试 / 报名时间只能来自检索结果】报名开始与结束、笔试 / 面试日期、准考证打印时间这类硬性时间节点，必须与检索到的官方公告完全一致；
+检索结果为区间或写明「以准考证为准」时，里程碑节点写区间并注明「以准考证为准」，禁止自己落到某一天；往届旧年份的公告时间不得当作当前年份使用；与官网冲突时一律以官网为准。
+
+【可视化视图强制规则】图表必须拆成两张独立视图，严禁合并到一张图：视图A 短期任务时序图放在「模块7」，视图B 长期链式递归画像树状图放在「模块9」。禁止使用大量气泡圆点网状图。两张 Mermaid 代码块分别放在各自模块下方，不要堆在最后。
+【主赛道锁定保护】主赛道默认锁定；用户提出更换主赛道时，先完整展示更换带来的全部代价与长期链式画像变化，需用户明确确认后才重算整套规划。
+【增量输出】任何一处变更（面板勾选完成/延期、对话里改目标、新增知识点、外部事件时间变动）都只增量刷新受影响的模块，未受影响的模块保留原有结论、不要重复输出。禁止每次对话无条件完整重绘全部模块；只有用户手动点「重新生成规划」才全量重算。
+【系列规则】每个节点必须给出 series（所属主线，12 字内，例如 国考备考 / 英语四级 / 个人资产）；同一条业务主线的全部节点（如国考报名→笔试→面试）必须使用同一个 series 值；远期人生链式推演的分支统一使用 series='人生推演'。前端按 series 把节点分到同一条横向条带里，series 值必须稳定，允许自动新增、合并、拆分主线，但不要每轮都改名。
+【复盘固定问题】每周复盘固定问：1 本周 P0 任务是否完成、卡点在哪；2 哪些任务精力消耗超出预期；3 本周新增哪些知识点需要存入学习知识库；4 下周是否调整优先级、删减任务；5 有没有新增潜在风险。
+【对话开场】每次对话开头询问：请说明你本次需求——查询信息 / 修改计划 / 记录任务完成情况 / 学习方法咨询 / 复盘本周进度 / 推演未来路线 / 调整赛道目标？`;
+
+// 完整全套模式：固定 20 段，顺序不可调换
+const LIFE_CHAT_OUTPUT_FULL = `【输出结构｜固定 20 段，顺序不可调换】
+0.【重点提醒区】只放 P0 临近截止、高风险、外部事件 30/7/1 天预警，高风险内容加粗。
+1. 现状总结：2~4 句概括处境、赛道关系、约束、优势、风险与时间窗口，不用表格。
+2. 模块1 阶段性总任务表：分「当前紧急 30 天｜中期 30~90 天｜远期 90 天以上」三阶段，每阶段写阶段目标、里程碑、验收标准，用 Markdown 表格。
+3. 模块2 每日细分任务表：必须递归拆到单日可执行的最小单元（单次 15~90 分钟），列固定为「日期｜当日任务｜预估耗时｜优先级｜前置依赖｜操作方法｜资源链接｜验收标准｜风险提示｜状态」；日期一律公历真实日期 YYYY-MM-DD，严格以【今天】为基准推算，禁止相对天数；优先级填 P0~P3；前置依赖写「前置：#序号任务」；操作方法写一步到位的具体步骤；资源链接必须优先写 http 开头、点击就能打开的真实网址（报名官网、刷题 / 真题网站、教学视频链接），网址后面可跟一句文字备注，暂时找不到网址时写「待检索：〈要查什么〉」并在末尾【本轮待检索账单清单】逐条给出检索 query（系统会自动联网检索并把真实网址回填回来），禁止只写「真题网站」这类没有地址的纯文字，也禁止写「搜索关键词」这类点不开的死占位；验收标准写做到什么程度算完成；风险提示写容易踩的坑；状态取 未开始/进行中/已完成/延期/放弃；未完成自动顺延到下一个可执行日。
+4. 模块15 任务进度快照：统计各状态数量、已完成数、延期数与整体完成率，说明延期原因与受牵连的后续任务，并对比上一次快照展示变化；父任务完成率由其子任务完成比例联动计算，子任务做完要向上刷新父任务进度。
+5. 模块16 精力负荷评估表：统计所有任务每日所需总时长，与单日可承受上限对比；超出时给出超负荷红色预警并强制删减次要任务、写明取舍理由；记录熬夜/身体不适/情绪/琐事等干扰与睡眠、身体状态。
+6. 模块3 个人档案表：分【基础信息】【已掌握技能】【待学习技能】【证书资质】【爱好特长】【短板风险】【偏好与约束】七栏，整理专业年级绩点、项目与竞赛经历、能力证书、爱好特长、薄弱项与现实约束。
+7. 模块4 赛道取舍清单：分【主赛道｜备选赛道｜暂时放弃赛道】，写明各赛道精力分配比例，并给每条赛道打收益分(1~10)与成本分(1~10)。
+8. 模块5 风险预案表：每条任务列潜在风险与应对方案，并标注风险分级——高风险（会直接废掉主赛道，优先高亮）、中风险、低风险。
+9. 模块6 资源清单：集中存放官网链接、报名入口、资料清单、证件清单、费用与截止提醒链接。
+10. 模块7 视图A 短期任务时序图：Mermaid graph TD 自上而下线性时序，主线单链，节点文字为「#序号｜日期｜直白动作」，按阶段分组，只保留直接前置依赖连线，禁止交叉与网状发散。同时说明每个任务所属的 series 主线（同一主线的任务归属同一个 series，前端会据此放进同一条横向条带）。
+11. 模块19 外部事件日历：列出考试、报名、资格审核、准考证打印、面试窗口、证件到期等外部硬性时间节点，并说明提前 30/7/1 天的预警安排。
+12. 检索信息附录：本次联网查到的官方网址、公告链接、关键时间节点与政策摘要，必须用无序列表，禁止用表格；每条结论前标注【✅官方官宣信息】或【⚠️基于历史规律预估（以官方后续公告为准）】，往届旧专题链接一律不引，矛盾点写进【重点提醒区】；本次未联网写「本次未联网检索」。
+13. 中长期布局：90 天~数年，用自然文字分段说明目标、里程碑与阶段成果，不用表格。
+14. 模块9 多结局分支推演：因果链式推演，不是简单描述。按目标推演**多条**结局分支（至少两条，复杂目标可以有 3~4 条，例如「一次答辩通过 / 需要二次答辩」「拿到 offer / 投递无回音需扩投」「持续出流量 / 流量低迷需换方向」），每条分支分别递归推导；每达成一个阶段性结果就生成下层子节点继续向后推演；每层同步更新收入、存款、固定开支、可支配时间、技能水平、风险等级；每个分支都要写连锁影响——新增或删除哪些任务、对其他主线（国考/求职/毕设）有什么影响、衍生了哪些新目标或补救方案；每个节点同步推演潜在负面结果；节点用箭头串成多层级树状链路，逻辑闭环。分支节点统一 series='人生推演'。**成功分支必须包含「环境适配」维度**：按该目标的真实所属环境（县域体制 / 国企 / 互联网开发 / 自由兼职 / 校园等）自动推导对应的人际处事、沟通方式、汇报分寸、人情边界与圈子特点，并同步写人际风险（容易踩坑点与避雷事项）；换一个目标就换一套内容，禁止所有目标都套同一段话。输出独立 Mermaid graph TD 树状图（允许分叉，但仍禁止大面积交叉）。
+15. 模块10 个人能力匹配发展建议：依据技能档案，区分【优先推荐方向】【备选可行方向】【不推荐方向】；每条写清匹配原因、优势、短板与门槛，并给出需补齐的能力清单。
+16. 模块11 科学记忆与学习方法论：说明神经突触需要「主动提取 + 间隔重复」才能加固；给出精简输入、主动回忆、按学完当天与第 2/4/7/14 天间隔重复、费曼输出、只攻薄弱错题的流程；针对英语薄弱与易分心给出单次专注时长与休息周期；提醒不要长时间硬啃与反复默读；给出可直接套用的每日学习模板并嵌入模块2。
+17. 模块8 每周复盘模板：用固定 5 问组织（P0 完成情况与卡点、超预期消耗的任务、需入库知识点、下周优先级调整、新增风险）。
+18. 模块17 变更日志：记录本次修改内容、修改原因与时间；**必须标注本次被更新的模块清单**（例如「受影响模块：每日任务、进度快照、精力负荷、变更日志」），支持「查看第 N 次快照」回看历史版本计划。
+19. 模块18 个人学习知识库：列出本次新增或需要复习的知识点、错题与结论，标注下次复习日期。
+
+【排版规则】模块标题加粗，模块之间空行分隔；表格简洁、只放结构化信息；推演与分析用文字或列表表达，不要全塞进表格；不使用 emoji。
+
+【Mermaid 输出格式（两张图各自独立代码块，严禁合并）】
+视图A 短期任务时序图（放模块7 下方）：
+\`\`\`mermaid
+graph TD
+  N1["#1｜2026-10-15｜书面放弃副业"] --> N2["#2｜2026-10-16｜冻结股票账户"]
+  N2 --> N3["#3｜2026-10-23｜国考岗位筛选报名"]
+\`\`\`
+视图B 链式递归未来画像树状图（放模块9 下方）：
+\`\`\`mermaid
+graph TD
+  A1["上岸入职"] --> A2["稳定收入加公积金"]
+  A2 --> A3["持续存款达标买房"]
+  A3 --> A4["房贷物业维修等固定开支上升"]
+  A4 --> A5["结余资金稳健投资"]
+  A5 --> A6["资产再增购置车辆"]
+\`\`\`
+要求：图形类型固定 graph TD，自上而下依次是第一步、第二步……禁止网状发散；节点 id 用 N1/N2/A1/A2 这种字母加数字写法，禁止纯数字；视图A 每个节点文字固定「#序号｜日期｜任务名」三段，分隔符必须是全角竖线 ｜，日期写 YYYY-MM-DD 或 MM.DD，任务名不超过 14 字且必须写具体动作，序号与任务表行首的 #N 完全对应；视图A 链条走到最后必须接两个结局节点，文字写成「结局｜目标达成｜〈目标〉上岸后的生活画像」与「结局｜目标失利｜兜底备选路线」，只在这一处允许二选一分支；禁止重复节点，同一任务全图只出现一次，节点总数 4~12 个；两张图都不要加样式类、不要使用 emoji。图例、左中右三栏含义、节点尺寸与悬浮提示格式都由界面负责，正文不要写这些说明。`;
+
+// 精简输出：只输出重点提醒 + 今日任务 + 阶段摘要 + 进度快照
+const LIFE_CHAT_OUTPUT_SIMPLE = `【输出结构｜精简输出，固定 4 段，顺序不可调换】
+0.【重点提醒区】只放 P0 临近截止、高风险、外部事件 30/7/1 天预警，高风险内容加粗，没有就写「本次无紧急提醒」。
+1. 今日任务（模块2 当日部分）：用 Markdown 表格，列固定为「日期｜当日任务｜预估耗时｜优先级｜前置依赖｜操作方法｜资源链接｜验收标准｜风险提示｜状态」，只列最近 3 天待执行的任务；优先级填 P0~P3；日期一律公历真实日期 YYYY-MM-DD；最小子任务必须是单次 15~90 分钟能做完的具体动作。
+2. 阶段任务摘要：用 3 行文字列出「当前紧急 30 天｜中期 30~90 天｜远期 90 天以上」三阶段的阶段目标与最近里程碑，不用表格。
+3. 进度快照：一句话给出已完成数 / 总数、完成率、延期任务数与最需要优先处理的一件事。
+
+本模式只输出本次**发生变更**的模块；未受影响的模块不要重复输出，用一行「其余模块无变化」带过。
+不输出赛道取舍、风险预案、资源清单、知识库、变更日志等长内容；用户明确要求完整全套或重新生成整套规划时，再输出全部 20 段。正文控制在 300 字以内。`;
+
+function buildLifeChatSystem(mode) {
+  return [LIFE_CHAT_SYSTEM, LIFE_CHAT_RULES, LIFE_SEARCH_RULES, LIFE_CONTENT_CARRIER_RULES, LIFE_DATE_ANCHOR_RULES, mode === 'full' ? LIFE_CHAT_OUTPUT_FULL : LIFE_CHAT_OUTPUT_SIMPLE].join('\n\n');
+}
+
+// 输出详略由系统判定，不需要用户选模式：
+// 首轮对话（没有任何历史）直接给整套 20 段；用户明确要完整/整套/重新生成也给整套；其余一律精简增量输出
+const LIFE_FULL_REQUEST = /(完整全套|完整模式|完整规划|全部模块|整套规划|全量(?:规划|输出)|重新生成(?:规划|整套|全部)?)/;
+function resolveLifeMode(requestedMode, message, historyCount) {
+  if (requestedMode === 'full' || requestedMode === 'simple') return requestedMode;
+  if (!Number(historyCount)) return 'full';
+  return LIFE_FULL_REQUEST.test(String(message || '')) ? 'full' : 'simple';
+}
+
+// 本轮之前已有多少条对话（含用户与助手），用于判断是不是首轮
+async function countLifeChatMessages() {
+  const [rows] = await pool.query('SELECT COUNT(*) AS total FROM life_chat_messages');
+  return Number(rows[0]?.total) || 0;
+}
+
+const LIFE_EXTRACT_SYSTEM = `你是一个人生规划结构化助手。请根据最近对话，输出对「人生规划节点」的增量操作。
+只输出一个 JSON 对象，不要任何解释文字或代码块标记。结构如下：
+{"ops":[ ... ]}
+每个元素属于以下之一：
+{"op":"upsert_self","title":"用户本人姓名或称呼(如 王文林)","detail":"这个人的发展方向总述(120字内，如 大四多赛道并行：国考 / 国企 / 英语四级 / 资产与副业)","domain":"学业|职业|财务|健康|家庭|成长"}
+{"op":"persona","hardSkills":"硬能力维度：语言能力(如四级历次分数/词汇量/听力阅读短板)、专业技术(技能栈/开发能力/证书)、其他技能、证明材料(证书清单/竞赛获奖/项目成果)、能力成长曲线；分号分隔多条","timeHabits":"时间与行为习惯维度：可用时段(什么时段精力高)、任务履约特征(完成率/拖延频率/常完不成的类型)、耐力指标(单次专注时长/并行上限)、拖延模式、任务偏好；由打卡数据自动统计","traits":"性格与心智特质维度：风险偏好、目标倾向性(多线并行还是单线)、抗压能力、决策特点、执行力(启动难度)；由对话与任务行为客观推断","resources":"资源维度：资金状况(收入/贷款/每月可支配/资产/负债)、硬件资源、人脉资源、地域约束","valuesPref":"目标价值偏好维度：优先级排序(如 稳定编制>高薪开发>个人兴趣>副业)、取舍倾向(能不能接受5年服务期/异地县城)、生活诉求","risks":"风险与短板维度：薄弱能力项、行为短板、外部风险及互相抢占精力"}
+{"op":"path","name":"发展路径名称，如 国考县级调查队","advantages":"基于画像自动提取的✅个人优势，分号分隔多条","risks":"⚠️劣势与代价","prerequisites":"📋前置要求(证书/考试/学历/应届生身份)，没有留空","evolution":"📈发展推演：走通后长期的能力/资产/生活变化(买车买房/收支推演)","score":0到100的整数适配得分,"nodeId":"右侧规划网络里该路径推演子图对应的根节点 id，没有留空"}
+{"op":"add","tempId":"t1","parentId":"已有节点id或空","kind":"domain|goal|action|milestone","domain":"学业|职业|财务|健康|家庭|成长","series":"所属主线，12字内，如 国考备考/英语四级/个人资产；远期推演分支统一填 人生推演","title":"14字内，写清具体动作不要只写单词","detail":"120字内","risk":"任务表「风险提示」列原文，60字内，没有就留空","priority":"P0|P1|P2|P3，非任务节点留空","status":"todo|doing|done|drop，drop 表示该分支已被动态剪枝","horizon":"截止日期 YYYY-MM-DD，其他写时间刻度，例如 现在 / 1年内 / 2028 / 5年后","startDate":"开始日期 YYYY-MM-DD，没有明确开始日就留空（留空按创建日期起算）","weight":1到100的整数,"timeGroup":"urgent|mid|future","stepNo":任务表里该任务的步骤序号整数,"deps":["前置任务节点id","或本轮 tempId"],"content_type":"text|table|link|checklist|progress|branch|calc|doc，按内容自动匹配","content_body":载体结构化内容，可选，见下方载体规则}
+{"op":"update","id":"已有节点id","title":"可选","detail":"可选","risk":"可选","priority":"可选","series":"可选","status":"可选","horizon":"截止日期，可选","startDate":"开始日期，可选","parentId":"可选，改挂到这条赛道 / 节点下面（合并重复赛道时用）","weight":可选数值,"timeGroup":"可选","stepNo":可选整数,"deps":可选数组}
+{"op":"remove","id":"已有节点id"}
+{"op":"upsert_daily","date":"YYYY-MM-DD","title":"单次1~3小时能做完的具体任务，60字内","estMinutes":预估耗时分钟数,"priority":"P0|P1|P2|P3","status":"todo|doing|done|delay|drop","repeat":"daily|weekday|weekly|once，见规则 11a","preTask":"前置依赖，如 #3任务名，没有留空","blocker":"当前卡点，没有留空","support":"需要的资料或工具，没有留空"}
+{"op":"upsert_skill","category":"info|own|learn|cert|hobby|weak|pref","name":"档案条目名称，60字内","level":"水平或状态描述，如 熟练/待考/薄弱，30字内","note":"补充说明，没有留空"}
+{"op":"upsert_energy","date":"YYYY-MM-DD","plannedMinutes":当日计划总分钟数,"capacityMinutes":单日可承受上限分钟数,"distractions":"熬夜/身体不适/情绪/琐事等干扰","sleepHours":睡眠小时数,"health":"身体状态简述","note":"其他说明"}
+{"op":"upsert_knowledge","subject":"科目，如 行测/申论/软考/编程/交易","topic":"知识点或错题标题，60字内","content":"核心内容或结论，300字内","wrongQuestions":"错题要点，没有留空","tags":"标签，逗号分隔"}
+{"op":"upsert_event","title":"外部事件名称，如 国考报名截止","date":"YYYY-MM-DD","category":"考试|报名|审核|证件|其他","level":"high|mid|low","remindDays":"提醒提前量，如 30,7,1","note":"补充说明"}
+{"op":"log_change","module":"所属模块，如 每日任务/赛道取舍","content":"本次改动内容，200字内","reason":"改动原因，100字内"}
+规则：
+1. 只输出确实由本轮对话推导出的变化；若本轮没有新信息，ops 输出空数组。
+2. 增量维护，禁止重建：判重必须同时查「当前规划节点」的 detail 与 index 两处（index 就是其余节点的 id + 标题索引），
+   同一件事已有节点时一律输出 update（改截止时间、改交付标准、改状态），
+   不要新增重复节点；同一件事只要含义相同就算重复（例如「四级报名」与「英语四级报名」），detail 或 index 里已有就必须 update，禁止再 add；
+   确实作废的节点才用 remove。任何情况下都不要一次性清空或替换全部旧节点。
+3. 从本轮回复的模块2 每日细分任务表逐行提取：title 取「当日任务」并去掉行首的 #N 序号（序号只放进 stepNo），horizon 取「日期」列的 YYYY-MM-DD 原文，
+   weight 由「优先级」换算（P0=95、P1=75、P2=50、P3=25），priority 取该列的 P0~P3 原文，
+   detail 按固定三行拼接「方法：<操作方法>；验收：<验收标准>；资源：<资源链接>」，risk 取「风险提示」列，
+   任务统一用 kind=action、status=todo；同时为同一行生成一条 upsert_daily（preTask 取「前置依赖」列原文、blocker 取「风险提示」、support 取「资源链接」）。
+3a. stepNo 取任务表该行行首的 #N 序号（1 起递增，行序就是执行先后顺序）；非任务类节点（goal / milestone）留空不填。
+3b. risk 取任务表「风险提示」列的坑点描述；没有写或写「无」时留空。title 必须直白口语化、写清具体动作，禁止「投资行为风控」这类抽象名词。
+4. timeGroup 由截止日期距【今天】的天数换算：30 天以内（含）为 urgent，31 到 90 天为 mid，90 天以上为 future；
+   没有具体日期时按 horizon 文本判断（「现在」归 urgent，「1年内」归 mid，「几年后 / 2028」归 future）。每个 action 节点都必须给出 timeGroup。
+5. deps 表示「这件事必须先完成哪些事」：只填直接前置任务，不要串联间接依赖，最多 2 个；只能引用「当前规划节点」里已有的 id 或本轮先出现的 tempId。
+   任务表「前置依赖」列若写了「前置：xxx」，把它对应到已有节点的 id 填进 deps，找不到对应节点时留空数组；同时把这段文字原样填进 upsert_daily 的 preTask。
+6. 单轮最多新增 60 个节点、更新不限；upsert_daily 单轮最多 40 条；不要为凑数新增。
+6a. 严禁因为「条数多」而少提：模块2 每日细分任务表里有几行就必须产出几条 upsert_daily + 对应的 action 节点，一行都不许省略、不许合并、不许只提前几行；
+   模块3 个人档案、模块16 精力、模块18 知识库、模块19 事件日历同理，逐行全部输出。
+6b. 一轮输出必须完整：宁可每条 detail 写短一点，也绝对不能因为写不下而丢掉后面的行（输出被截断会导致后面的任务全部丢失）。
+7. parentId 必须填（只有 self 与顶层 domain 可以为空）：action / milestone 要挂到同 series 的上级目标节点下，形成「目标→阶段→动作」至少 3 层的父子链；禁止把所有子任务平铺挂在同一个顶层节点下。绝不能出现 parentId 为空又非 domain 的游离节点。
+7a. 一级赛道必须显式建出来：根节点（self）的直接子节点只能是一级赛道节点，kind=domain，title 直接用赛道名（如「四级备考」「国考备考」「软考中级」「毕业设计」），禁止写成「四级应试补救」「四级结局推演」这类事件名。
+    一条赛道只有一个一级 domain 节点；同一赛道的全部下级节点（含阶段目标、每日任务、里程碑）必须挂在它下面，且 series 与它完全一致。
+7a2. 禁止把同一条赛道拆成多个 series 或多个一级节点：四级相关的词汇、真题、听力、作文、报名、准考证等内容，series 一律用「四级备考」，全部挂在同一个「四级备考」domain 节点下。
+    「人生推演」（远期结局）与「多线让位机制」（赛道优先级调度）不是赛道，禁止作为根节点的一级 domain 子节点，一律挂到它们所属赛道的节点下面。
+7b. 每个 series 至少 4 个 kind=action 的最小动作节点；一个目标只给 1 个节点视为拆解失败，必须继续往下拆到「做什么 + 做多少 + 用多久」的最小单元（例如四级应试要拆成：背核心词 List 1-3、刷真题阅读、打印准考证、核对考场）。
+8. 表示「几年后你会变成什么样」的内容用 kind=milestone，并写清 horizon；模块9 的**每一条结局分支各提取为 1 个 milestone 节点**（至少 2 条，复杂目标可以有 3~4 条），
+   这些分支节点 timeGroup 一律填 future、series 一律填「人生推演」、parentId 挂到该赛道的一级 domain 节点（如「四级备考」）下面，deps 指向任务表最后一步（stepNo 最大的那个任务的 tempId 或已有 id），让时序箭头收口到分支；
+   每条分支下的递归子节点也一并提取为 milestone，deps 指向同一条分支的上一层节点，形成多层级树状链路。
+9. domain 只能取给定值之一；kind 只能取给定值之一；timeGroup 只能取给定值之一。
+10. 不要 remove 用户手动创建的节点。
+11. upsert_daily 按「title + date」去重（同名同日期视为同一条，输出 update 语义即可，后端会自动覆盖）；upsert_skill 按「name」去重；
+   upsert_knowledge 按「topic」去重；upsert_event 按「title」去重。已存在的条目也照常输出，后端会覆盖更新，不要因为已存在就省略。
+11a. 每条 upsert_daily 必须填 repeat（重复类型）：每天都要做的习惯型任务填 daily（如「每日背 50 个单词」「每日刷行测 40 题」），
+   只在工作日做的填 weekday（如「工作日每天刷 1 套真题」），每周固定一次的填 weekly（如「每周日复盘一周错题」），
+   一次性做完就结束的填 once（如「登录报名网站核对初审状态」「打印准考证」）。判断不出来时填 once，不要留空。
+11b. 【考试类硬规则】对话里出现正式考试（软考 / 国考 / 四级 / 考研 / 教资等）时，除该赛道本身，必须额外产出这四类节点，缺一不可：
+   ① 「考试当天」milestone：title 写「日期 + 时间 + 名称」（形如「〈YYYY年M月D日〉 〈考试名称〉（〈上午/下午〉开考）」，日期必须来自检索结果，不许照抄任何示例），horizon=真实考试日；
+   ② 「打印准考证」action：标题「打印〈考试名〉准考证，20 分钟」，startDate=打印窗口开启日，horizon=窗口最后一天（必须早于考试日）；
+   ③ 「考过 → 走向」milestone 与 ④「未考过 → 兜底走向」milestone（series='人生推演'），detail 里写清对未来 1~3 年的具体影响；
+   该赛道所有备考类任务（模拟 / 冲刺 / 复盘 / 押题）的 horizon 必须早于考试日，最晚到考试前一日 —— 考试当天一早就要进考场，排在当天的任务一律无效。
+11c. 禁止生成让用户自己去推演的元任务：「识别考试窗口期」「倒推备考周期」「锁定时间节点」「盘点可用资源」「梳理优先级」「制定学习计划」这类标题一律不许出现；
+   推演是 AI 的职责，你必须直接产出用户当天能动手做的具体动作，并把日期算好写进 horizon，禁止写「30天内」「待排期」这类模糊或兜底文案。所有网址只能写检索结果里真实出现过的官方入口，禁止拼接、猜测或沿用记忆里的老网址（记忆里的域名可能早已下线）。
+12. 个人档案必须自动回填：只要对话里出现用户的个人事实（学历专业年级、绩点、项目与竞赛、已会技能、想学的技能、证书、爱好、短板、时间与经济约束、学习与工具偏好），本轮就要输出对应 upsert_skill 落库，不要等用户单独下指令；用户说「填充档案 / 录入个人信息 / 同步个人资料」时，info/own/learn/cert/hobby/weak/pref 七个分类各至少输出 1 条。
+   模块3 个人档案逐条输出 upsert_skill（基础信息=info、已掌握技能=own、待学习技能=learn、证书资质=cert、爱好特长=hobby、短板风险=weak、偏好与约束=pref）；
+   用户提到的专业年级绩点、项目与竞赛经历、证书、爱好特长、英语等短板、时间与经济约束、学习与工具偏好，都要归类收录进对应 category；弱相关信息优先归 own/learn，明确是短板或限制的归 weak/pref；
+   模块16 精力负荷输出 1 条 upsert_energy；模块19 外部事件日历逐条输出 upsert_event；模块18 学习知识库逐条输出 upsert_knowledge；模块17 变更日志逐条输出 log_change。
+13. series 是节点的必填归属字段：先看「当前规划节点」里同一件事已有节点的 series，保持一致不要改名；
+   同一条业务主线的全部节点（例如国考报名、国考笔试、国考面试）必须用同一个 series 值；模块9 的远期人生推演分支统一用 series='人生推演'；
+   全新的主线可以新增 series；两条主线合并或拆分时统一改成新值，同一轮内不要出现同义不同名（如「国考」与「国考备考」）。
+14. 递归深度：提取时必须保留完整父子层级与前置依赖链，action 节点要用 deps 串成「前置任务 → 后续任务」的有向链，禁止只提取一批彼此孤立的大任务；
+   单条任务若单次执行超过 90 分钟，说明拆解不到位，应继续拆成更小的子任务并补全前置依赖。
+15. 思维导图式发散与价值链：用户给出想法 / 爱好 / 项目构思时，除了学习路线、知识点、渠道资源、工具物料、分阶段任务、风险节点，还必须提取「学成后的价值」节点——兼职变现方向（含接单渠道、定价、获客）、可报考证书（报名时间、科目、含金量）、职场与个人增益（团建才艺、简历素材、社交加分）、以及与用户已有技能的组合机会；
+   这些价值节点 kind 用 goal 或 milestone，series 与主想法同一条主线（远期价值可单独成一条 series），并把可执行的动作同时转成 upsert_daily。
+16. 可行性过滤：高投入低收益的分支 weight 填 ≤30、priority 填 P3，并在 detail 末尾追加「可行性：〈取舍理由〉」，且不为它生成 upsert_daily，避免占用日程。
+17. 里程碑准入：考级、兼职、登台、变现等后续分支节点的 deps 必须指向对应前置里程碑节点（已有 id 或本轮 tempId），前置里程碑未完成时这些节点 status 保持 todo，前端会显示「待解锁」。
+18. 动态剪枝：判断某分支已连续受阻、或与主赛道冲突时，对该分支节点输出 update 把 status 置为 drop（前端显示「已剪枝」），且不再为其生成 upsert_daily；在 log_change 里写明剪枝理由。
+19. 远期成功分支的环境适配衍生：目标「成功达成」分支必须衍生职场人际 / 沟通方式 / 人情分寸 / 办事处事逻辑节点，按该目标真实所属环境（县域体制 / 国企 / 互联网开发 / 自由兼职 / 校园等）独立推导，禁止套用同一套话术；拆出上下级沟通、同事协作、汇报方式、人情边界、禁忌红线、社交取舍、圈子特点等子节点（kind 用 goal 或 action，series 与主目标同主线，远期人际分支可用 series='人生推演'），并把配套书籍 / 视频博主 / 文档转成 upsert_daily 学习任务；
+   优先级动态控制：目标达成前这些人际学习任务 priority 填 P3、weight ≤ 30，detail 写「目标达成前仅作前置预习」；在 log_change 里注明「目标落地后需自动提升优先级、纳入常态化学习」，不要为它生成大批高优先级任务。
+20. 人际风险同步提取：远期分支的 risk 字段必须写人际风险（圈子大小、言行影响、容易踩坑点、避雷事项），例如县域熟人圈子小、言行影响口碑；兼职接单要提防中介与版权坑。
+21. 禁止把「做计划」甩给用户：不要生成「制定 XX 计划 / 规划 XX 方案 / 整理 XX 清单 / 构思 XX 思路」这类元任务，节点和 upsert_daily 都不要；计划必须由 AI 一次拆到位，直接产出具
+    体可执行的动作，标题写清「做什么 + 做多少 + 用多久」（例如「背四级核心词 List 1-3，30 分钟」「做 2023 年 12 月四级真题阅读，40 分钟」）；发现这类元任务时改写为可直接动手的动作。
+22. 资源必须是可点开的真实网址，并且必须写清「这个资料是干嘛用的」：detail 的「资源：」段与 upsert_daily 的 support 统一写成「用途描述｜网址」（如「行测刷题网站｜https://www.fenbi.com/」「官方报名入口｜https://bm.scs.gov.cn/」「视频课程｜https://www.icourse163.org/」），用途描述要具体到能不能一眼看出用途（刷题/真题、视频课程、官方入口、技术文档、资料下载…），禁止只写域名或「资料」「相关网站」这类看不出用途的词；暂时找不到网址时写「待检索：〈要查什么〉」，并在末尾【本轮待检索账单清单】给出对应检索 query 交由系统自动检索回填。
+23. 节点内容载体：每个节点按内容自动匹配 content_type（见下方载体规则），最小执行任务用 checklist、汇总统计用 table、资料官网用 link、多结局推演用 branch，同一父节点下可混用多种载体；载体需要结构化内容时补 content_body。
+24. 通用递归拆解：任意节点都按「事件时间节点｜基础信息环境｜风险注意事项｜待完成任务项」4 个子分支继续向外扩散，待完成任务项再拆任务清单 / 阶段计划 / 复盘机制 / 执行方法，一直拆到最小可执行任务为终点；不限层级、不限分支数量，禁止停在粗粒度大任务。
+25. 增量更新：只新增 / 修改 / 删除受影响的节点，禁止一次性清空重写整张思维导图；同名节点就地 update，只有确实不存在时才新建。
+26. 横向关联：节点除了 parentId 纵向挂树，还可用 referenceIds 写横向关联（跨赛道联动、时间冲突、精力冲突、任务互相影响），填本轮 tempId 或已有节点 id。
+27. 公共节点复用：复盘模板、执行方法、资料入口、文档模板只生成一次（加 "shared":true），全网络共享，禁止每条赛道各建一份。
+28. 缺资料不编造：时间、官网、政策数据没把握就不要写死，也不要自己另开检索；改为写入待检索队列（用 op="queue_search"，字段 query / nodeId / priority / estCost），后端会立刻自动联网检索并回填真实网址。
+29. 「本人」中心节点（大脑）：必须有且只有 1 个 kind=self 的中心节点，title 写用户本人的姓名或称呼（如「王文林」，不知道姓名时写「我」），不写某个具体目标或任务，
+    detail 写这个人的发展方向总述（如「大四多赛道并行发展：国考 / 国企 / 英语四级 / 资产与副业四线并行」），series 固定填「核心画像」，parentId 留空；
+    它是整张图顶部的「大脑」，各条赛道 / 目标（kind=domain）全部挂在它下面，并且它永远不能被 remove 或改名成别的目标。首次输出时创建，后续增量按同一标题就地沿用，禁止重复新增。
+30. 正式考试 / 截止日节点：凡是考试、考证、报名、截止类目标（四级、考研、国考、软考、论文答辩…），必须在对应赛道分支的最末端补 1 个 kind=milestone 的「正式考试日 / 截止日」节点，horizon 写真实日期（如 2026-12-12），标题写清「日期 + 时间 + 名称」（如「2026年12月12日 英语四级笔试（9:00-11:20）」）；备考类任务节点的 horizon 必须早于它。这个节点是整条赛道的终点，必须存在，不能省略。
+31. 「部分完成」：DL 任务允许只做一部分。用户说「做完一部分」时，把已做的写进对应节点的 progress_note（如「真题已下载；听力只听了 1 套」），节点 status 置为 doing；不要把没做完的整条任务标成 done。
+32. 层级铁律：一级节点＝赛道 / 目标（kind=domain），直接挂在「本人」中心节点（kind=self）下面；赛道下面的计划、安排、阶段、动作（kind=goal / action / milestone）一律挂在这条赛道节点下面，形成「大脑 → 赛道 → 计划 → 动作」的链条。禁止把计划 / 安排越过赛道直接挂到大脑上，禁止让某一级节点自成一条并行根。
+   例：用户说「我要考四级」→ 大脑下面新增一级节点「英语四级备考」（domain，parentId=大脑 id），四级下的计划 / 安排（报名、背单词、刷真题、听力训练…）全部 parentId=四级节点 id。
+33. 合并重复赛道：同一件事只能有一条赛道节点。若「当前规划节点」里已存在语义相同的赛道（如「四级英语过线」与「英语四级备考」），必须输出 update 把二者统一到同一条（保留一条、把另一条与其子节点改挂到保留的那条下面），禁止在大脑下并存两条同义赛道。
+34. 全局人物画像（op="persona"）：这是跨所有根目标的统一人物画像，不是单个目标的档案；只要本轮对话里出现用户的个人事实、行为特征、资源约束、价值取向或短板风险，就要输出 1 条 persona 增量更新，只填本轮新获得 / 有变化的维度，没变化的维度不要写（不要用空字符串覆盖）。produce 时内容分号分隔，写清具体事实（例如四级历次分数、词汇量、每天精力高的时段、常完不成的任务类型）。
+35. 未来发展路径库（op="path"）：依托画像数据生成 / 更新用户可选的发展方向清单，每条路径必须给出适配得分 score（0~100，按画像自动计算）、advantages（个人优势）、risks（劣势与代价）、prerequisites（前置条件）、evolution（长期推演：能力 / 资产 / 生活变化）。用户四级通过、技能提升等画像变化后，要重新评估并 update 相关路径的 score；用户自己新增的自定义路径（source=user）不要删除，只更新得分。
+36. 路径与规划网络联动：每条 path 的 nodeId 填右侧规划网络里该路径推演子图对应的根节点 id（通常是同 series 的赛道节点或它的远景分支节点），没有对应子图就留空。
+
+${LIFE_DATE_ANCHOR_RULES}
+
+${LIFE_CONTENT_CARRIER_RULES}
+
+【必须输出 JSON】输出只能是一个 JSON 对象，禁止用 Markdown 表格或纯文字代替；漏掉 JSON 会导致本轮内容全部无法入库。
+
+【正确示例】（仅为演示结构与深度，实际按用户真实情况重新推导，禁止照抄文字）
+用户输入「我想考公务员」，输出：
+{"ops":[
+{"op":"add","tempId":"t0","kind":"self","domain":"成长","series":"核心画像","title":"王文林","detail":"方法：四条主线并行推进；验收：各主线闭环；资源：https://bm.scs.gov.cn/","status":"todo","weight":100,"timeGroup":"urgent","parentId":""},
+{"op":"add","tempId":"t1","kind":"domain","domain":"职业","series":"国考备考","title":"国考备考","detail":"方法：按报名—笔试—面试推进；验收：任一阶段闭环；资源：https://bm.scs.gov.cn/","status":"todo","weight":70,"timeGroup":"mid","parentId":"t0"},
+{"op":"add","tempId":"t2","kind":"goal","domain":"职业","series":"国考备考","title":"报名与资格审核通过","detail":"方法：核对岗位条件后报名；验收：初审状态通过；资源：https://bm.scs.gov.cn/","priority":"P1","status":"todo","horizon":"2026-10-24","weight":75,"timeGroup":"urgent","stepNo":1,"parentId":"t1"},
+{"op":"add","tempId":"t3","kind":"action","domain":"职业","series":"国考备考","title":"登录报名网站核对初审状态，10 分钟","detail":"方法：登录账号查看审核状态；验收：状态显示通过；资源：https://bm.scs.gov.cn/","priority":"P1","status":"todo","horizon":"2026-10-16","weight":75,"timeGroup":"urgent","stepNo":1,"parentId":"t2"},
+{"op":"add","tempId":"t4","kind":"action","domain":"职业","series":"国考备考","title":"筛选本县可报岗位并标记限制条件，40 分钟","detail":"方法：按专业学历筛职位表；验收：产出候选清单；资源：https://bm.scs.gov.cn/","priority":"P1","status":"todo","horizon":"2026-10-20","weight":75,"timeGroup":"urgent","stepNo":2,"parentId":"t2","deps":["t3"]},
+{"op":"upsert_daily","date":"2026-10-16","title":"登录报名网站核对初审状态，10 分钟","estMinutes":10,"priority":"P1","status":"todo","preTask":"","blocker":"岗位数量少","support":"https://bm.scs.gov.cn/"}
+]}
+注意：parentId 与 deps 可以引用本轮先出现的 tempId（如 t1/t2）；每个 series 至少 4 个 action 叶子；每个 action 都要带可点开的网址、stepNo 与 deps；禁止「制定 XX 计划」类元任务。`;
+
+const LIFE_REGENERATE_SYSTEM = `你是一个人生规划结构化助手。请基于全部对话，重新构建一份完整的人生规划节点列表。
+输出两部分：① 自然语言规划解读（summary，一段话讲清整体思路、赛道关系与本次调整）② 结构化节点数组（nodes，携带 id / parent_id 供规划网络提取渲染）。两部分合并成同一个 JSON 对象输出，不要任何解释文字或代码块标记。结构如下：
+{"summary":"自然语言规划解读，一段话，200字内","nodes":[{"kind":"self|domain|goal|action|milestone","domain":"学业|职业|财务|健康|家庭|成长","series":"所属主线，12字内，如 国考备考/英语四级/个人资产；远期推演分支统一填 人生推演","title":"20字内，写清具体动作不要只写单词","detail":"160字内，按「方法：…；验收：…；资源：…」写清操作方法、验收标准与资源链接","risk":"风险提示，40字内，没有就留空","priority":"任务类节点填 P0|P1|P2|P3，其余留空","status":"todo|doing|done|drop，drop 表示该分支已被动态剪枝","horizon":"任务写截止日期 YYYY-MM-DD，其他写时间刻度，例如 现在 / 1年内 / 2028 / 5年后","weight":1到100的整数,"timeGroup":"urgent|mid|future","stepNo":任务类节点写执行序号整数，其余留空,"parentRef":指向本数组的元素下标，空表示挂在中心节点,"depsRef":[前置节点在本数组的下标],"referenceRef":[横向关联节点在本数组的下标，跨赛道联动 / 冲突],"shared":是否公共复用节点（复盘 / 方法 / 资料 / 模板填 true，全网络只生成一次）,"content_type":"text|table|link|checklist|progress|branch|calc|doc，按内容自动匹配","content_body":载体结构化内容，可选，见下方载体规则}],"examAnchors":[{"subject":"考试全称","examDate":"YYYY-MM-DD 真实考试首日","examTitle":"日期+时间+考试名称","ticketStart":"准考证打印窗口开启日 YYYY-MM-DD","ticketEnd":"准考证打印窗口最后一天 YYYY-MM-DD（必须早于考试日）","officialUrl":"已核实可打开的官方主站","printUrl":"已核实可打开的准考证打印/报名系统入口"}]}
+要求：
+1. 必须有且只有 1 个 kind=self 的中心画像节点（大脑），parentRef 留空，title 写用户本人的姓名或称呼（如「王文林」，不知道姓名写「我」），series 固定填「核心画像」。
+2. 3 到 6 个 kind=domain 领域节点（＝赛道 / 目标），parentRef 全部指向中心节点下标（即 0），一定要挂在「大脑」下面，禁止让赛道自成一条并列根。
+3. 每条赛道（domain）下面挂 2 到 4 个 goal 计划节点，parentRef 指向所属赛道下标；每个 goal 下必须再拆 2 到 5 个 kind=action 的最小任务，parentRef 指向所属 goal 下标，形成「大脑→赛道→计划→动作」至少 4 层的父子链；禁止一个赛道只挂 1 个节点、禁止把计划 / 安排越过赛道直接挂到中心节点上。
+3b. 同一件事只能有一条赛道：语义相同的赛道必须合并成一条（例如「四级英语过线」与「英语四级备考」只能留一条，另一条及其子节点改挂到保留的那条下面），禁止在中心节点下并存两条同义赛道。
+4. 至少 2 个（复杂目标 3~4 个）kind=milestone 分支节点，各代表一条结局分支，horizon 写清「几年后」的具体状态。
+4b. 考试 / 考证 / 报名 / 截止类赛道，必须在该赛道分支末端补 1 个 kind=milestone 的「正式考试日 / 截止日」节点：horizon 写真实日期（如 2026-12-12），标题写「日期 + 时间 + 名称」（如「2026年12月12日 英语四级笔试（9:00-11:20）」）；同赛道备考任务的 horizon 必须早于它。
+5. 节点总数控制在 24 到 60 个之间（宁可多拆也不要把大目标留成一整块）；每个 series 至少 4 个 action 叶子节点；信息不足的部分可留待后续对话补充。
+6. 任务类节点（kind=action）必须给出 timeGroup 与 stepNo：stepNo 按执行先后从 1 开始递增，最早要做的排最小号；
+   timeGroup 由截止日期距【今天】的天数换算：30 天以内为 urgent，31 到 90 天为 mid，90 天以上为 future。
+7. depsRef 只填直接前置任务（最多 2 个），表示「这件事必须先完成哪些事」，序号小的排前面。
+8. 任务名必须直白口语化、写清具体动作，禁止「投资行为风控」这类抽象名词；同一个任务只能出现一次。
+9. 结局分支至少两条（复杂目标可 3~4 条）：kind=milestone、timeGroup=future、series='人生推演'，标题用「〈分支结果〉-〈后续走向〉」这类直白写法；
+   horizon 写时间刻度，depsRef 指向最后一步任务的下标；每条分支的递归子节点也要写，depsRef 指向同一条分支的上一层节点。
+10. 每个节点都要给 series（所属主线，12 字内，如 国考备考/英语四级/个人资产），整份规划控制在 3~6 条主线；
+   同一条主线的全部节点必须用同一个 series 值；模块9 的远期人生推演节点统一用 series='人生推演'。
+10b. 覆盖度：对话中用户提到的每一条赛道 / 目标（例如国考、省考、软考、四级、秋招、财务风控、考研）都必须各自建一条 kind=domain 分支，一条都不能漏；即使用户只提了一句、信息很少，也要为该赛道拆出至少 3 个可执行 action，禁止因为「信息不足」整条省略。
+11. 递归深度：任务类节点必须拆到单次 15~90 分钟的最小可执行单元，并用 depsRef 串成前置依赖链，禁止只给一批粗粒度大任务；
+   detail 按「方法：…；验收：…；资源：…」写清操作方法、验收标准与资源链接，risk 写风险提示；涉及时间窗口的目标按真实窗口倒排，禁止滞后错过窗口期；
+   资源段优先写 http 开头、点击就能打开的真实网址（报名官网 / 刷题真题网站 / 教学视频链接），文字只作链接备注，暂时没有网址时写「待检索：〈要查什么〉」并在末尾【本轮待检索账单清单】给出对应检索 query，由系统自动检索回填真实网址。
+18. 节点内容载体：每个节点按内容自动匹配 content_type（见下方载体规则），最小执行任务用 checklist、汇总统计用 table、资料官网用 link、多结局推演用 branch，同一父节点下可混用多种载体；载体需要结构化内容时补 content_body。
+19. 通用递归拆解：任意节点都按「事件时间节点｜基础信息环境｜风险注意事项｜待完成任务项」4 个子分支继续向外扩散，待完成任务项再拆任务清单 / 阶段计划 / 复盘机制 / 执行方法，一直拆到最小可执行任务为终点；不限层级、不限分支数量，禁止停在粗粒度大任务。
+20. 首次构建要产出一份完整的放射式父子树：L0 中心节点 → L1 各赛道 → 逐层向外扩散；同名节点只出现一次，parentRef / depsRef 必须成链。
+21. 增量维护、禁止整体重写：提问里给了【当前已有节点】清单，凡是同一件事（含义相同即算同一件，例如「国考报名」与「国考报名与资格审核」），标题必须原样沿用清单里的写法、不要改写措辞，后端会据此就地更新；只有清单里确实没有的全新内容才新建节点，作废的节点通过减少对应条目来删除；禁止把标题全部换个说法重写一遍。
+22. 时间锚定：所有任务类节点的 horizon 必须是绝对公历日期 YYYY-MM-DD（按【今天】推算），禁止写「近期 / 中期 / 远期」这类模糊刻度；考试 / 报名 / 截止类赛道必须先确定真实日期，再把该赛道所有备考任务倒排到真实日期**之前**，严禁排到考试日之后（见下方日期锚定铁律）。
+23. 考试 / 报名 / 审核 / 面试这类「有官方时间窗口」的赛道，落库前必须先确认真实日期：先在对话上下文与联网检索结果里找官方公告（考试院、招录机关官网、报名系统），拿到确切日期后再倒排；把「岗位初筛截止、报名截止、资格审核、准考证打印、笔试、面试」这些关键节点逐条建出来并各自写上真实日期，禁止只写一个笼统的赛道节点却没有关键日期。
+24. 日期无法确认时必须显式说明，禁止编造：如果联网检索与你掌握的公开信息都无法确定确切日期，就在该节点 horizon 里写「待核实：〈要找的官方入口〉」，同时在 summary 里用一句话点明「哪几个日期需要用户去官网确认」，绝不能留空或者拿一个看起来合理的日期糊弄过去。
+25. timeGroup 只是给前端分组的辅助字段，后端会在落库前按 horizon 距【今天】的天数统一重算（≤30 紧急 / ≤90 中期 / 其余远期，无日期的赛道节点继承本 series 最早日期）。所以请把精力全部放在「horizon 日期是否真实」上，不要为 timeGroup 是否好看纠结。
+26. 【考试类赛道硬规则】凡是含正式考试（软考 / 国考 / 四级 / 考研 / 教资等）的赛道，必须做到这五件事，缺一即视为不合格：
+   ① 单独建一个「考试当天」节点：kind=milestone，title 写「日期 + 时间 + 名称」（形如「〈YYYY年M月D日〉 〈考试名称〉（〈上午/下午〉开考）」，日期只能来自检索结果），horizon 就是真实考试日；
+   ② 该赛道**所有备考类任务**（模拟考、套题、冲刺、复盘、押题、错题回看）的 horizon 必须**早于考试日**，最晚只能到考试**前一日**——考试当天一早就进考场，任何排在当天或当天的模拟都是无效安排；
+   ③ 必须单独立一条「打印准考证」动作（kind=action）：标题写「打印〈考试名〉准考证，20 分钟」，startDate 写准考证打印窗口开启日，horizon 写窗口最后一天（且必须早于考试日）；窗口日期查不到时用「考试前 7 天开放打印」这一通用规律推算，写进 summary 提示用户核对；
+   ④ 必须在该赛道末端推演「考过」与「没考过」两条结局（kind=milestone，series='人生推演'）：标题写「〈考试名〉考过 → 〈走向〉」「〈考试名〉未考过 → 〈兜底走向〉」，detail 里明确写清这两条路对**未来 1~3 年**的具体影响（哪些机会拿到 / 失去、时间与金钱代价、要不要重考、主赛道是否受影响），depsRef 指向考试日节点；
+   ⑤ 在 examAnchors 里把上面这些日期与官方入口结构化输出，后端会据此做最终校验。
+27. examAnchors 只填「在这轮检索结果里查到确切日期」的考试；日期没查到就不要填，禁止凭印象编一个看起来合理的日期。officialUrl / printUrl 必须是检索结果里出现过的真实官方入口，一个字都不许来自记忆或拼接。
+28. 链接必须是「已经存在且能打开」的官方入口：只写检索结果里出现过的网址，禁止拼接、猜测或沿用记忆里的老网址；不确定是否还有效时，宁可不写网址、只写「〈官网名〉官网」。
+29. 时间字段禁止兜底文案：horizon / startDate 只允许真实日期 YYYY-MM-DD 或「现在 / 1年内 / 3年后」这类明确刻度；禁止出现「30天内」「未设置」「待排期」「近期」这类模糊表述，禁止让用户自己去推算窗口期。
+30. 禁止生成让用户自己去推演的元任务：以下这类标题一律不许出现 ——「识别未来 90 天内的考试节点」「倒推备考周期」「锁定考试窗口期」「盘点可用资源」「梳理目标优先级」「制定学习计划」。这些推演是 AI 的活，你的职责是直接产出用户当天就能动手的具体动作（做什么 + 做多少 + 用多久），并把日期直接算好写进去。
+31. 每条赛道必须给出「这件事成了会怎样」与「没成会怎样」两种走向：结局节点不能只写「目标达成-稳定发展」这种空话，要写清具体结果（拿到什么资格 / 进什么单位 / 收入变化 / 时间自由度的变化），以及没成之后转向哪条兜底线、需要多久恢复。
+
+${LIFE_DATE_ANCHOR_RULES}
+
+${LIFE_CONTENT_CARRIER_RULES}
+
+【必须输出 JSON】无论用户在对话里看到的是表格还是文字，你的输出必须是且只能是一个 JSON 对象（含 summary 与 nodes 两个字段），禁止用 Markdown 表格代替 JSON；漏掉 JSON 会导致整轮内容无法入库。
+
+【正确示例】（内容仅为演示结构与深度，实际必须按用户真实情况重新推导，禁止照抄文字）
+用户输入：「我想考公务员」
+输出：
+{"summary":"以国考为主线，按报名—笔试—面试三阶段推进，同步用软考兜底；远期分两条结局推演，成功走体制内稳定路线、失利走国企软件岗兜底，本份规划聚焦把报名环节拆到可直接执行的原子动作。","nodes":[
+{"kind":"self","domain":"成长","series":"核心画像","title":"王文林","detail":"方法：四条主线并行推进；验收：各主线闭环；资源：https://bm.scs.gov.cn/","status":"todo","weight":100,"timeGroup":"urgent","parentRef":null,"content_type":"text"},
+{"kind":"domain","domain":"职业","series":"国考备考","title":"国考备考","detail":"方法：按报名—笔试—面试推进；验收：任一阶段闭环；资源：https://bm.scs.gov.cn/","status":"todo","weight":70,"timeGroup":"mid","parentRef":0,"content_type":"text"},
+{"kind":"goal","domain":"职业","series":"国考备考","title":"报名与资格审核通过","detail":"方法：核对岗位条件后报名；验收：初审状态通过；资源：https://bm.scs.gov.cn/","priority":"P1","status":"todo","horizon":"2026-10-24","weight":75,"timeGroup":"urgent","stepNo":1,"parentRef":1,"depsRef":[],"content_type":"progress","content_body":{"done":0,"total":3}},
+{"kind":"action","domain":"职业","series":"国考备考","title":"登录报名网站核对初审状态，10 分钟","detail":"方法：登录个人账号查看审核状态；验收：状态显示通过或列出待办；资源：https://bm.scs.gov.cn/","priority":"P1","status":"todo","horizon":"2026-10-16","weight":75,"timeGroup":"urgent","stepNo":1,"parentRef":2,"depsRef":[],"content_type":"checklist","content_body":[{"text":"打开报名官网并登录","done":false},{"text":"查看审核状态结论","done":false}]},
+{"kind":"action","domain":"职业","series":"国考备考","title":"筛选本县可报岗位并标记限制条件，40 分钟","detail":"方法：按专业学历筛选职位表；验收：产出候选岗位清单；资源：https://bm.scs.gov.cn/","priority":"P1","status":"todo","horizon":"2026-10-20","weight":75,"timeGroup":"urgent","stepNo":2,"parentRef":2,"depsRef":[3],"content_type":"table","content_body":{"head":["岗位","学历要求","专业限制","是否可报"],"rows":[["示例岗位 A","本科","计算机类","可报"]]}},
+{"kind":"action","domain":"职业","series":"国考备考","title":"行测资料分析专项刷题 20 道，40 分钟","detail":"方法：掐时间刷题并记录错因；验收：正确率≥75%；资源：https://www.fenbi.com/","priority":"P1","status":"todo","horizon":"2026-11-28","weight":75,"timeGroup":"mid","stepNo":3,"parentRef":2,"depsRef":[4],"content_type":"calc","content_body":{"label":"正确率","expr":"正确题数 / 总题数","result":"待统计"}},
+{"kind":"milestone","domain":"职业","series":"人生推演","title":"目标达成-稳定发展","detail":"方法：主线任务逐项达成；验收：主目标完成；资源：https://bm.scs.gov.cn/","status":"todo","weight":80,"timeGroup":"future","parentRef":1,"depsRef":[5],"content_type":"branch","content_body":[{"cond":"主线任务全部达成","then":"进入体制内稳定路线"},{"cond":"主赛道受阻","then":"转向国企软件岗兜底"}]}
+]}
+注意示例体现的四点：① 先给 summary 自然语言解读，再给 nodes 结构化数组；② parentRef / depsRef 填的是【上面这个数组里元素的下标】（从 0 开始），不是字符串 id；self 是下标 0；③ 同一个 series 下有 domain→goal→action 至少 3 层，且每个 series 至少 4 个 action 叶子；④ 每个节点都带 content_type（最小任务 checklist、汇总 progress/table、分支 branch、测算 calc），每个 action 都带可点开的真实网址与 stepNo、depsRef，计划已拆到最小动作，没有「制定 XX 计划」这类元任务。
+
+【禁止示例】（出现即成失败）
+✗ 生成「制定国考备考计划」「整理选岗思路」「规划软考学习方案」——把做计划甩给用户，必须改写成「背核心词 List 1-3，30 分钟」这类可直接动手的动作。
+✗ 一个 series 下只挂 1 个节点，不往下拆。
+✗ 用 Markdown 表格或纯文字代替 JSON 输出。
+12. 思维导图式发散：以用户的想法 / 爱好 / 项目为主节点向外发散，除学习路线、知识点、渠道资源、工具物料、分阶段任务、风险节点外，还要有「学成后的价值」节点——兼职变现方向与接单渠道、可报考证书与报名时间、职场与个人增益（团建才艺、简历素材、社交加分）、跨技能组合机会；全部归入对应 series。
+13. 可行性过滤：高投入低收益的分支 weight 填 ≤30、priority 填 P3，并在 detail 末尾写「可行性：〈取舍理由〉」。
+14. 里程碑准入：考级、兼职、登台、变现等后续分支节点的 depsRef 指向对应前置里程碑下标，前置里程碑未完成时这些节点 status 填 todo（前端显示「待解锁」）。
+15. 动态剪枝：与主赛道冲突或已明确放弃的分支，其节点 status 填 drop，并在 detail 里写明剪枝理由，不为其生成每日任务。
+16. 远期成功分支的环境适配衍生：目标「成功达成」分支必须衍生职场人际、沟通方式、人情分寸、办事处事逻辑节点，按该目标真实所属环境（县域体制 / 国企 / 互联网开发 / 自由兼职 / 校园等）独立推导，禁止所有目标套同一段文字；拆出上下级沟通、同事协作、汇报方式、人情边界、禁忌红线、社交取舍、圈子特点等子节点，risk 写人际风险（圈子大小、言行影响、容易踩坑点、避雷事项）。
+   优先级动态控制：这类人际学习节点的 priority 填 P3、weight 填 ≤30、timeGroup 填 future，detail 里注明「目标达成前仅作前置预习，达成后自动提升优先级、纳入常态化学习」。
+17. 禁止把「做计划」甩给用户：不要生成「制定 XX 计划 / 规划 XX 方案 / 整理 XX 清单」这类元任务，计划由 AI 一次拆到位，直接产出具
+    体可执行的动作，标题写清「做什么 + 做多少 + 用多久」，例如「背四级核心词 List 1-3，30 分钟」「做 2023 年 12 月四级真题阅读，40 分钟」。`;
+
+function parseLifeJson(raw) {
+  const text = String(raw || '');
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try { return JSON.parse(match[0]); } catch (_) { return null; }
+}
+
+// 抢救被截断的 JSON：输出超出上限时数组会断在中途，这里逐个截出「完整」的对象，
+// 尽量保住已经生成好的节点，而不是整轮丢弃。
+function salvageJsonObjects(raw) {
+  const text = String(raw || '');
+  const start = text.indexOf('[');
+  if (start < 0) return null;
+  const objs = [];
+  let depth = 0;
+  let buf = '';
+  let inStr = false;
+  let esc = false;
+  for (let i = start + 1; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inStr) {
+      buf += ch;
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; buf += ch; continue; }
+    if (ch === '{') { depth += 1; buf += ch; continue; }
+    if (ch === '}') {
+      depth -= 1;
+      buf += ch;
+      if (depth === 0) { try { objs.push(JSON.parse(buf)); } catch (_) { /* 单条坏对象跳过 */ } buf = ''; }
+      continue;
+    }
+    if (depth > 0) buf += ch;
+  }
+  return objs.length ? objs : null;
+}
+
+// AI 有时只回 Markdown 文本（表格 + mermaid）不带 JSON 块，此时把表格兜底解析成入库操作，
+// 避免出现「AI 表格里明明写了任务、系统里啥也没落」的断链。
+function planLifeOpsFromMarkdown(raw, nodes = []) {
+  const text = String(raw || '');
+  if (!/[|｜]/.test(text)) return [];
+  const existingSeries = [...new Set(nodes.map(node => String(node.series || '').trim()).filter(Boolean))];
+  // 该系列已有领域 / 目标节点时直接挂上去，没有就在本轮补一个领域节点，保证父子层级成立
+  const parentOf = new Map();
+  for (const node of nodes) {
+    const key = String(node.series || '').trim();
+    if (key && !parentOf.has(key) && (node.kind === 'domain' || node.kind === 'goal')) parentOf.set(key, String(node.id));
+  }
+  const clean = value => String(value || '').replace(/\*\*/g, '').replace(/[`「」]/g, '').trim();
+  const KEYS = {
+    title: ['任务名称', '任务', '事项', '标题', '名称'],
+    date: ['截止时间', '截止日期', '截止', '日期', '时间'],
+    priority: ['优先级', '优先'],
+    deliver: ['交付标准', '验收标准', '交付', '验收'],
+    risk: ['风险提示', '风险'],
+    resource: ['资料入口', '资料', '资源', '链接', '网址'],
+    pre: ['前置任务', '前置']
+  };
+  const cellOf = (cells, header, keys) => {
+    const index = keys.map(key => header.findIndex(item => item.includes(key))).find(value => value >= 0);
+    return index === undefined || index < 0 ? '' : clean(cells[index]);
+  };
+  // 「制定 XX 计划」这类把计划工作甩给用户的元任务不入库
+  const metaTask = /^(制定|规划|整理|构思|梳理|策划|设计)[^，,]{0,8}(计划|方案|清单|思路|策略|路线)$/;
+  const today = todayStr();
+  const ops = [];
+  const draftSeries = new Set();
+  let header = null;
+  let section = '';
+  let step = 0;
+  for (const line of text.split(/\r?\n/)) {
+    const row = line.trim();
+    if (!row) continue;
+    if (!/[|｜]/.test(row)) {
+      const plain = clean(row.replace(/^#+\s*/, ''));
+      if (plain && plain.length <= 24 && !plain.startsWith('-')) {
+        section = plain.replace(/^[①②③④⑤⑥⑦⑧⑨⑩\d.、）)]+\s*/, '').trim() || section;
+      }
+      continue;
+    }
+    const cells = row.replace(/^[|｜]/, '').replace(/[|｜]$/, '').split(/[|｜]/).map(clean);
+    if (!cells.length || cells.every(cell => !cell || /^:?-{2,}:?$/.test(cell))) continue;
+    const joined = cells.join('');
+    if (/任务|事项|名称/.test(joined) && /截止|日期|时间|优先级|交付/.test(joined)) { header = cells; continue; }
+    if (!header || cells.length < 2) continue;
+    const title = cellOf(cells, header, KEYS.title);
+    if (!title || metaTask.test(title)) continue;
+
+    const dateText = cellOf(cells, header, KEYS.date);
+    const dateParts = dateText.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+    const date = dateParts ? `${dateParts[1]}-${String(dateParts[2]).padStart(2, '0')}-${String(dateParts[3]).padStart(2, '0')}` : today;
+    const rawPriority = cellOf(cells, header, KEYS.priority);
+    const priority = /^P[0-3]$/i.test(rawPriority) ? rawPriority.toUpperCase()
+      : rawPriority.includes('高') ? 'P1' : rawPriority.includes('中') ? 'P2' : rawPriority.includes('低') ? 'P3' : 'P1';
+    // 系列归属：优先套用库里已有的主线（含前两个字的关键词命中），否则用所在小节
+    const scope = `${title} ${section}`;
+    let series = existingSeries.find(item => scope.includes(item))
+      || existingSeries.find(item => item.length >= 2 && scope.includes(item.slice(0, 2)))
+      || (section || '对话新增').slice(0, 20);
+    const days = Math.round((Date.parse(`${date}T00:00:00`) - Date.parse(`${today}T00:00:00`)) / 86400000);
+    const timeGroup = Number.isFinite(days) && days <= 30 ? 'urgent' : Number.isFinite(days) && days <= 90 ? 'mid' : 'future';
+
+    if (!parentOf.has(series) && !draftSeries.has(series)) {
+      draftSeries.add(series);
+      const tempId = `md-series-${series}`;
+      ops.push({
+        op: 'add', tempId, kind: 'domain', domain: '成长', title: series, series,
+        status: 'todo', weight: 60, horizon: '1年内', timeGroup: 'mid',
+        detail: `方法：按这条主线逐项推进；验收：该主线下的子任务全部完成；资源：待补充可点开的网址`
+      });
+      parentOf.set(series, tempId);
+    }
+
+    const deliver = cellOf(cells, header, KEYS.deliver);
+    const risk = cellOf(cells, header, KEYS.risk);
+    const resource = cellOf(cells, header, KEYS.resource);
+    const preTask = cellOf(cells, header, KEYS.pre);
+    step += 1;
+    ops.push({
+      op: 'add', kind: 'action', domain: '成长', title, series, priority,
+      detail: `方法：${deliver || '按交付标准一步步执行'}；验收：${deliver || '完成该任务并记录结果'}；资源：${resource || '待补充可点开的网址'}`,
+      risk, status: 'todo', horizon: date, weight: 60, timeGroup, stepNo: step,
+      parentId: parentOf.get(series)
+    });
+    ops.push({
+      op: 'upsert_daily', title, date, priority, estMinutes: 0, status: 'todo',
+      preTask, blocker: risk, support: resource || deliver
+    });
+  }
+  return ops;
+}
+
+// 重建时只喂最近若干轮真实对话：全量历史会让提示词过长直接超时；
+// 同时剔除 role=system 的面板变更通知，否则会被当成「导师」的话混进上下文。
+function recentLifeTranscript(messages, limit = 24) {
+  const list = (messages || [])
+    .filter(m => m.role === 'user' || m.role === 'assistant')
+    .slice(-limit);
+  return lifeTranscript(list);
+}
+
+// 规划重建 / 增量更新这两条路径都不走对话工具链（callAI 的 tools 传 null），以前完全不联网，
+// 于是「国考报名截止、笔试时间」这类必须有官方出处的日期只能靠模型编或者留空。
+// 这里在生成前做一次定向检索：从对话里认出用户在追的关键考试 / 招录窗口，逐个查真实时间并注入提示词。
+const LIFE_DATE_SUBJECTS = [
+  { name: '国家公务员考试', keys: ['国考', '国家公务员'] },
+  { name: '省公务员考试', keys: ['省考', '省级公务员'] },
+  { name: '全国大学英语四级考试', keys: ['四级', 'CET4'] },
+  { name: '计算机软件水平考试', keys: ['软考', '软件水平考试', '软件设计师'] },
+  { name: '全国硕士研究生招生考试', keys: ['考研', '研究生考试'] },
+  { name: '教师资格证考试', keys: ['教资', '教师资格'] }
+];
+async function buildLifeDateContext(messages) {
+  const text = (messages || []).map(m => String(m.content || '')).join('\n');
+  const subjects = LIFE_DATE_SUBJECTS.filter(item => item.keys.some(key => text.includes(key)));
+  if (!subjects.length) return '';
+  const year = new Date().getFullYear();
+  const blocks = [];
+  for (const item of subjects.slice(0, 3)) {
+    try {
+      const result = await webSearch(`${item.name} ${year} 报名时间 笔试时间 官方公告`);
+      // 单次检索现在能拿到 20+ 条，全塞进提示词会把上下文撑爆，只取前 10 条最相关的
+      const trimmed = { provider: result?.provider, cached: result?.cached, results: (result?.results || []).slice(0, 10) };
+      const formatted = formatSearchContext(trimmed);
+      if (formatted) blocks.push(`【${item.name} · 联网检索到的官方时间信息（以此为准，不要凭印象改写）】\n${formatted}`);
+    } catch (err) {
+      console.log(`[life-date] ${item.name} 检索失败：${err.message}`);
+      blocks.push(`【${item.name}】本次未能联网检索到官方时间，相关日期一律写「待核实：请到官方报名系统确认」，不得编造。`);
+    }
+  }
+  if (!blocks.length) return '';
+  return ['【时间锚定铁律】下列日期来自实时联网检索，优先级高于你的记忆；与记忆冲突时一律采用检索结果。',
+    '其中明确出现的报名截止 / 笔试 / 面试日期，必须逐条建成独立节点并写进 horizon（YYYY-MM-DD）。',
+    blocks.join('\n\n')].join('\n');
+}
+
+// ===== 考试锚点：只做「通用校验与补齐」，日期与入口一律来自联网检索 =====
+// 这里不预置任何考试的具体日期 / 网址 —— 那是模型凭「记忆」编造的温床。
+// 日期与官方入口的唯一来源是两条：① buildLifeDateContext() 生成前注入的实时检索结果
+// ② 模型据检索结果整理出的 examAnchors 结构化字段；本模块只负责校验它、并补齐它没做的事。
+function lifeDateShift(date, days) {
+  const d = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return date;
+  d.setDate(d.getDate() + days);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+const LIFE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// 锚点只认模型从检索结果整理出来的 examAnchors。
+// 日期没通过格式校验的一律丢弃 —— 宁可没有锚点，也不能用假日期去改用户的规划。
+function lifeExamAnchors(text, declared) {
+  const merged = [];
+  const seen = new Set();
+  const push = item => {
+    if (!item || !item.examDate || !LIFE_DATE_RE.test(String(item.examDate))) return;
+    const key = lifeTitleKey(item.subject || '');
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    merged.push(item);
+  };
+  for (const item of Array.isArray(declared) ? declared : []) {
+    const subject = lifeText(item?.subject, 60);
+    if (!subject) continue;
+    const examDate = lifeText(item?.examDate || item?.date, 10);
+    push({
+      subject,
+      keys: [subject],
+      examDate,
+      examTitle: lifeText(item?.examTitle, 200) || `${examDate} ${subject}`,
+      ticketStart: LIFE_DATE_RE.test(String(item?.ticketStart || '')) ? String(item.ticketStart) : lifeDateShift(examDate, -7),
+      ticketEnd: LIFE_DATE_RE.test(String(item?.ticketEnd || '')) ? String(item.ticketEnd) : lifeDateShift(examDate, -1),
+      officialUrl: lifeText(item?.officialUrl, 300),
+      printUrl: lifeText(item?.printUrl, 300)
+    });
+  }
+  return merged;
+}
+
+function lifeAnchorMatches(anchor, text) {
+  const haystack = String(text || '');
+  return [anchor.subject, ...(anchor.keys || [])].filter(Boolean).some(key => key.length >= 2 && haystack.includes(key));
+}
+
+// 「考试当天节点」与「备考节点」的识别口径，全局共用：前者是里程碑本体，后者是围绕它的准备动作
+const LIFE_EXAM_DAY_RE = /考试|笔试|开考|面试|机考|考场|准考证/;
+const LIFE_PREP_RE = /模拟|模考|冲刺|刷题|真题|复习|复盘|背诵|练习|押题|串讲/;
+
+// 备考类任务一律不得排到考试当天或之后：当天一早就要进考场，写「模拟 / 冲刺 / 复盘」都是无效安排。
+// 模型很爱把模拟考的截止日期直接写成考试日，这里按锚点统一提前到考试前一日。
+function anchorExamDeadlines(items, anchors) {
+  let fixed = 0;
+  for (const item of items) {
+    const horizon = lifeText(item?.horizon, 32);
+    if (!LIFE_DATE_RE.test(horizon)) continue;
+    const anchor = anchors.find(a => a.examDate === horizon);
+    if (!anchor) continue;
+    // 真正「考试日 / 准考证 / 面试」这类节点本身就该落在考试日，不能前移
+    if (LIFE_EXAM_DAY_RE.test(String(item.title || ''))) continue;
+    item.horizon = lifeDateShift(anchor.examDate, -1);
+    fixed += 1;
+  }
+  if (fixed) console.log(`[life-anchor] ${fixed} 个备考任务的截止日期被从考试日前移到考试前一日`);
+  return fixed;
+}
+
+// 不依赖任何预置日期的自纠正：只扫规划本身 —— 同一天里既有「考试当天」的节点、
+// 又有「模拟 / 刷题 / 复盘」这类备考节点时，后者一定是排错了，统一提前一日。
+// 这条规则靠规划内部的一致性推理，换任何考试都成立，不需要在代码里写死日期。
+function shiftDeadlinesOffExamDay(items) {
+  const examDays = new Set();
+  for (const item of items) {
+    const horizon = lifeText(item?.horizon, 32);
+    if (LIFE_DATE_RE.test(horizon) && LIFE_EXAM_DAY_RE.test(String(item?.title || ''))) examDays.add(horizon);
+  }
+  if (!examDays.size) return 0;
+  let fixed = 0;
+  for (const item of items) {
+    const horizon = lifeText(item?.horizon, 32);
+    if (!examDays.has(horizon)) continue;
+    if (LIFE_EXAM_DAY_RE.test(String(item?.title || ''))) continue;
+    if (!LIFE_PREP_RE.test(String(item?.title || ''))) continue;
+    item.horizon = lifeDateShift(horizon, -1);
+    fixed += 1;
+  }
+  if (fixed) console.log(`[life-anchor] ${fixed} 个备考任务的截止日期与「考试当天」撞车，已自动提前到前一日`);
+  return fixed;
+}
+
+// 联网锚点缺席时的兜底推理：直接从规划自身认出考试节点，用它的赛道名当考试名、它的截止日当考试日，
+// 准考证窗口按「考前一周开放、考前一日关闭」的通用惯例推算，官方入口沿用该节点里已有的网址。
+// 全程没有任何写死的日期或域名，换任何考试都适用。
+function lifeDerivedAnchors(items, existing) {
+  const covered = new Set((existing || []).map(anchor => lifeTitleKey(anchor.subject || '')));
+  const derived = [];
+  for (const item of items) {
+    const horizon = lifeText(item?.horizon, 32);
+    if (!LIFE_DATE_RE.test(horizon)) continue;
+    const title = String(item?.title || '').trim();
+    if (!LIFE_EXAM_DAY_RE.test(title) || /准考证/.test(title)) continue;
+    if ((existing || []).some(anchor => lifeAnchorMatches(anchor, `${title} ${item?.series}`))) continue;
+    // 赛道名通常就是考试的正名（如「软考中级软件设计师」），比带日期前缀的节点标题更适合当考试名
+    const series = String(item?.series || '').trim();
+    const subject = lifeText((!series || /推演|总览|全局/.test(series) ? title : series).replace(/\d{4}\s*年|\d{1,2}\s*月|\d{1,2}\s*日/g, '').trim(), 60);
+    const key = lifeTitleKey(subject);
+    if (!key || covered.has(key)) continue;
+    covered.add(key);
+    const urls = lifeUrlsIn(`${item?.detail} ${item?.risk}`);
+    derived.push({
+      subject,
+      keys: [subject],
+      examDate: horizon,
+      examTitle: `${horizon} ${subject}`,
+      ticketStart: lifeDateShift(horizon, -7),
+      ticketEnd: lifeDateShift(horizon, -1),
+      officialUrl: urls[0] || '',
+      printUrl: urls[1] || urls[0] || ''
+    });
+  }
+  if (derived.length) console.log(`[life-anchor] 联网锚点之外，从规划自身认出 ${derived.length} 场考试：${derived.map(a => `${a.subject}@${a.examDate}`).join(' / ')}`);
+  return derived;
+}
+
+// 锚点对应节点的下标：优先取「截止日期＝考试日」的那个节点，其次按标题命中，最后退回同 series 的赛道节点
+function lifeAnchorIndex(items, anchor) {
+  let index = items.findIndex(item => lifeText(item?.horizon, 32) === anchor.examDate && lifeAnchorMatches(anchor, item?.title));
+  if (index >= 0) return index;
+  index = items.findIndex(item => /考试|笔试|开考/.test(String(item?.title || '')) && lifeAnchorMatches(anchor, `${item?.title} ${item?.series}`));
+  if (index >= 0) return index;
+  index = items.findIndex(item => String(item?.kind) === 'domain' && lifeAnchorMatches(anchor, `${item?.title} ${item?.series}`));
+  if (index >= 0) return index;
+  return -1;
+}
+
+// 准考证打印必须是一条独立动作：官方窗口一关就打不出来，没有准考证当天进不了考场。
+// 模型经常只写「考试日」而漏掉打印这一步，这里按锚点补一条，并把已有那条的日期纠正到真实窗口。
+function ensureExamTicketNodes(items, anchors) {
+  let added = 0;
+  for (const anchor of anchors) {
+    const node = items.find(item => /准考证/.test(String(item?.title || '')) && lifeAnchorMatches(anchor, `${item?.title} ${item?.detail} ${item?.series}`));
+    const start = anchor.ticketStart || lifeDateShift(anchor.examDate, -7);
+    const end = anchor.ticketEnd && anchor.ticketEnd < anchor.examDate ? anchor.ticketEnd : lifeDateShift(anchor.examDate, -1);
+    const url = anchor.printUrl || anchor.officialUrl;
+    const detail = `方法：窗口开放当天登录官方打印系统，下载 PDF 后 A4 双面打印 2 份并核对考点 / 场次；验收：手里有纸质准考证且考场信息无错；资源：${url || `待核实：从 ${anchor.officialUrl || '官网首页'} 进入打印入口`}`;
+    if (node) {
+      node.startDate = start;
+      node.horizon = end;
+      if (!/准考证/.test(String(node.title || ''))) node.title = `打印${anchor.subject}准考证`;
+      if (!lifeUrlsIn(node.detail).length && url) node.detail = `${String(node.detail || '').replace(/资源：.*$/, '')}资源：${url}`;
+      continue;
+    }
+    const anchorIndex = lifeAnchorIndex(items, anchor);
+    const fallback = items.find(item => lifeAnchorMatches(anchor, `${item?.series} ${item?.title}`));
+    items.push({
+      kind: 'action',
+      domain: fallback?.domain || '职业',
+      series: fallback?.series || anchor.subject,
+      title: `打印${anchor.subject}准考证，20 分钟`,
+      detail,
+      risk: '错过打印窗口就进不了考场，务必在窗口首日就打好',
+      priority: 'P0',
+      status: 'todo',
+      horizon: end,
+      startDate: start,
+      weight: 90,
+      timeGroup: 'urgent',
+      stepNo: 1,
+      parentRef: anchorIndex,
+      depsRef: [],
+      content_type: 'link',
+      content_body: url ? [{ text: '官方打印入口', url }] : undefined
+    });
+    added += 1;
+  }
+  if (added) console.log(`[life-anchor] 补齐 ${added} 条准考证打印任务`);
+  return added;
+}
+
+// 每个考试都必须推演「考过 / 没考过」两条结局：用户明确要求看到这件事对未来的影响。
+// 模型偶尔会漏，这里按锚点补两条 milestone，detail 里写清未来 1~3 年的影响与兜底动作。
+function ensureExamOutcomeNodes(items, anchors) {
+  let added = 0;
+  for (const anchor of anchors) {
+    const hit = kind => items.some(item => {
+      const text = `${item?.title || ''}${item?.detail || ''}`;
+      return kind.test(text) && lifeAnchorMatches(anchor, text);
+    });
+    const anchorIndex = lifeAnchorIndex(items, anchor);
+    const fallback = items.find(item => lifeAnchorMatches(anchor, `${item?.series} ${item?.title}`));
+    const common = {
+      kind: 'milestone',
+      domain: fallback?.domain || '职业',
+      series: '人生推演',
+      status: 'todo',
+      weight: 70,
+      timeGroup: 'future',
+      parentRef: anchorIndex,
+      content_type: 'branch'
+    };
+    if (!hit(/考过|通过|上岸|拿到证书|拿到资格|顺利合格/)) {
+      items.push({
+        ...common,
+        title: `${anchor.subject}考过 → 多一条硬门槛通行证`,
+        detail: `方法：把证书 / 资格写进简历与报名材料并留档编号；验收：能出示证书编号；资源：${anchor.officialUrl || '待核实：从官网首页进入'}。影响：未来 1 年内多一条可投递的岗位 / 报考通道，可以优先投对这张证有硬要求的岗位；3 年内它是简历上的稳定加分项，但不是主线进度的替代品。`,
+        horizon: '1年内',
+        depsRef: anchorIndex >= 0 ? [anchorIndex] : [],
+        content_body: [{ cond: `${anchor.subject}成绩合格`, then: '优先投递把该证列为硬门槛的岗位 / 招录，同步把证书写进长期简历' }]
+      });
+      added += 1;
+    }
+    if (!hit(/没考过|未通过|没过|失败|失利|落榜/)) {
+      items.push({
+        ...common,
+        title: `${anchor.subject}未考过 → 复盘一次后择机重考或走兜底线`,
+        detail: `方法：出分 3 天内复盘错因，评估下个报名窗口是否值得重考；验收：产出一页复盘并给出「重考 / 转兜底」的结论；资源：${anchor.officialUrl || '待核实：从官网首页进入'}。影响：这次失败消耗掉本次备考时间（约 1~2 个月）与一次机会，但主赛道（另一条并行线）不受影响；未来 1 年内按结论执行 —— 值得补就等下一个考试窗口重考，不值得就把这条线降为可选加分项，把时间压到别的主线上。`,
+        horizon: '1年内',
+        depsRef: anchorIndex >= 0 ? [anchorIndex] : [],
+        content_body: [{ cond: `${anchor.subject}成绩不合格`, then: '3 天内复盘，决定下一个窗口重考或把该线降为可选加分项' }]
+      });
+      added += 1;
+    }
+  }
+  if (added) console.log(`[life-anchor] 补齐 ${added} 条「考过 / 没考过」结局节点`);
+  return added;
+}
+
+function lifeUrlsIn(text) {
+  const found = String(text || '').match(/https?:\/\/[^\s；;，,、）)【】"'<>]+/g) || [];
+  return [...new Set(found.map(url => url.replace(/[.。]$/, '')))];
+}
+
+// 落库前实测每个唯一网址：打不开的死链不能写进规划（用户点开就是「无法访问」）。
+// 最多测 12 个、并发 4、单个 6 秒，测不通的在原文里降级成「请从官网首页进入」的文字提示。
+const LIFE_LINK_TIMEOUT = 6000;
+const LIFE_LINK_MAX = 12;
+
+async function lifeLinkAlive(url) {
+  const attempt = method => fetch(url, {
+    method,
+    redirect: 'follow',
+    signal: AbortSignal.timeout(LIFE_LINK_TIMEOUT),
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36' }
+  });
+  try {
+    const head = await attempt('HEAD');
+    if (head.status < 400) return true;
+    if (![403, 405, 501].includes(head.status)) return false;
+  } catch (_) { /* HEAD 被拒或超时，再用 GET 复核一次 */ }
+  try { return (await attempt('GET')).status < 400; } catch (_) { return false; }
+}
+
+async function verifyPlanLinks(items) {
+  const urls = [];
+  for (const item of items) {
+    for (const field of ['detail', 'risk']) {
+      for (const url of lifeUrlsIn(item?.[field])) if (!urls.includes(url)) urls.push(url);
+    }
+  }
+  const list = urls.slice(0, LIFE_LINK_MAX);
+  if (!list.length) return { checked: 0, dropped: 0 };
+  const dead = new Set();
+  for (let i = 0; i < list.length; i += 4) {
+    const batch = list.slice(i, i + 4);
+    const results = await Promise.all(batch.map(async url => [url, await lifeLinkAlive(url)]));
+    for (const [url, ok] of results) if (!ok) dead.add(url);
+  }
+  if (!dead.size) {
+    console.log(`[life-link] 实测 ${list.length} 个链接全部可达`);
+    return { checked: list.length, dropped: 0 };
+  }
+  for (const item of items) {
+    for (const field of ['detail', 'risk']) {
+      let text = String(item?.[field] || '');
+      if (!text) continue;
+      for (const url of dead) if (text.includes(url)) text = text.split(url).join('（原链接已失效，请从该官网首页进入）');
+      item[field] = text;
+    }
+  }
+  console.log(`[life-link] 实测 ${list.length} 个链接，剔除失效 ${dead.size} 个：${[...dead].join(', ')}`);
+  return { checked: list.length, dropped: dead.size };
+}
+
+// 落库前的统一收口：校验锚点 → 钉死考试类硬时间点 → 补齐准考证任务 → 补齐双向结局 → 实测链接可达性
+async function injectLifeExamAnchors(items, text, declaredAnchors) {
+  // 锚点＝联网检索得到的（模型整理的 examAnchors）＋ 从规划自身认出来的；后者在检索没命中时兜底
+  const seeded = lifeExamAnchors(text, declaredAnchors);
+  const anchors = [...seeded, ...lifeDerivedAnchors(items, seeded)];
+  const report = { anchors: anchors.map(a => `${a.subject}@${a.examDate}`), shifted: 0, selfShifted: 0, tickets: 0, outcomes: 0, checked: 0, dropped: 0 };
+  report.shifted = anchorExamDeadlines(items, anchors);
+  // 没命中任何锚点时也照样纠正：同一截止日上既有「考试当天」节点、又有备考节点，后者必须提前
+  report.selfShifted = shiftDeadlinesOffExamDay(items);
+  report.tickets = ensureExamTicketNodes(items, anchors);
+  report.outcomes = ensureExamOutcomeNodes(items, anchors);
+  Object.assign(report, await verifyPlanLinks(items).catch(() => ({ checked: 0, dropped: 0 })));
+  return report;
+}
+
+// 元规划任务过滤：「识别 / 倒推 / 锁定 / 盘点 XX 窗口」这类节点是让用户自己去推演，
+// 不是用户能直接动手做的事，一律剔除；剔除后按下标重映射 parentRef / depsRef / referenceRef，
+// 否则父子链会因为数组下标错位而整体挂错位置。
+const LIFE_META_TASK_RE = /^(识别|倒推|锁定|盘点|梳理|整理|制定|规划|构思|策划|设计|汇总|评估|确认)[^，,]{0,14}(窗口期|窗口|周期|节点|清单|思路|策略|路线|方案|框架|体系)$/;
+
+function pruneLifeMetaTasks(items) {
+  if (!Array.isArray(items) || !items.length) return items;
+  const keep = items.map((item, index) => (LIFE_META_TASK_RE.test(String(item?.title || '').trim()) ? -1 : index));
+  const removed = keep.filter(index => index === -1).length;
+  if (!removed) return items;
+  const remap = new Map();
+  const kept = [];
+  keep.forEach((index, position) => {
+    if (index === -1) return;
+    remap.set(position, kept.length);
+    kept.push(items[position]);
+  });
+  const fixRef = ref => {
+    const index = Number(ref);
+    if (!Number.isInteger(index)) return ref;
+    return remap.has(index) ? remap.get(index) : null;
+  };
+  for (let i = 0; i < kept.length; i++) {
+    const source = items[keep.filter(index => index !== -1)[i]];
+    if (source?.parentRef !== undefined && source?.parentRef !== null) source.parentRef = fixRef(source.parentRef);
+    if (Array.isArray(source?.depsRef)) source.depsRef = source.depsRef.map(fixRef).filter(value => value !== null);
+    if (Array.isArray(source?.referenceRef)) source.referenceRef = source.referenceRef.map(fixRef).filter(value => value !== null);
+  }
+  console.log(`[life-meta] 剔除 ${removed} 个「让用户自己去推」的元规划任务：${items.filter(item => LIFE_META_TASK_RE.test(String(item?.title || '').trim())).map(item => item.title).join(' / ')}`);
+  return kept;
+}
+
+// 增量路径的同类收口：AI 通过 ops 新增节点时也可能带进「让用户自己去推」的元任务，
+// 这里按同一个正则先过滤掉，避免它们被写进库
+function pruneMetaOps(ops) {
+  if (!Array.isArray(ops) || !ops.length) return ops;
+  const kept = ops.filter(op => !LIFE_META_TASK_RE.test(String(op?.title || '').trim()));
+  const removed = ops.length - kept.length;
+  if (removed) console.log(`[life-meta] 增量剔除 ${removed} 个元规划任务：${ops.filter(op => LIFE_META_TASK_RE.test(String(op?.title || '').trim())).map(op => op.title).join(' / ')}`);
+  return kept;
+}
+
+// 整轮重建兜底：AI 没给 JSON 块、只回了 Markdown 表格时，直接拼出「根 → 领域 → 动作 + 远期双向结局」的完整节点树。
+// 返回 {nodes:[...]}，结构与 /api/life/plan/regenerate 期望的 result 一致（parentRef 用下标引用本轮节点）。
+function planLifeNodesFromMarkdown(raw) {
+  const text = String(raw || '');
+  if (!/[|｜]/.test(text)) return { nodes: [] };
+  const clean = value => String(value || '').replace(/\*\*/g, '').replace(/[`「」]/g, '').trim();
+  const KEYS = {
+    title: ['任务名称', '任务', '事项', '标题', '名称'],
+    date: ['截止时间', '截止日期', '截止', '日期', '时间'],
+    priority: ['优先级', '优先'],
+    deliver: ['交付标准', '验收标准', '交付', '验收'],
+    risk: ['风险提示', '风险'],
+    resource: ['资料入口', '资料', '资源', '链接', '网址']
+  };
+  const cellOf = (cells, header, keys) => {
+    const index = keys.map(key => header.findIndex(item => item.includes(key))).find(value => value >= 0);
+    return index === undefined || index < 0 ? '' : clean(cells[index]);
+  };
+  // 「制定 XX 计划」这类把计划工作甩给用户的元任务不入库，计划由 AI 直接拆成可执行动作
+  const metaTask = /^(制定|规划|整理|构思|梳理|策划|设计)[^，,]{0,8}(计划|方案|清单|思路|策略|路线)$/;
+  const SERIES_HINTS = ['国考', '省考', '秋招', '四级', '软考', '财务', '考研', '实习'];
+  const today = todayStr();
+  const nodes = [];
+  const rootIndex = 0;
+  nodes.push({
+    kind: 'self', domain: '成长', title: '大四多赛道并行发展', series: '核心画像',
+    detail: '方法：四条赛道并行推进；验收：四条主线各自跑通一个闭环；资源：待补充可点开的网址',
+    status: 'todo', horizon: '1年内', timeGroup: 'urgent', weight: 100, stepNo: 0, parentRef: null
+  });
+  const domainIndex = new Map();
+  let header = null;
+  let section = '';
+  let step = 0;
+  for (const line of text.split(/\r?\n/)) {
+    const row = line.trim();
+    if (!row) continue;
+    if (!/[|｜]/.test(row)) {
+      const plain = clean(row.replace(/^#+\s*/, ''));
+      if (plain && plain.length <= 24 && !plain.startsWith('-')) {
+        section = plain.replace(/^[①②③④⑤⑥⑦⑧⑨⑩\d.、）)]+\s*/, '').trim() || section;
+      }
+      continue;
+    }
+    const cells = row.replace(/^[|｜]/, '').replace(/[|｜]$/, '').split(/[|｜]/).map(clean);
+    if (!cells.length || cells.every(cell => !cell || /^:?-{2,}:?$/.test(cell))) continue;
+    const joined = cells.join('');
+    if (/任务|事项|名称/.test(joined) && /截止|日期|时间|优先级|交付/.test(joined)) { header = cells; continue; }
+    if (!header || cells.length < 2) continue;
+    const title = cellOf(cells, header, KEYS.title);
+    if (!title || metaTask.test(title)) continue;
+
+    const dateText = cellOf(cells, header, KEYS.date);
+    const dateParts = dateText.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+    const date = dateParts ? `${dateParts[1]}-${String(dateParts[2]).padStart(2, '0')}-${String(dateParts[3]).padStart(2, '0')}` : today;
+    const rawPriority = cellOf(cells, header, KEYS.priority);
+    const priority = /^P[0-3]$/i.test(rawPriority) ? rawPriority.toUpperCase()
+      : rawPriority.includes('高') ? 'P1' : rawPriority.includes('中') ? 'P2' : rawPriority.includes('低') ? 'P3' : 'P1';
+    const deliver = cellOf(cells, header, KEYS.deliver);
+    const risk = cellOf(cells, header, KEYS.risk);
+    const resource = cellOf(cells, header, KEYS.resource);
+    // 赛道归属：优先从标题里识别关键词，识别不到再用所在小节名
+    const scope = `${title} ${section}`;
+    const series = SERIES_HINTS.find(key => scope.includes(key)) || (section || '行动规划').slice(0, 20);
+    if (!domainIndex.has(series)) {
+      domainIndex.set(series, nodes.length);
+      nodes.push({
+        kind: 'domain', domain: '成长', title: series, series, status: 'todo',
+        detail: '方法：按这条主线逐项推进；验收：该主线下的子任务全部完成；资源：待补充可点开的网址',
+        weight: 60, horizon: '1年内', timeGroup: 'mid', stepNo: 0, parentRef: rootIndex
+      });
+    }
+    const days = Math.round((Date.parse(`${date}T00:00:00`) - Date.parse(`${today}T00:00:00`)) / 86400000);
+    const timeGroup = Number.isFinite(days) && days <= 30 ? 'urgent' : Number.isFinite(days) && days <= 90 ? 'mid' : 'future';
+    step += 1;
+    nodes.push({
+      kind: 'action', domain: '成长', title, series, priority,
+      detail: `方法：${deliver || '按交付标准一步步执行'}；验收：${deliver || '完成该任务并记录结果'}；资源：${resource || '待补充可点开的网址'}`,
+      risk, status: 'todo', horizon: date, weight: 60, timeGroup, stepNo: step,
+      parentRef: domainIndex.get(series)
+    });
+  }
+  if (nodes.length <= 1) return { nodes: [] };
+  // 远期双向结局：无论表格里写没写，重建时都补上「目标达成 / 目标失利兜底」两条推演分支
+  nodes.push({
+    kind: 'milestone', domain: '成长', title: '目标达成-稳定发展', series: '人生推演',
+    detail: '方法：按各条主线任务逐项达成；验收：主目标节点全部完成；资源：待补充可点开的网址',
+    status: 'todo', horizon: '', timeGroup: 'future', weight: 80, stepNo: 0, parentRef: rootIndex
+  });
+  nodes.push({
+    kind: 'milestone', domain: '成长', title: '目标失利-兜底备选路线', series: '人生推演',
+    detail: '方法：切换到备选主线；验收：兜底方案落地；资源：待补充可点开的网址',
+    status: 'todo', horizon: '', timeGroup: 'future', weight: 80, stepNo: 0, parentRef: rootIndex
+  });
+  return { nodes };
+}
+
+// ── 资料检索队列 / 批量审批 / 永久缓存（付费管控核心）──
+// 单条检索预估费用（元）：仅用于生成「预估账单」，可随实际单价调整
+const LIFE_RETRIEVAL_EST_COST = 0.02;
+const LIFE_RETRIEVAL_STATUS = ['pending', 'approved', 'rejected', 'done', 'failed'];
+
+function lifeQueryKey(query) {
+  return crypto.createHash('sha1').update(String(query || '').trim().toLowerCase()).digest('hex');
+}
+
+// 缓存命中直接返回结果并累加命中次数，重复需求不重复扣费
+async function lifeCacheLookup(query) {
+  const key = lifeQueryKey(query);
+  const [rows] = await pool.query('SELECT result FROM life_retrieval_cache WHERE query_key = ? LIMIT 1', [key]);
+  if (!rows.length) return null;
+  await pool.execute('UPDATE life_retrieval_cache SET hit_count = hit_count + 1, updated_at = ? WHERE query_key = ?', [Date.now(), key]);
+  return String(rows[0].result || '');
+}
+
+async function lifeCacheStore(query, result) {
+  const key = lifeQueryKey(query);
+  const now = Date.now();
+  await pool.execute(
+    'INSERT INTO life_retrieval_cache (query_key, query, result, hit_count, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?) ON DUPLICATE KEY UPDATE result = VALUES(result), updated_at = VALUES(updated_at)',
+    [key, lifeText(query, 400), String(result || ''), now, now]
+  );
+}
+
+async function logLifeRetrieval(batchId, action, detail, cost = 0) {
+  await pool.execute(
+    'INSERT INTO life_retrieval_logs (id, batch_id, action, detail, cost, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [crypto.randomUUID(), batchId || '', lifeText(action, 24), lifeText(detail, 400), Number(cost) || 0, Date.now()]
+  );
+}
+
+// 逻辑推演缺资料时只写队列，绝不调用付费检索；命中缓存则直接回填、不进审批队列
+async function queueLifeRetrieval(item) {
+  const query = lifeText(item?.query, 400);
+  if (!query) return '';
+  const cached = await lifeCacheLookup(query);
+  const now = Date.now();
+  const id = crypto.randomUUID();
+  await pool.execute(
+    'INSERT INTO life_retrieval_queue (id, batch_id, node_id, series, title, query, priority, est_cost, status, result, from_cache, created_at, decided_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [
+      id, '', lifeText(item.nodeId, 64), lifeText(item.series, 64), lifeText(item.title, 200), query,
+      LIFE_TASK_PRIORITY.includes(item.priority) ? item.priority : 'P2',
+      cached ? 0 : LIFE_RETRIEVAL_EST_COST, cached ? 'done' : 'pending',
+      cached || null, cached ? 1 : 0, now, cached ? now : 0, now
+    ]
+  );
+  return id;
+}
+
+// ===== 方案A：AI 交回的检索需求不再等人工审批，落库后立刻自动执行一次，并把真实网址回填进规划 =====
+
+// AI 拿不到网址时被要求写成「待检索：〈要查什么〉」，历史数据里还留着「资料名｜搜索关键词」这类点不开的死占位；
+// 自动检索成功后，用真实网址把这些占位原地替换掉
+function replaceResourcePlaceholder(text, url) {
+  const raw = String(text || '');
+  if (!raw || !url) return raw;
+  return raw
+    // 「速度轮滑教学 | 搜索关键词」「个人简历模板｜搜索关键词」→ 保留用途标签，只把占位换成网址（对齐「用途描述｜网址」格式）
+    // 标签字符集排除引号，避免把「资料：」连同左引号一起吃进去、替换后引号落单
+    .replace(/([^；;｜|\n「『]{0,40})[｜|]\s*搜索关键词/g, (match, label) => `${String(label).trim()}｜${url}`)
+    // 搜索关键词「国考行测言语真题」→ 没有用途标签可留，直接换成网址
+    .replace(/搜索关键词[：:]?\s*[「『][^」』]*[」』]/g, url)
+    // 待检索：国考行测历年真题网站
+    .replace(/待检索[：:]\s*[^；;｜|）)\n]*/g, url);
+}
+
+// 从检索结果里挑最值得回填的一条网址：政府官网 > 权威官媒 > 第一条（结果在 multiSearch 阶段已按权威度排过序）
+function pickBestResourceUrl(results) {
+  const list = (Array.isArray(results) ? results : []).filter(item => /^https?:\/\//i.test(String(item?.url || '')));
+  if (!list.length) return '';
+  const official = list.find(item => /(^|\.)gov\.cn(\/|$|:)|(^|\.)gov(\/|$|:)/i.test(item.url));
+  const media = list.find(item => /(xinhuanet|people\.com\.cn|news\.cn|chinanews|chinadaily|cctv|gmw\.cn|moe\.gov)/i.test(item.url));
+  return String((official || media || list[0]).url || '').trim();
+}
+
+// 缓存里存的是格式化文本（没有结构化 result.url），从文本里兜底抓第一条链接，优先 gov.cn
+function pickUrlFromText(text) {
+  const urls = String(text || '').match(/https?:\/\/[^\s）)"'，。]+/g) || [];
+  const official = urls.find(url => /(^|\.)gov\.cn(\/|$|:)/i.test(url));
+  return String(official || urls[0] || '');
+}
+
+// 回填：优先按队列记录的 nodeId 改节点 detail，其次按标题归一化找节点，再退到每日任务的 support 字段
+async function backfillLifeResource(nodeId, title, url) {
+  const now = Date.now();
+  let filled = 0;
+  const candidates = [];
+  if (nodeId) {
+    const [rows] = await pool.query('SELECT id, detail FROM life_plan_nodes WHERE id = ? LIMIT 1', [String(nodeId)]);
+    candidates.push(...rows);
+  }
+  if (!candidates.length && title) {
+    const key = lifeTitleKey(title);
+    const [rows] = await pool.query('SELECT id, title, detail FROM life_plan_nodes');
+    candidates.push(...rows.filter(row => lifeTitleKey(row.title) === key));
+  }
+  for (const row of candidates) {
+    const next = replaceResourcePlaceholder(row.detail, url);
+    if (next === row.detail) continue;
+    await pool.execute('UPDATE life_plan_nodes SET detail = ?, updated_at = ? WHERE id = ?', [next, now, String(row.id)]);
+    filled++;
+  }
+  if (!filled && title) {
+    const [tasks] = await pool.query('SELECT id, support FROM life_daily_tasks WHERE title = ? LIMIT 10', [title]);
+    for (const task of tasks) {
+      const next = replaceResourcePlaceholder(task.support, url);
+      if (next === task.support) continue;
+      await pool.execute('UPDATE life_daily_tasks SET support = ?, updated_at = ? WHERE id = ?', [next, now, String(task.id)]);
+      filled++;
+    }
+  }
+  return filled;
+}
+
+// 自动执行一批检索需求：逐条联网 → 结果永久写回缓存与队列 → 把最权威的网址回填到对应节点 / 任务。
+// 单条失败只标记该条，不影响其他条目，也不抛给调用方（画布同步不能因为某个检索源挂了就整轮失败）。
+async function autoRunLifeRetrieval(entries, userId = 'life-auto') {
+  // id 只有「本轮 AI 刚入队」的条目才有；历史遗留占位是直接补的，没有队列行
+  const list = (Array.isArray(entries) ? entries : []).filter(item => item && item.query);
+  if (!list.length) return 0;
+  // 自动检索走独立配额，不与用户对话的搜索会话互相挤占
+  resetSearchSession(userId);
+  let filled = 0;
+  for (const item of list) {
+    try {
+      // 同一问法之前查过就直接复用缓存，不再打一次上游
+      const cachedResult = await lifeCacheLookup(item.query);
+      if (cachedResult) {
+        if (item.id) await pool.execute("UPDATE life_retrieval_queue SET result = ?, status = 'done', from_cache = 1, updated_at = ? WHERE id = ?", [cachedResult, Date.now(), item.id]);
+        const cachedUrl = pickUrlFromText(cachedResult);
+        if (cachedUrl) filled += await backfillLifeResource(item.nodeId, item.title, cachedUrl);
+        continue;
+      }
+      const found = await webSearch(item.query, { userId, getSecret: getUserSecret });
+      const results = Array.isArray(found?.results) ? found.results : [];
+      const text = lifeText(typeof found === 'string' ? found : formatSearchContext(found), 4000);
+      await lifeCacheStore(item.query, text);
+      if (item.id) await pool.execute("UPDATE life_retrieval_queue SET result = ?, status = 'done', from_cache = 0, updated_at = ? WHERE id = ?", [text, Date.now(), item.id]);
+      const url = pickBestResourceUrl(results);
+      if (url) filled += await backfillLifeResource(item.nodeId, item.title, url);
+    } catch (err) {
+      if (item.id) await pool.execute("UPDATE life_retrieval_queue SET status = 'failed', result = ?, updated_at = ? WHERE id = ?", [lifeText(`自动检索失败：${err.message}`, 300), Date.now(), item.id]);
+      console.warn(`[Life检索] 自动执行失败 query=${item.query}：${err.message}`);
+    }
+  }
+  await logLifeRetrieval('', 'auto', `自动检索 ${list.length} 条，回填真实网址 ${filled} 处`);
+  return filled;
+}
+
+// 单轮最多顺手补几处历史遗留占位（避免一次对话把检索额度全烧光）
+const LIFE_LEGACY_SWEEP_LIMIT = 6;
+
+// 从历史遗留的占位文本里推一个检索意图：优先取「待检索：」后的原文，其次用「资料名 + 任务标题」
+function legacySearchIntent(text, title) {
+  const raw = String(text || '');
+  const pending = /待检索[：:]\s*([^；;｜|）)\n]{2,60})/.exec(raw);
+  if (pending) return pending[1].trim();
+  const label = /([^；;｜|\n「『]{2,30})[｜|]\s*搜索关键词/.exec(raw);
+  const name = label ? label[1].replace(/^.*[：:]\s*/, '').trim() : '';
+  const cleanTitle = String(title || '').replace(/[，,].*$/, '').trim();
+  return [name, cleanTitle].filter(Boolean).join(' ');
+}
+
+// 扫一遍库里还留着「资料名｜搜索关键词」「待检索：…」的节点与任务，产出待补齐清单
+async function collectLegacyResourceIntents(limit = LIFE_LEGACY_SWEEP_LIMIT) {
+  const entries = [];
+  const [nodes] = await pool.query("SELECT id, title, detail FROM life_plan_nodes WHERE detail LIKE '%搜索关键词%' OR detail LIKE '%待检索%'");
+  for (const row of nodes) {
+    const query = legacySearchIntent(row.detail, row.title);
+    if (query) entries.push({ id: '', query, nodeId: String(row.id), title: row.title });
+    if (entries.length >= limit) return entries;
+  }
+  const [tasks] = await pool.query("SELECT id, title, support FROM life_daily_tasks WHERE support LIKE '%搜索关键词%' OR support LIKE '%待检索%'");
+  for (const row of tasks) {
+    const query = legacySearchIntent(row.support, row.title);
+    if (query) entries.push({ id: '', query, nodeId: '', title: row.title });
+    if (entries.length >= limit) break;
+  }
+  return entries;
+}
+
+// 检索账单载荷（形如 {"query":"…","nodeId":"…"} 的 JSON）曾被当成任务节点落库，用户看到的就是一句机器话。
+// 统一在这里拦下：凡 contentBody 里带 "query" 字段的，一律降级成本轮检索需求，不再建节点。
+function demoteLifeBillNodes(ops) {
+  const ADD_ACTIONS = new Set(['add', 'upsert', 'update']);
+  for (const op of ops) {
+    if (!op || typeof op !== 'object') continue;
+    if (!ADD_ACTIONS.has(String(op.op || ''))) continue;
+    const rawBody = op.contentBody || op.content_body || '';
+    const body = typeof rawBody === 'string' ? rawBody : JSON.stringify(rawBody || '');
+    if (!/"query"\s*:/.test(body)) continue;
+    let parsed = {};
+    try { parsed = JSON.parse(body) || {}; } catch (err) { parsed = {}; }
+    const query = lifeText(parsed.query || parsed.keyword || op.title, 400);
+    // 丢掉节点字段，改成本轮检索需求
+    delete op.contentBody;
+    delete op.content_body;
+    delete op.kind;
+    delete op.risk;
+    if (!query) { op.op = 'skip'; continue; }
+    op.op = 'queue_search';
+    op.query = query;
+    op.nodeId = parsed.nodeId || op.nodeId || '';
+  }
+}
+
+// 每 30 分钟归集一次：把 pending 条目打成一包，产出「检索清单 + 预估账单」，等待三种人工审批
+// （自动检索已把 AI 主动提出的需求直接消化，人工审批只留给用户在面板里手动追加的检索）
+async function collectLifeRetrievalBatch() {
+  const now = Date.now();
+  const [pending] = await pool.query("SELECT id, est_cost FROM life_retrieval_queue WHERE status = 'pending' AND (batch_id IS NULL OR batch_id = '') ORDER BY created_at ASC");
+  if (!pending.length) return null;
+  const batchId = crypto.randomUUID();
+  const est = pending.reduce((sum, row) => sum + Number(row.est_cost || 0), 0);
+  const [seq] = await pool.query('SELECT COUNT(*) AS n FROM life_retrieval_batches');
+  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const batchNo = `B${stamp}-${String(Number(seq[0].n) + 1).padStart(3, '0')}`;
+  await pool.execute(
+    'INSERT INTO life_retrieval_batches (id, batch_no, task_count, est_cost, actual_cost, status, created_at, decided_at) VALUES (?, ?, ?, ?, 0, ?, ?, 0)',
+    [batchId, batchNo, pending.length, est, 'pending', now]
+  );
+  const ids = pending.map(row => String(row.id));
+  await pool.execute(`UPDATE life_retrieval_queue SET batch_id = ?, updated_at = ? WHERE id IN (${ids.map(() => '?').join(',')})`, [batchId, now, ...ids]);
+  await logLifeRetrieval(batchId, 'collect', `归集 ${pending.length} 条待检索，预估费用 ${est.toFixed(2)} 元`, est);
+  return batchId;
+}
+
+// 执行单个已批准的检索：先查缓存，未命中才真正联网，结果永久写回缓存
+async function executeLifeRetrieval(task, userId) {
+  const cached = await lifeCacheLookup(task.query);
+  if (cached) {
+    await pool.execute("UPDATE life_retrieval_queue SET result = ?, status = 'done', from_cache = 1, updated_at = ? WHERE id = ?", [cached, Date.now(), task.id]);
+    return { cost: 0, fromCache: true };
+  }
+  const found = await webSearch(task.query, { userId, getSecret: getUserSecret });
+  const text = typeof found === 'string' ? found : formatSearchContext(found);
+  const result = lifeText(text, 4000);
+  await lifeCacheStore(task.query, result);
+  await pool.execute("UPDATE life_retrieval_queue SET result = ?, status = 'done', from_cache = 0, updated_at = ? WHERE id = ?", [result, Date.now(), task.id]);
+  return { cost: Number(task.est_cost) || LIFE_RETRIEVAL_EST_COST, fromCache: false };
+}
+
+// 应用 AI 给出的增量操作；返回实际生效的条数
+async function applyLifeOps(ops) {
+  if (!Array.isArray(ops) || !ops.length) return 0;
+  // 先按日期把本轮 op 的时序分组纠一遍（含 upsert/add/update 三类），落库值一律以真实日期为准
+  normalizeLifeTimeGroups(ops.filter(op => op && typeof op === 'object'));
+  // 检索账单载荷不得落成节点：统一降级成本轮检索需求（否则用户会看到「获取XX真题源」这种机器话节点）
+  demoteLifeBillNodes(ops);
+  const now = Date.now();
+  const tempMap = new Map();
+  const created = [];
+  // 本轮新产生的检索需求，收尾时统一自动联网执行并把真实网址回填回规划
+  const pendingSearch = [];
+  let applied = 0;
+  // deps 只能指向真实存在的节点：收集现有 id，新增的边在第二轮用 tempMap 换算后补齐
+  const [knownRows] = await pool.query('SELECT id, title FROM life_plan_nodes');
+  const knownIds = new Set(knownRows.map(row => String(row.id)));
+  // 归一化标题 → 节点 id：AI 措辞略有出入（多一个逗号 / 少一个空格）时也原地更新，不重复建节点
+  const titleIndex = new Map();
+  for (const row of knownRows) {
+    const key = lifeTitleKey(row.title);
+    if (key && !titleIndex.has(key)) titleIndex.set(key, String(row.id));
+  }
+
+  for (const op of ops) {
+    if (!op || typeof op !== 'object') continue;
+    const action = String(op.op || '');
+
+    if (action === 'upsert_self') {
+      const title = lifeText(op.title, 60) || '我的人生画像';
+      const detail = lifeText(op.detail, 1200);
+      const domain = LIFE_DOMAINS.includes(op.domain) ? op.domain : '成长';
+      const [existing] = await pool.query("SELECT id FROM life_plan_nodes WHERE kind = 'self' ORDER BY created_at ASC LIMIT 1");
+      if (existing.length) {
+        await pool.execute('UPDATE life_plan_nodes SET title = ?, detail = ?, domain = ?, updated_at = ? WHERE id = ?', [title, detail, domain, now, existing[0].id]);
+      } else {
+        await pool.execute(
+          'INSERT INTO life_plan_nodes (id, parent_id, kind, domain, title, detail, status, horizon, weight, content_type, source, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [crypto.randomUUID(), '', 'self', domain, title, detail, 'doing', '', 100, 'text', 'ai', 0, now, now]
+        );
+      }
+      applied++;
+    } else if (action === 'add') {
+      const id = crypto.randomUUID();
+      const kind = LIFE_KINDS.includes(op.kind) ? op.kind : 'goal';
+      const domain = LIFE_DOMAINS.includes(op.domain) ? op.domain : '成长';
+      const title = lifeText(op.title, 200);
+      const detail = lifeText(op.detail, 1200);
+      const risk = lifeText(op.risk, 200);
+      const status = ['todo', 'doing', 'done'].includes(op.status) ? op.status : 'todo';
+      const horizon = lifeText(op.horizon, 32);
+      // 开始日期：与截止日期分开，AI 有明确开始日时才写，否则留空（不覆盖用户已填的值）
+      const startDate = lifeText(op.startDate || op.start_date, 10);
+      const weight = lifeClampWeight(op.weight);
+      const priority = LIFE_TASK_PRIORITY.includes(op.priority) ? op.priority : '';
+      const series = lifeText(op.series, 64);
+      const timeGroup = LIFE_TIME_GROUPS.includes(op.timeGroup) ? op.timeGroup : '';
+      const stepNo = Math.max(0, Math.min(999, Math.round(Number(op.stepNo) || 0)));
+      // 同一件事已有节点时不再新建，改为就地更新，避免同一个任务衍生出多个重复节点
+      // 载体类型：AI 显式给的优先，没给就留空由 lifeContentType() 按内容推断
+      const givenType = String(op.contentType || op.content_type || '').trim().toLowerCase();
+      const contentType = LIFE_CONTENT_TYPES.includes(givenType) ? givenType : '';
+      const contentBody = op.contentBody || op.content_body
+        ? (typeof (op.contentBody || op.content_body) === 'string' ? String(op.contentBody || op.content_body) : JSON.stringify(op.contentBody || op.content_body))
+        : '';
+      // 部分完成：AI 替用户记下「哪些做完了、哪些还没做」；只有本轮明确给了才写，避免覆盖用户已有记录
+      const progressNote = lifeText(op.progressNote || op.progress_note, 1200);
+      // 横向关联与本轮 tempId 列表；公共节点标记（复盘 / 方法 / 资料 / 模板全网络复用）
+      const refs = Array.isArray(op.referenceIds) ? op.referenceIds.map(String).filter(Boolean) : [];
+      const shared = op.shared === true || op.isShared === true || op.is_shared === true ? 1 : 0;
+      // 大脑（kind=self）全网只能有一个：不管标题是否相同，一律就地更新已有的那个，避免长出第二个根节点
+      const [selfRow] = kind === 'self' ? await pool.query("SELECT id FROM life_plan_nodes WHERE kind = 'self' LIMIT 1") : [[]];
+      const [dupe] = !selfRow.length && title ? await pool.query('SELECT id FROM life_plan_nodes WHERE title = ? LIMIT 1', [title]) : [[]];
+      const reuseId = selfRow.length ? String(selfRow[0].id) : (dupe.length ? String(dupe[0].id) : (title ? (titleIndex.get(lifeTitleKey(title)) || '') : ''));
+      if (reuseId) {
+        if (op.tempId) tempMap.set(String(op.tempId), reuseId);
+        const sets = ['detail = ?', 'risk = ?', 'priority = ?', 'series = ?', 'status = ?', 'horizon = ?', 'weight = ?', 'time_group = ?', 'step_no = ?', 'content_type = ?', 'content_body = ?', 'is_shared = ?'];
+        const vals = [detail, risk, priority, series, status, horizon, weight, timeGroup, stepNo, contentType, contentBody, shared];
+        if (progressNote) { sets.push('progress_note = ?'); vals.push(progressNote); }
+        if (startDate) { sets.push('start_date = ?'); vals.push(startDate); }
+        sets.push('updated_at = ?'); vals.push(now, reuseId);
+        await pool.execute(`UPDATE life_plan_nodes SET ${sets.join(', ')} WHERE id = ?`, vals);
+        if (Array.isArray(op.deps) || refs.length) created.push({ id: reuseId, ref: op.parentId ? String(op.parentId) : '', deps: Array.isArray(op.deps) ? op.deps : [], refs });
+        applied++;
+        continue;
+      }
+      await pool.execute(
+        'INSERT INTO life_plan_nodes (id, parent_id, kind, domain, title, detail, risk, priority, series, status, horizon, start_date, weight, time_group, step_no, content_type, content_body, progress_note, is_shared, source, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [id, '', kind, domain, title, detail, risk, priority, series, status, horizon, startDate, weight, timeGroup, stepNo, contentType, contentBody, progressNote, shared, 'ai', applied + 1, now, now]
+      );
+      // parentId 与 deps 都可能引用本轮其他节点的 tempId，统一放到第二轮换算
+      created.push({ id, ref: op.parentId ? String(op.parentId) : '', deps: Array.isArray(op.deps) ? op.deps : [], refs });
+      // 关键：本轮新建节点的 tempId 必须登记，否则同批节点的 parentId 引用会落空、父子链整条断掉
+      if (op.tempId) tempMap.set(String(op.tempId), id);
+      if (title) titleIndex.set(lifeTitleKey(title), id);
+      knownIds.add(id);
+      applied++;
+    } else if (action === 'upsert_daily') {
+      // 模块2 每日细分任务表：按「title + date」去重覆盖
+      const title = lifeText(op.title, 200);
+      const date = lifeText(op.date, 10) || todayStr();
+      if (!title) continue;
+      const priority = LIFE_TASK_PRIORITY.includes(op.priority) ? op.priority : 'P1';
+      const status = LIFE_TASK_STATUS.includes(op.status) ? op.status : 'todo';
+      const estMinutes = Math.max(0, Number(op.estMinutes) || 0);
+      const repeatType = lifeRepeatType(op.repeat || op.repeatType, title);
+      // 同日去重用「归一化标题」而不是精确匹配：AI 多轮提取时会在标题里随手加空格
+      //（「完成20道逻辑推理真题练习」与「完成 20 道逻辑推理真题练习」），精确匹配会把同一条任务存两遍
+      const [sameDay] = await pool.query('SELECT id, title FROM life_daily_tasks WHERE task_date = ?', [date]);
+      const titleKey = lifeTitleKey(title);
+      const dupe = sameDay.filter(row => lifeTitleKey(row.title) === titleKey);
+      if (dupe.length) {
+        await pool.execute(
+          'UPDATE life_daily_tasks SET est_minutes = ?, priority = ?, status = ?, pre_task = ?, blocker = ?, support = ?, repeat_type = ?, updated_at = ? WHERE id = ?',
+          [estMinutes, priority, status, lifeText(op.preTask, 120), lifeText(op.blocker, 200), lifeText(op.support, 200), repeatType, now, dupe[0].id]
+        );
+      } else {
+        await pool.execute(
+          'INSERT INTO life_daily_tasks (id, task_date, title, est_minutes, priority, status, pre_task, blocker, support, node_id, repeat_type, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [crypto.randomUUID(), date, title, estMinutes, priority, status, lifeText(op.preTask, 120), lifeText(op.blocker, 200), lifeText(op.support, 200), '', repeatType, applied + 1, now, now]
+        );
+      }
+      applied++;
+    } else if (action === 'upsert_skill') {
+      // 模块3 个人技能档案
+      const name = lifeText(op.name, 120);
+      if (!name) continue;
+      const category = LIFE_SKILL_CATEGORY.includes(op.category) ? op.category : 'own';
+      const [dupe] = await pool.query('SELECT id FROM life_skill_profile WHERE name = ? LIMIT 1', [name]);
+      if (dupe.length) {
+        await pool.execute('UPDATE life_skill_profile SET category = ?, level = ?, note = ?, updated_at = ? WHERE id = ?',
+          [category, lifeText(op.level, 32), lifeText(op.note, 200), now, dupe[0].id]);
+      } else {
+        await pool.execute('INSERT INTO life_skill_profile (id, category, name, level, note, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          [crypto.randomUUID(), category, name, lifeText(op.level, 32), lifeText(op.note, 200), applied + 1, now, now]);
+      }
+      applied++;
+    } else if (action === 'upsert_energy') {
+      // 模块16 精力负荷评估表：按日期覆盖
+      const logDate = lifeText(op.date, 10) || todayStr();
+      const planned = Math.max(0, Number(op.plannedMinutes) || 0);
+      const capacity = Math.max(0, Number(op.capacityMinutes) || 0);
+      const overload = planned > capacity && capacity > 0 ? 1 : 0;
+      const [dupe] = await pool.query('SELECT id FROM life_energy_logs WHERE log_date = ? LIMIT 1', [logDate]);
+      if (dupe.length) {
+        await pool.execute('UPDATE life_energy_logs SET planned_minutes = ?, capacity_minutes = ?, overload = ?, distractions = ?, sleep_hours = ?, health = ?, note = ? WHERE id = ?',
+          [planned, capacity, overload, lifeText(op.distractions, 200), Number(op.sleepHours) || 0, lifeText(op.health, 100), lifeText(op.note, 1000), dupe[0].id]);
+      } else {
+        await pool.execute('INSERT INTO life_energy_logs (id, log_date, planned_minutes, capacity_minutes, overload, distractions, sleep_hours, health, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [crypto.randomUUID(), logDate, planned, capacity, overload, lifeText(op.distractions, 200), Number(op.sleepHours) || 0, lifeText(op.health, 100), lifeText(op.note, 1000), now]);
+      }
+      applied++;
+    } else if (action === 'upsert_knowledge') {
+      // 模块18 个人学习知识库：按 topic 去重
+      const topic = lifeText(op.topic, 120);
+      if (!topic) continue;
+      const [dupe] = await pool.query('SELECT id FROM life_knowledge WHERE topic = ? LIMIT 1', [topic]);
+      if (dupe.length) {
+        await pool.execute('UPDATE life_knowledge SET subject = ?, content = ?, wrong_questions = ?, tags = ?, updated_at = ? WHERE id = ?',
+          [lifeText(op.subject, 32), lifeText(op.content, 4000), lifeText(op.wrongQuestions, 4000), lifeText(op.tags, 120), now, dupe[0].id]);
+      } else {
+        await pool.execute('INSERT INTO life_knowledge (id, subject, topic, content, wrong_questions, tags, review_stage, next_review_date, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [crypto.randomUUID(), lifeText(op.subject, 32), topic, lifeText(op.content, 4000), lifeText(op.wrongQuestions, 4000), lifeText(op.tags, 120), 0, lifeNextReviewDate(todayStr(), 0), 'ai', now, now]);
+      }
+      applied++;
+    } else if (action === 'upsert_event') {
+      // 模块19 外部事件日历：按 title 去重
+      const title = lifeText(op.title, 120);
+      if (!title) continue;
+      const level = ['high', 'mid', 'low'].includes(op.level) ? op.level : 'mid';
+      const [dupe] = await pool.query('SELECT id FROM life_calendar_events WHERE title = ? LIMIT 1', [title]);
+      if (dupe.length) {
+        await pool.execute('UPDATE life_calendar_events SET event_date = ?, category = ?, level = ?, remind_days = ?, note = ?, updated_at = ? WHERE id = ?',
+          [lifeText(op.date, 10), lifeText(op.category, 32), level, lifeText(op.remindDays, 32) || '30,7,1', lifeText(op.note, 1000), now, dupe[0].id]);
+      } else {
+        await pool.execute('INSERT INTO life_calendar_events (id, title, event_date, category, level, remind_days, status, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [crypto.randomUUID(), title, lifeText(op.date, 10), lifeText(op.category, 32), level, lifeText(op.remindDays, 32) || '30,7,1', 'pending', lifeText(op.note, 1000), now, now]);
+      }
+      applied++;
+    } else if (action === 'persona') {
+      // 全局人物画像：AI 按 6 大维度累积更新。只写 AI 明确给出的维度，其余维度保留原内容
+      let personaRow = await readLifePersonaRow();
+      if (!personaRow) {
+        await pool.execute(
+          `INSERT INTO life_persona (id, hard_skills, time_habits, traits, resources, values_pref, risks, source, created_at, updated_at) VALUES (?, '', '', '', '', '', '', 'ai', ?, ?)`,
+          [crypto.randomUUID(), now, now]
+        );
+        personaRow = await readLifePersonaRow();
+      }
+      if (personaRow) {
+        const fields = [];
+        const values = [];
+        for (const dim of LIFE_PERSONA_DIMS) {
+          const raw = op[dim.key] !== undefined ? op[dim.key] : op[dim.col];
+          if (raw === undefined) continue;
+          const text = lifeText(raw, 6000);
+          if (!text) continue;
+          fields.push(`${dim.col} = ?`);
+          values.push(text);
+        }
+        if (fields.length) {
+          fields.push('source = ?'); values.push('ai');
+          fields.push('updated_at = ?'); values.push(now);
+          values.push(personaRow.id);
+          await pool.execute(`UPDATE life_persona SET ${fields.join(', ')} WHERE id = ?`, values);
+        }
+      }
+      applied++;
+    } else if (action === 'path') {
+      // 未来可选发展路径库（画像的衍生模块）：按 name 去重覆盖
+      const pathName = lifeText(op.name, 120);
+      if (!pathName) continue;
+      const pathPayload = [
+        lifeText(op.advantages, 4000),
+        lifeText(op.risks, 4000),
+        lifeText(op.prerequisites, 2000),
+        lifeText(op.evolution, 4000),
+        Math.max(0, Math.min(100, Math.round(Number(op.score) || 0))),
+        lifeText(op.nodeId, 64)
+      ];
+      const [pathDupe] = await pool.query('SELECT id FROM life_future_paths WHERE name = ? LIMIT 1', [pathName]);
+      if (pathDupe.length) {
+        await pool.execute(
+          'UPDATE life_future_paths SET advantages = ?, risks = ?, prerequisites = ?, evolution = ?, score = ?, node_id = ?, updated_at = ? WHERE id = ?',
+          [...pathPayload, now, pathDupe[0].id]
+        );
+      } else {
+        await pool.execute(
+          'INSERT INTO life_future_paths (id, name, advantages, risks, prerequisites, evolution, score, node_id, source, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [crypto.randomUUID(), pathName, ...pathPayload, 'ai', applied + 1, now, now]
+        );
+      }
+      applied++;
+    } else if (action === 'log_change') {
+      // 模块17 变更日志
+      const content = lifeText(op.content, 400);
+      if (!content) continue;
+      await pool.execute('INSERT INTO life_change_logs (id, module, content, reason, snapshot_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [crypto.randomUUID(), lifeText(op.module, 32), content, lifeText(op.reason, 200), '', now]);
+      applied++;
+    }
+  }
+
+  // 第二轮：挂载父节点与前置依赖，随后处理更新与删除
+  for (const item of created) {
+    const parentId = item.ref ? (tempMap.get(item.ref) || item.ref) : '';
+    if (parentId) {
+      const [parent] = await pool.query('SELECT id FROM life_plan_nodes WHERE id = ? LIMIT 1', [parentId]);
+      if (parent.length) await pool.execute('UPDATE life_plan_nodes SET parent_id = ? WHERE id = ?', [parent[0].id, item.id]);
+    }
+    // deps 引用本轮新节点时同样要用 tempMap 换算，并剔除不存在的 id，避免前端画出悬空连线
+    const deps = item.deps
+      .map(ref => tempMap.get(String(ref)) || String(ref))
+      .filter(ref => ref && ref !== item.id && knownIds.has(ref));
+    if (deps.length) await pool.execute('UPDATE life_plan_nodes SET deps = ? WHERE id = ?', [JSON.stringify([...new Set(deps)]), item.id]);
+    // 横向关联 referenceIds 与纵向 deps 同理，先换算 tempId 再剔除悬空引用
+    const refs = (item.refs || [])
+      .map(ref => tempMap.get(String(ref)) || String(ref))
+      .filter(ref => ref && ref !== item.id && knownIds.has(ref));
+    if (refs.length) await pool.execute('UPDATE life_plan_nodes SET reference_ids = ? WHERE id = ?', [JSON.stringify([...new Set(refs)]), item.id]);
+  }
+
+  for (const op of ops) {
+    if (!op || typeof op !== 'object') continue;
+    const action = String(op.op || '');
+    if (action === 'update' && op.id) {
+      const fields = [];
+      const values = [];
+      if (op.title !== undefined) { fields.push('title = ?'); values.push(lifeText(op.title, 200)); }
+      if (op.detail !== undefined) { fields.push('detail = ?'); values.push(lifeText(op.detail, 1200)); }
+      if (op.risk !== undefined) { fields.push('risk = ?'); values.push(lifeText(op.risk, 200)); }
+      if (op.priority !== undefined) { fields.push('priority = ?'); values.push(LIFE_TASK_PRIORITY.includes(op.priority) ? op.priority : ''); }
+      if (op.series !== undefined) { fields.push('series = ?'); values.push(lifeText(op.series, 64)); }
+      if (op.horizon !== undefined) { fields.push('horizon = ?'); values.push(lifeText(op.horizon, 32)); }
+      // 开始日期：与截止日期分开更新
+      if (op.startDate !== undefined || op.start_date !== undefined) { fields.push('start_date = ?'); values.push(lifeText(op.startDate || op.start_date, 10)); }
+      // 改挂父节点：用于合并重复赛道（把重复节点及其子树改挂到保留的那条下面）
+      if (op.parentId !== undefined || op.parent_id !== undefined) {
+        const target = tempMap.get(String(op.parentId || op.parent_id)) || String(op.parentId || op.parent_id || '');
+        const parentId = target && target !== String(op.id) && (target === '' || knownIds.has(target)) ? target : null;
+        if (parentId !== null) { fields.push('parent_id = ?'); values.push(parentId); }
+      }
+      if (op.weight !== undefined) { fields.push('weight = ?'); values.push(lifeClampWeight(op.weight)); }
+      if (op.status !== undefined && ['todo', 'doing', 'done'].includes(op.status)) { fields.push('status = ?'); values.push(op.status); }
+      if (op.domain !== undefined && LIFE_DOMAINS.includes(op.domain)) { fields.push('domain = ?'); values.push(op.domain); }
+      if (op.timeGroup !== undefined && LIFE_TIME_GROUPS.includes(op.timeGroup)) { fields.push('time_group = ?'); values.push(op.timeGroup); }
+      if (op.stepNo !== undefined) { fields.push('step_no = ?'); values.push(Math.max(0, Math.min(999, Math.round(Number(op.stepNo) || 0)))); }
+      if (Array.isArray(op.deps)) {
+        const deps = op.deps
+          .map(ref => tempMap.get(String(ref)) || String(ref))
+          .filter(ref => ref && ref !== String(op.id) && knownIds.has(ref));
+        fields.push('deps = ?');
+        values.push(JSON.stringify([...new Set(deps)]));
+      }
+      if (Array.isArray(op.referenceIds)) {
+        const refs = op.referenceIds
+          .map(ref => tempMap.get(String(ref)) || String(ref))
+          .filter(ref => ref && ref !== String(op.id) && knownIds.has(ref));
+        fields.push('reference_ids = ?');
+        values.push(JSON.stringify([...new Set(refs)]));
+      }
+      if (op.shared !== undefined) { fields.push('is_shared = ?'); values.push(op.shared ? 1 : 0); }
+      if (op.progressNote !== undefined) { fields.push('progress_note = ?'); values.push(lifeText(op.progressNote, 1200)); }
+      if (!fields.length) continue;
+      fields.push('updated_at = ?');
+      values.push(now, String(op.id));
+      await pool.execute(`UPDATE life_plan_nodes SET ${fields.join(', ')} WHERE id = ?`, values);
+      applied++;
+    } else if (action === 'queue_search') {
+      // AI 缺资料时主动提出的检索需求：先入队留痕，本轮结束时统一自动执行并把真实网址回填回规划
+      const query = lifeText(op.query, 400);
+      if (query) {
+        const nodeId = op.nodeId ? (tempMap.get(String(op.nodeId)) || String(op.nodeId)) : '';
+        const title = lifeText(op.title, 200);
+        const queueId = await queueLifeRetrieval({
+          query,
+          nodeId,
+          title,
+          series: lifeText(op.series, 64),
+          priority: op.priority,
+          estCost: op.estCost
+        });
+        if (queueId) pendingSearch.push({ id: queueId, query, nodeId, title });
+        applied++;
+      }
+    } else if (action === 'remove' && op.id) {
+      // 只允许 AI 移除自己生成的节点，避免误删用户手动维护的内容
+      const [rows] = await pool.query("SELECT id FROM life_plan_nodes WHERE id = ? AND source = 'ai' LIMIT 1", [String(op.id)]);
+      if (!rows.length) continue;
+      // 「大脑」中心节点永远不能移除，否则整张规划网络就没了起点
+      const [selfRows] = await pool.query("SELECT id FROM life_plan_nodes WHERE id = ? AND kind = 'self' LIMIT 1", [rows[0].id]);
+      if (selfRows.length) continue;
+      await pool.execute('DELETE FROM life_plan_nodes WHERE id = ?', [rows[0].id]);
+      applied++;
+    }
+  }
+
+  // 单根兜底：非「大脑」节点不能成为顶层根，parent_id 为空的统一挂到「大脑」下面。
+  // 防止 AI 漏填 parentId 时图里散出多个并列根（用户要求：四级这类一级节点必须挂在大脑下面）
+  {
+    const [selfNodes] = await pool.query("SELECT id FROM life_plan_nodes WHERE kind = 'self' ORDER BY created_at ASC LIMIT 1");
+    if (selfNodes.length) {
+      // 只收本来就该有父节点的类型：赛道 / 计划 / 动作 / 里程碑，全都要收进大脑这棵树
+      await pool.execute("UPDATE life_plan_nodes SET parent_id = ?, updated_at = ? WHERE kind <> 'self' AND (parent_id IS NULL OR parent_id = '')", [String(selfNodes[0].id), now]);
+    }
+  }
+
+  // 每日任务与规划节点挂钩：upsert_daily 本身不带节点 id，这里按标题回填；
+  // 挂上之后任务行才能显示「方法 / 验收 / 资源 / 风险」，前置锁才有依据
+  const [orphanTasks] = await pool.query("SELECT id, title FROM life_daily_tasks WHERE node_id IS NULL OR node_id = ''");
+  if (orphanTasks.length) {
+    const [allNodes] = await pool.query('SELECT id, title FROM life_plan_nodes');
+    const exactTitle = new Map();
+    for (const node of allNodes) exactTitle.set(String(node.title || '').trim(), String(node.id));
+    for (const task of orphanTasks) {
+      const title = String(task.title || '').trim();
+      let nodeId = exactTitle.get(title) || '';
+      if (!nodeId && title.length >= 4) {
+        const hit = allNodes.find(node => {
+          const nodeTitle = String(node.title || '').trim();
+          return nodeTitle.length >= 4 && (nodeTitle.includes(title) || title.includes(nodeTitle));
+        });
+        if (hit) nodeId = String(hit.id);
+      }
+      if (nodeId) await pool.execute('UPDATE life_daily_tasks SET node_id = ? WHERE id = ?', [nodeId, task.id]);
+    }
+  }
+
+  // 本轮若调整了每日任务 / 精力负荷 / 外部事件，追加一次增量联动（含当日快照与精力汇总）；
+  // 只做 log_change 时不触发，避免与 AI 自己记的变更日志重复
+  const touchedModules = new Set(ops.map(op => String(op?.op || '')));
+  if (touchedModules.has('upsert_daily') || touchedModules.has('upsert_energy') || touchedModules.has('upsert_event')) {
+    await refreshLifeDerived('AI 对话同步', ['每日任务', '进度快照', '精力负荷', '重点提醒', '变更日志'], 'AI 对话调整计划', 'AI 本轮对话调整了任务 / 负荷 / 外部事件');
+  }
+
+  // 方案A：本轮 AI 提出的检索需求立刻自动执行一次，把真实网址回填到对应任务与节点，
+  // 用户不必再去「检索审批」页签点一遍；单条失败只影响该条，不让整轮同步失败
+  if (pendingSearch.length) {
+    await autoRunLifeRetrieval(pendingSearch).catch(err => console.warn('[Life检索] 自动执行批次失败：', err.message));
+  }
+  // 顺手补历史遗留的死占位（旧数据里的「资料名｜搜索关键词」「待检索：…」等不到 AI 再改一次也不会自己变好）
+  try {
+    const legacy = await collectLegacyResourceIntents(LIFE_LEGACY_SWEEP_LIMIT - Math.min(pendingSearch.length, LIFE_LEGACY_SWEEP_LIMIT));
+    if (legacy.length) await autoRunLifeRetrieval(legacy);
+  } catch (err) {
+    console.warn('[Life检索] 历史占位补齐失败：', err.message);
+  }
+
+  // 时间骨架收口：赛道 / 目标按子树补上「开始日期 → 截止日期」，只落在「近期」标签上就等于没排期
+  await fillLifeContainerDates().catch(err => console.warn('[life-time] 容器时间收口失败：', err.message));
+
+  return applied;
+}
+
+// 获取人生规划节点
+app.get('/api/life/plan', async (req, res) => {
+  try {
+    await ensureLifeSelfNode();
+    res.json({ nodes: await listLifeNodes() });
+  } catch (err) {
+    console.error('获取人生规划失败:', err);
+    res.status(500).json({ error: err.message || '获取失败' });
+  }
+});
+
+// 获取对话记录
+app.get('/api/life/chat', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT id, role, content, created_at FROM life_chat_messages ORDER BY created_at ASC LIMIT 500');
+    res.json({ messages: rows.map(r => ({ id: r.id, role: r.role, content: r.content || '', createdAt: Number(r.created_at) || 0 })) });
+  } catch (err) {
+    console.error('获取规划对话失败:', err);
+    res.status(500).json({ error: err.message || '获取失败' });
+  }
+});
+
+// 结构化模块上下文（库 → 文本）：面板里的执行数据回灌给 AI，保证文本输出与面板一致
+async function lifeStructuredContext() {
+  const today = todayStr();
+  const tasks = await listLifeTasks({ from: lifeDateShift(today, -7), to: lifeDateShift(today, 7) });
+  const [snapRows] = await pool.query('SELECT * FROM life_plan_snapshots ORDER BY created_at DESC LIMIT 1');
+  const [energyRows] = await pool.query('SELECT * FROM life_energy_logs ORDER BY log_date DESC LIMIT 1');
+  const [skillRows] = await pool.query('SELECT * FROM life_skill_profile ORDER BY sort_order ASC');
+  const [eventRows] = await pool.query('SELECT * FROM life_calendar_events ORDER BY event_date ASC LIMIT 20');
+  const [knowledgeRows] = await pool.query('SELECT * FROM life_knowledge ORDER BY created_at DESC LIMIT 60');
+  const stats = await lifeProgressStats();
+  const snapshot = snapRows.length ? lifeSnapshotOut(snapRows[0]) : null;
+  const energy = energyRows.length ? lifeEnergyOut(energyRows[0]) : null;
+  const skills = skillRows.map(lifeSkillOut);
+  const events = eventRows.map(lifeEventOut);
+  const due = knowledgeRows.map(lifeKnowledgeOut).filter(k => k.nextReviewDate && k.nextReviewDate <= today);
+  return [
+    '【结构化执行数据（来自前端面板，与下面任务表必须一致，不要编造冲突内容）】',
+    `任务进度：共 ${stats.total} 项，已完成 ${stats.counts.done}，进行中 ${stats.counts.doing}，未开始 ${stats.counts.todo}，延期 ${stats.counts.delay}，放弃 ${stats.counts.drop}，完成率 ${stats.progress}%`,
+    snapshot ? `最近快照：${snapshot.date} 完成率 ${snapshot.progress}%｜${snapshot.diffNote}` : '最近快照：暂无',
+    `每日任务（前后 7 天）：${tasks.length ? tasks.map(t => `${t.date} ${t.priority} ${t.title}（${t.status}${t.estMinutes ? `，${t.estMinutes} 分钟` : ''}${t.preTask ? `，前置：${t.preTask}` : ''}）`).join('；') : '（暂无，需在每日细分任务表中补齐）'}`,
+    energy ? `最近精力负荷：${energy.date} 计划 ${energy.plannedMinutes} 分钟 / 上限 ${energy.capacityMinutes} 分钟${energy.overload ? '（超负荷，必须删减次要任务）' : ''}` : '最近精力负荷：暂无',
+    `技能档案：${skills.length ? skills.map(s => `${s.category === 'own' ? '已掌握' : s.category === 'learn' ? '待学习' : '短板'}·${s.name}${s.level ? `（${s.level}）` : ''}`).join('；') : '（暂无，需在个人技能档案表中补齐）'}`,
+    `外部事件：${events.length ? events.map(e => `${e.date} ${e.title}${e.daysLeft != null ? `（距今 ${e.daysLeft} 天）` : ''}`).join('；') : '（暂无，需在外部事件日历中补齐）'}`,
+    `待复习知识点：${due.length ? due.map(k => `${k.topic}（${k.subject}，复习阶段 ${k.reviewStage}）`).join('；') : '（暂无到期的复习任务）'}`
+  ].join('\n');
+}
+
+// 拼装本轮提问上下文：当前规划节点 + 结构化执行数据 + 此前对话 + 用户最新一句
+async function buildLifeUserPrompt(message) {
+  const [rows] = await pool.query('SELECT role, content FROM life_chat_messages ORDER BY created_at DESC LIMIT 20');
+  const history = rows.reverse();
+  const nodes = await listLifeNodes();
+  return [
+    `【今天】${lifeTodayText()}（所有日期一律以此为准，禁止使用相对天数）`,
+    '',
+    '【当前规划节点】（detail=可改字段的节点，index=其余节点的标题索引；判重两处都要查）',
+    JSON.stringify(lifePlanBrief(nodes)),
+    '',
+    await lifePersonaContext(),
+    '',
+    await lifeStructuredContext(),
+    '',
+    '【此前对话】',
+    lifeTranscript(history.slice(0, -1)) || '（暂无）',
+    '',
+    '【我最新说】',
+    message
+  ].join('\n');
+}
+
+// 文本 → 库：把 AI 本轮回复（或最近对话）交给结构化解析，写入各模块
+async function runLifeExtract(historyText) {
+  const nodes = await listLifeNodes();
+  // 同样补上时间检索：这条路径也不走工具链，涉及考试 / 报名窗口时必须拿真实日期，不能靠模型印象
+  const dateContext = await buildLifeDateContext([{ content: historyText }]).catch(() => '');
+  const userPrompt = [
+    `【今天】${lifeTodayText()}`,
+    '',
+    dateContext,
+    '',
+    '【当前规划节点】（detail=可改字段的节点，index=其余节点的标题索引；判重两处都要查）',
+    JSON.stringify(lifePlanBrief(nodes)),
+    '',
+    await lifePersonaContext(),
+    '',
+    await lifeStructuredContext(),
+    '',
+    '【最近的对话】',
+    historyText,
+    '',
+    '请输出本轮需要的新增或调整操作。'
+  ].join('\n');
+  // 提示词加了 few-shot 后更长，45 秒容易超时，放宽到 90 秒并多留出输出空间
+  // 输出体量很大（模块2 每日任务逐行提取 + 节点 + 档案/知识/事件/日志），token 给足，
+  // 否则 JSON 被截断会导致靠后的任务全部丢失（表现为「规划网络只长出来几个节点」）；
+  // 8192 是主流模型都支持的安全上限，再高部分接口会直接报 400
+  const raw = await callAI(LIFE_EXTRACT_SYSTEM, userPrompt, null, await resolveLifeModel(), 90000, 8192);
+  const parsed = parseLifeJson(raw);
+  // 落库后再做一次考试锚点收口：ops 里带不出完整节点数组，只能改库里那几条关键行
+  const finish = async count => { await enforceStoredExamAnchors().catch(err => console.warn('[life-anchor] 增量收口失败：', err.message)); return count; };
+  if (Array.isArray(parsed?.ops) && parsed.ops.length) return finish(await applyLifeOps(pruneMetaOps(parsed.ops)));
+  // JSON 被截断时抢救出完整条目
+  const salvaged = salvageJsonObjects(raw);
+  if (salvaged && salvaged.some(item => item && (item.op || item.title))) return finish(await applyLifeOps(pruneMetaOps(salvaged)));
+  // AI 只回了 Markdown 表格（没带 JSON 块）时兜底解析，否则整轮对话一个字都进不了库
+  return finish(await applyLifeOps(planLifeOpsFromMarkdown(raw, nodes)));
+}
+
+// 每轮对话结束后自动把回复同步进结构化模块
+// 【关键】不能只喂「导师这一条回复」：抽取模型看不到用户本轮说了什么，只能对着自己的话空转，
+// 实测多数轮次返回 0 条 op —— 表现就是「对话结束提示正在同步规划，但画布什么都没变，
+// 必须手动点『重新生成规划』才有数据」。这里改成喂最近几轮真实对话（本轮用户消息与回复此时都已入库），
+// 只对本轮回复放宽长度上限（规划正文常超过 800 字，截断会丢掉后半段的任务与时间）。
+async function syncLifePlanFromChat(reply) {
+  const text = String(reply || '').trim();
+  if (!text) return 0;
+  let historyText = `导师：${text.slice(0, 6000)}`;
+  try {
+    const [rows] = await pool.query('SELECT role, content FROM life_chat_messages ORDER BY created_at DESC LIMIT 8');
+    const history = rows.reverse();
+    // 历史里每条只留 800 字，取尾部 2000 字即可覆盖本轮的「用户提问 → 导师回复」；
+    // 再单独补一条完整的本轮回复，保证规划正文不被截断
+    const tail = lifeTranscript(history).slice(-2000);
+    historyText = [tail, `导师：${text.slice(0, 6000)}`].filter(Boolean).join('\n');
+  } catch (_) { /* 取不到历史就退回单条回复，与改动前表现一致 */ }
+  const applied = await runLifeExtract(historyText);
+  await purgeRejectedLifeNodes();
+  return applied;
+}
+
+// 清掉用户标记为「不要了」的节点：每次 AI 更新完规划都执行一遍，
+// 保证「我不做」的任务不会因为 AI 重新生成又被加回来
+async function purgeRejectedLifeNodes() {
+  try {
+    const [rows] = await pool.query('SELECT title FROM life_plan_rejects');
+    for (const row of rows) {
+      const title = String(row.title || '').trim();
+      if (title) await pool.execute('DELETE FROM life_plan_nodes WHERE title = ?', [title]);
+    }
+  } catch (err) {
+    console.error('清理已删节点失败:', err.message);
+  }
+}
+
+// 检索结果转成前端可用的精简结构
+function toSearchPayload(search) {
+  if (!search) return null;
+  return {
+    provider: search.provider,
+    cached: Boolean(search.cached),
+    count: search.results.length,
+    query: search.query || '',
+    queries: Array.isArray(search.queries) ? search.queries : (search.query ? [search.query] : []),
+    sources: search.results.map(item => ({ title: item.title, url: item.url, snippet: item.snippet }))
+  };
+}
+
+// 单次提问允许的联网检索次数上限；超出上限的检索需求不直接执行，转入待审批队列
+const LIFE_CHAT_MAX_SEARCH = 3;
+
+// 合并本轮全部检索结果：多关键词并成一份，URL 去重，供前端展示与最终生成使用
+function mergeLifeSearches(items) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return null;
+  const results = [];
+  const seen = new Set();
+  let provider = '';
+  let allCached = true;
+  for (const item of list) {
+    const found = item?.search || {};
+    if (!provider && found.provider) provider = found.provider;
+    if (!found.cached) allCached = false;
+    for (const row of (found.results || [])) {
+      const url = String(row.url || '');
+      if (url && seen.has(url)) continue;
+      if (url) seen.add(url);
+      results.push(row);
+    }
+  }
+  return {
+    provider,
+    cached: allCached,
+    query: list.map(item => item.query).join(' / '),
+    queries: list.map(item => item.query),
+    count: results.length,
+    results
+  };
+}
+
+// 对话流水线：判断是否联网 → 按需检索（最多 LIFE_CHAT_MAX_SEARCH 次）→ 生成规划建议
+// 检索是按需的：先把最关键的 1~3 个关键词一次提全；拿到结果后模型仍缺资料，可以用新关键词补搜；
+// 超过上限的检索需求不直接付费执行，写入待检索队列等人工审批后再回填（复用 queueLifeRetrieval）
+// emit(event) 让调用方实时拿到过程事件（阶段 / 思考 / 检索结果）；非流式调用方传空函数即可
+async function runLifeChat({ userPrompt, model, userId, mode = 'simple', emit = () => {} }) {
+  let searchError = '';
+  let reasoning = '';
+  const searched = [];
+  const usedQueries = new Set();
+  const queuedQueries = [];
+  // 每轮用户提问重置搜索会话计数：单会话总上限 12 次（命中缓存不计），单轮推理最多连续 3 次
+  resetSearchSession(userId);
+
+  // 已用满次数的检索需求统一转入待审批队列，避免静默丢弃
+  const queueOverflow = async (query) => {
+    usedQueries.add(query);
+    queuedQueries.push(query);
+    await queueLifeRetrieval({ query, priority: 'P2' }).catch(() => '');
+  };
+
+  // 用户在这句话里点名要的东西＝重新要回来：把它从「不要了」清单移除，这样它就能被正常加回
+  try {
+    const [rejects] = await pool.query('SELECT title FROM life_plan_rejects');
+    const wanted = rejects.map(row => String(row.title || '')).filter(t => t && userPrompt.includes(t));
+    if (wanted.length) await pool.execute(`DELETE FROM life_plan_rejects WHERE title IN (${wanted.map(() => '?').join(',')})`, wanted);
+  } catch (err) {
+    console.error('解除已删节点失败:', err.message);
+  }
+
+  emit({ type: 'stage', key: 'analyze', label: '正在理解你的问题与规划节点' });
+  emit({ type: 'stage', key: 'decide', label: '正在判断是否需要联网检索' });
+  // 修改类指令直接改规划，不给检索工具：用户只是在改自己的计划（我不考听力 / 这步不做了 / 改成每周一次），
+  // 不需要核实他的决定是否成立。只有他自己明确要查实时信息（含检索类词、报名、政策、官网、价格等）时才允许检索
+  const wantsLookup = /查|搜|检索|报名|考试时间|政策|官网|网址|链接|价格|费用|薪资|就业|标准|多少|几天|什么时候/.test(userPrompt);
+  const isEditOnly = !wantsLookup && /不(考|学|要|做|用|练|参加|再)|取消|去掉|删[除掉]|改成|改为|换成|调整|放弃|暂停|别再|停止/.test(userPrompt);
+  if (isEditOnly) emit({ type: 'stage', key: 'search', status: 'skipped', label: '这是修改规划的指令，直接调整规划网络，不联网检索' });
+  try {
+    // 每轮都把已拿到的检索结果带上，让模型自己决定「资料够了」还是「换个关键词再搜一次」
+    let convoPrompt = userPrompt;
+    for (let round = 0; round <= LIFE_CHAT_MAX_SEARCH; round += 1) {
+      const turn = await callAIChatWithTools(model, [
+        { role: 'system', content: LIFE_CHAT_SYSTEM },
+        { role: 'user', content: convoPrompt }
+      ], isEditOnly ? undefined : WEB_SEARCH_TOOL, 40000, 800);
+      if (turn?.error) throw new Error(turn.error);
+      if (turn?.unsupported) {
+        searchError = '当前所选模型不支持工具调用，本次未联网检索';
+        emit({ type: 'stage', key: 'search', status: 'failed', label: searchError });
+        break;
+      }
+      // 推理模型返回的思考内容，有则展示
+      const thought = String(turn?.message?.reasoning_content || '').trim();
+      if (thought && !reasoning) {
+        reasoning = thought;
+        emit({ type: 'thinking', text: thought });
+      }
+      const calls = Array.isArray(turn?.message?.tool_calls) ? turn.message.tool_calls : [];
+      const asked = [];
+      for (const call of calls) {
+        let query = '';
+        try { query = String(JSON.parse(call?.function?.arguments || '{}')?.q || '').trim(); } catch (_) { query = ''; }
+        if (query && !asked.includes(query)) asked.push(query);
+      }
+      // 模型不再要求检索：资料够了，交给生成阶段
+      if (!asked.length) {
+        if (!round) emit({ type: 'stage', key: 'search', status: 'skipped', label: '本次问题不需要联网，直接作答' });
+        break;
+      }
+      // 已用满上限：剩余关键词全部转审批队列，本轮到此为止
+      if (searched.length >= LIFE_CHAT_MAX_SEARCH) {
+        for (const query of asked) if (!usedQueries.has(query)) await queueOverflow(query);
+        break;
+      }
+      // 过滤掉已经检索过的关键词，避免同一关键词反复付费检索
+      const fresh = asked.filter(query => !usedQueries.has(query));
+      if (!fresh.length) break;
+      const allow = fresh.slice(0, LIFE_CHAT_MAX_SEARCH - searched.length);
+      const overflow = fresh.slice(allow.length);
+      for (const query of allow) {
+        usedQueries.add(query);
+        emit({ type: 'stage', key: 'searching', label: `正在联网检索：${query}`, query });
+        const found = await webSearch(query, { userId, getSecret: getUserSecret });
+        searched.push({ query, search: found });
+        emit({
+          type: 'search',
+          query,
+          provider: found.provider,
+          cached: Boolean(found.cached),
+          count: found.results.length,
+          sources: found.results.map(item => ({ title: item.title, url: item.url, snippet: item.snippet }))
+        });
+      }
+      for (const query of overflow) if (!usedQueries.has(query)) await queueOverflow(query);
+      // 回灌结果 + 已检索关键词清单，下一轮由模型决定是否补搜新关键词
+      const merged = mergeLifeSearches(searched);
+      convoPrompt = `${userPrompt}\n\n${formatSearchContext(merged)}\n\n【已检索过的关键词（禁止重复检索，需要补充资料请换新关键词）】${[...usedQueries].join('；')}`;
+      if (searched.length >= LIFE_CHAT_MAX_SEARCH) break;
+    }
+    if (queuedQueries.length) {
+      emit({
+        type: 'stage',
+        key: 'search',
+        status: 'queued',
+        label: `另有 ${queuedQueries.length} 条检索需求已超出本轮 ${LIFE_CHAT_MAX_SEARCH} 次上限，已转入待审批队列，不影响本次作答`
+      });
+    }
+  } catch (err) {
+    searchError = err.message || '联网检索失败';
+    emit({ type: 'stage', key: 'search', status: 'failed', label: searchError });
+  }
+
+  const search = mergeLifeSearches(searched);
+  emit({ type: 'stage', key: 'compose', label: search ? '正在整合检索资料，生成规划建议' : '正在生成规划建议' });
+  const finalPrompt = search ? `${userPrompt}\n\n${formatSearchContext(search)}` : userPrompt;
+  const reply = await callAI(buildLifeChatSystem(mode), finalPrompt, null, model, 60000, 2000);
+  return { reply, search, searchError, reasoning, queuedSearch: queuedQueries, editOnly: isEditOnly };
+}
+
+// 发送一条消息，AI 回复（一次性返回，不展示过程）
+app.post('/api/life/chat', async (req, res) => {
+  try {
+    const message = lifeText(req.body?.message, 2000);
+    if (!message) return res.status(400).json({ error: '内容不能为空' });
+    const mode = resolveLifeMode(req.body?.mode, message, await countLifeChatMessages());
+    await pool.execute('INSERT INTO life_chat_messages (id, role, content, created_at) VALUES (?, ?, ?, ?)', [crypto.randomUUID(), 'user', message, Date.now()]);
+    const userPrompt = await buildLifeUserPrompt(message);
+    const model = await resolveLifeModel();
+    const userId = context.getStore()?.user?.id || '';
+    const result = await runLifeChat({ userPrompt, model, userId, mode });
+    await pool.execute('INSERT INTO life_chat_messages (id, role, content, created_at) VALUES (?, ?, ?, ?)', [crypto.randomUUID(), 'assistant', result.reply, Date.now()]);
+    await syncLifePlanFromChat(result.reply);
+    res.json({ reply: result.reply, search: toSearchPayload(result.search), searchError: result.searchError, queuedSearch: Array.isArray(result.queuedSearch) ? result.queuedSearch : [] });
+  } catch (err) {
+    console.error('人生规划对话失败:', err);
+    res.status(500).json({ error: err.message || 'AI 暂时不可用' });
+  }
+});
+
+// 发送一条消息，流式返回过程：阶段进度、模型思考、检索关键词与检索到的资料（NDJSON，一行一个事件）
+app.post('/api/life/chat/stream', async (req, res) => {
+  let streaming = false;
+  // 用户中途关闭页面时不再往已断开的连接写数据，避免未捕获的 socket 错误
+  let clientGone = false;
+  let emit = () => {};
+  try {
+    const message = lifeText(req.body?.message, 2000);
+    if (!message) return res.status(400).json({ error: '内容不能为空' });
+    const mode = resolveLifeMode(req.body?.mode, message, await countLifeChatMessages());
+    await pool.execute('INSERT INTO life_chat_messages (id, role, content, created_at) VALUES (?, ?, ?, ?)', [crypto.randomUUID(), 'user', message, Date.now()]);
+    const userPrompt = await buildLifeUserPrompt(message);
+    const model = await resolveLifeModel();
+    const userId = context.getStore()?.user?.id || '';
+
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+    streaming = true;
+    req.on('close', () => { clientGone = true; });
+    emit = (event) => {
+      if (clientGone) return;
+      try { res.write(`${JSON.stringify(event)}\n`); } catch (_) { clientGone = true; }
+    };
+
+    const result = await runLifeChat({ userPrompt, model, userId, mode, emit });
+    await pool.execute('INSERT INTO life_chat_messages (id, role, content, created_at) VALUES (?, ?, ?, ?)', [crypto.randomUUID(), 'assistant', result.reply, Date.now()]);
+    emit({
+      type: 'done',
+      reply: result.reply,
+      search: toSearchPayload(result.search),
+      searchError: result.searchError,
+      reasoning: result.reasoning,
+      queuedSearch: Array.isArray(result.queuedSearch) ? result.queuedSearch : [],
+      editOnly: !!result.editOnly
+    });
+    // 文本 → 库：本轮回复自动同步进结构化模块。
+    // 这一步耗时较长（最多 90 秒），所以不提前断开连接：同步完成后再推一个 plan 事件，
+    // 前端收到后才刷新画布，避免「刷新太早、看不到规划变化」。
+    if (!clientGone) emit({ type: 'stage', key: 'sync', label: '正在把本轮回复同步进规划网络' });
+    let applied = 0;
+    try { applied = await syncLifePlanFromChat(result.reply); }
+    catch (err) { console.error('文本同步规划失败:', err.message); }
+    emit({ type: 'plan', applied });
+    if (!clientGone) res.end();
+  } catch (err) {
+    console.error('人生规划对话失败:', err);
+    if (streaming) {
+      emit({ type: 'error', error: err.message || 'AI 暂时不可用' });
+      if (!clientGone) res.end();
+    } else {
+      res.status(500).json({ error: err.message || 'AI 暂时不可用' });
+    }
+  }
+});
+
+// 根据最近对话增量更新规划节点
+app.post('/api/life/plan/extract', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT role, content FROM life_chat_messages ORDER BY created_at DESC LIMIT 10');
+    const history = rows.reverse();
+    if (!history.length) return res.json({ nodes: await listLifeNodes(), applied: 0 });
+
+    const applied = await runLifeExtract(lifeTranscript(history));
+    res.json({ nodes: await listLifeNodes(), applied });
+  } catch (err) {
+    console.error('人生规划增量更新失败:', err);
+    res.status(500).json({ error: err.message || '更新失败' });
+  }
+});
+
+// 基于全部对话重新生成完整规划
+app.post('/api/life/plan/regenerate', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT role, content FROM life_chat_messages ORDER BY created_at ASC LIMIT 200');
+    if (!rows.length) return res.status(400).json({ error: '还没有对话内容，无法生成规划' });
+
+    const model = await resolveLifeModel();
+    // 只喂最近对话，并把超时放宽到 3 分钟；否则历史一长 AI 直接超时（报 operation aborted）
+    // 同时带上「当前已有节点」清单：让 AI 沿用同名标题，做到只增改删、不整体重写（避免措辞一换就重复建节点）
+    // 只喂「最近的」节点清单：节点攒到几百个时，全量塞进提示词会把上下文撑爆、AI 直接超时。
+    // 取最近 120 个（按创建时间倒序，再翻回正序展示），已经足够让 AI 沿用同名标题做增改，
+    // 本轮没出现的旧节点交给下面的「清理作废节点」统一收尾，所以总量不会越滚越大。
+    const [recentNodes] = await pool.query('SELECT id, kind, series, title FROM life_plan_nodes ORDER BY created_at DESC LIMIT 120');
+    const existingNodes = recentNodes.reverse();
+    // 节点攒多了不能只喂最近 120 个：模型看不到的那部分会被当成「本轮没输出」而在下面被清理掉。
+    // 所以除了 120 个明细，再把其余节点的标题压成一份索引一起喂进去（只要标题，很便宜），
+    // 判重和「沿用同名标题」都靠它；同时记下节点总数，用不完备的清单绝不允许触发兜底清理。
+    const [allTitleRows] = await pool.query('SELECT id, title FROM life_plan_nodes ORDER BY created_at ASC');
+    const shownIds = new Set(existingNodes.map(n => String(n.id)));
+    const restTitles = allTitleRows.filter(row => !shownIds.has(String(row.id))).map(row => row.title).filter(Boolean);
+    const fullyFed = allTitleRows.length <= existingNodes.length;
+    // 【关键修复】这条路径以前完全没联网：callAI 的 tools 传的是 null，也没做任何检索，
+    // 所以国考这类「有官方时间窗口」的赛道拿不到真实日期，模型只能编或干脆留空。
+    // 这里在生成前先按对话里出现的目标做一次定向检索，把真实日期作为权威事实喂给模型，
+    // 并在提示词里声明「以检索结果为准，与自己印象冲突时用检索结果」。
+    const searchContext = await buildLifeDateContext(rows);
+    const existingBlock = existingNodes.length
+      ? [
+          `【当前已有节点明细（共 ${allTitleRows.length} 个，这里给出最近 ${existingNodes.length} 个的完整信息；同一件事必须原样沿用这里的标题，只有全新内容才新建）】`,
+          existingNodes.map(n => `${n.id}｜${n.kind}｜${n.series || '无主线'}｜${n.title}`).join('\n'),
+          restTitles.length
+            ? `【其余已有节点的标题索引（${restTitles.length} 条，同样禁止重复新建；要改就沿用同名标题）】\n${restTitles.join(' / ')}`
+            : ''
+        ].filter(Boolean).join('\n')
+      : '';
+    const userPrompt = [existingBlock, searchContext, '【最近对话】', recentLifeTranscript(rows)].filter(Boolean).join('\n');
+    // 三段兜底：正常 JSON → 抢救被截断的 JSON → Markdown 表格；输出上限放宽到 8000 token 减少截断
+    const readPlan = text => {
+      const parsed = parseLifeJson(text);
+      // 输出分两部分：①自然语言规划解读(summary) ②结构化节点数组(nodes)
+      // complete=true 只在这一轮拿到完整 JSON 时成立：此时 nodes 才是「这一版规划的全集」，
+      // 没出现在里面的旧节点才算作废，可以安全清理；截断/兜底解析出来的残缺列表不算全集，绝不能据此删节点
+      if (Array.isArray(parsed?.nodes) && parsed.nodes.length) {
+        // examAnchors 是模型从联网检索结果里整理出的考试硬时间点（考试日 / 准考证窗口 / 官方入口），
+        // 后端据此钉死备考截止日期并补准考证与双向结局节点，不再完全依赖模型自觉
+        const anchors = Array.isArray(parsed.examAnchors) ? parsed.examAnchors : [];
+        return { nodes: parsed.nodes, anchors, summary: String(parsed.summary || parsed.reading || parsed.解读 || ''), complete: true };
+      }
+      // JSON 被 token 上限截断时 nodes 数组断在中途，但排在最前面的 summary 仍完整，正则抠出来
+      const salvaged = salvageJsonObjects(text);
+      if (salvaged && salvaged.some(item => item && item.title)) return { nodes: salvaged, summary: extractLifeSummary(text), complete: false };
+      const fromMd = planLifeNodesFromMarkdown(text);
+      return Array.isArray(fromMd?.nodes) && fromMd.nodes.length ? { nodes: fromMd.nodes, summary: extractLifeSummary(text), complete: false } : null;
+    };
+
+    // 8192 是主流模型都支持的安全上限（再高部分接口直接 400），所以这里不靠「加大 token」，
+    // 而是靠下面那次「精简重出」——把每条文字压短，让完整的四层结构塞进同一个上限里
+    let raw = await callAI(LIFE_REGENERATE_SYSTEM, userPrompt, null, model, 180000, 8192);
+    let result = readPlan(raw);
+    // 输出被 token 上限截断时只会抢救出数组的前缀（例如首轮只留下 4 个节点），层级并不完整。
+    // 这时补一次「精简重出」：把每条文字压短，换取一份完整的层级；两次里节点更多的那次胜出，
+    // 避免为了排版好看反而丢掉内容。complete=true 的那次同时决定了能不能清理作废节点。
+    if (result && !result.complete) {
+      try {
+        const compactRaw = await callAI(
+          LIFE_REGENERATE_SYSTEM,
+          `${userPrompt}\n\n【输出上限提醒】每个节点的 detail 压到 60 字以内、risk 压到 20 字以内，优先保证「大脑→赛道→计划→动作」四层完整、所有赛道都出现、节点总数不少于 24 个，只输出 JSON。`,
+          null, model, 180000, 8192
+        );
+        const compact = readPlan(compactRaw);
+        if (compact && (compact.complete || compact.nodes.length > result.nodes.length)) result = compact;
+      } catch (_) { /* 精简重出失败就沿用第一次抢救出来的结果 */ }
+    }
+    // 仍失败时补一次「只要 JSON」的修复重试，抗住模型偶发的不守格式
+    if (!result) {
+      raw = await callAI(
+        '你只输出 JSON，不要任何解释文字、不要 Markdown 代码块、不要表格。',
+        `${userPrompt}\n\n请严格按系统提示里的 nodes 数组结构，只输出一个 JSON 对象。`,
+        null,
+        model,
+        180000,
+        8192
+      );
+      result = readPlan(raw);
+    }
+    if (!result) {
+      console.warn('[life-regen] 未能解析 AI 输出，原文前 500 字:', String(raw || '').slice(0, 500));
+      return res.status(502).json({ error: 'AI 未返回有效的规划结构，请稍后重试' });
+    }
+
+    // 增量更新：同名节点就地更新、缺失节点才新增，全程不清空整张图；
+    // 这样用户在图上手动调整过的位置/状态与已有父子链都不会被一次重写冲掉。
+    const [existingRows] = await pool.query("SELECT id, title FROM life_plan_nodes WHERE source = 'ai'");
+    const byTitle = new Map();
+    // 用归一化标题做键，避免 AI 每轮措辞微调就重复建出同名节点
+    for (const row of existingRows) {
+      const key = lifeTitleKey(row.title);
+      if (key && !byTitle.has(key)) byTitle.set(key, String(row.id));
+    }
+    // 「大脑」中心节点的 id：兜底把漏挂父节点的节点收回它下面，保证单根结构
+    const [selfNodes] = await pool.query("SELECT id, title FROM life_plan_nodes WHERE kind = 'self' ORDER BY created_at ASC LIMIT 1");
+    const selfId = selfNodes.length ? String(selfNodes[0].id) : '';
+    // 大脑的显示名沿用库里已有的那个（默认「我的人生画像」），不被模型每轮改称呼带着跑
+    const selfTitle = selfNodes.length ? String(selfNodes[0].title || '') : '';
+
+    const now = Date.now();
+    // 落库前先按日期把时序分组纠一遍，避免「一个月后就考试」的赛道被模型标成中期 / 远期
+    // 顺序很关键：① 先剔除「让用户自己去推」的元规划任务（要看下标重映射，必须在裁之前做）
+    //             ② 再按 80 个上限裁剪 ③ 最后注入锚点类节点（准考证 / 双向结局），
+    //           反过来做的话，注入的节点会被上限截掉，等于没补
+    const pruned = normalizeLifeTimeGroups(pruneLifeMetaTasks(result.nodes));
+    const list = pruned.slice(0, 80);
+    if (pruned.length > list.length) console.warn(`[life-regen] 模型输出 ${pruned.length} 个节点，超出 80 个落地上限，本次只写前 80 个，其余旧节点保持原样不动`);
+    const anchorReport = await injectLifeExamAnchors(list, `${rows.map(r => r.content).join('\n')}\n${userPrompt}`, result.anchors)
+      .catch(err => { console.warn('[life-anchor] 锚点收口失败：', err.message); return null; });
+    if (anchorReport?.anchors?.length) console.log(`[life-anchor] 本次锚点：${anchorReport.anchors.join(' / ')}（前移 ${anchorReport.shifted} / 撞车自纠 ${anchorReport.selfShifted}，准考证 ${anchorReport.tickets}，结局 ${anchorReport.outcomes}，链接实测 ${anchorReport.checked}/失效 ${anchorReport.dropped}）`);
+    const idList = [];
+    let inserted = 0;
+    let updated = 0;
+    for (let i = 0; i < list.length; i++) {
+      const item = list[i] || {};
+      const title = lifeText(item.title, 200);
+      if (!title) { idList.push(''); continue; }
+      const givenType = String(item.contentType || item.content_type || '').trim().toLowerCase();
+      // 「大脑」只有一个：模型某轮把中心节点改叫「我」，按标题匹配会再插一个新大脑，图上散出两个根。
+      // 这里强制 self 类型一律复用已有那个大脑节点，只更新它的字段。
+      const isSelfItem = String(item.kind || '').trim() === 'self';
+      const cols = [
+        LIFE_KINDS.includes(item.kind) ? item.kind : 'goal',
+        LIFE_DOMAINS.includes(item.domain) ? item.domain : '成长',
+        isSelfItem && selfTitle ? selfTitle : title,
+        lifeText(item.detail, 1200), lifeText(item.risk, 200),
+        LIFE_TASK_PRIORITY.includes(item.priority) ? item.priority : '',
+        lifeText(item.series, 64),
+        ['todo', 'doing', 'done'].includes(item.status) ? item.status : 'todo',
+        lifeText(item.horizon, 32), lifeClampWeight(item.weight),
+        LIFE_TIME_GROUPS.includes(item.timeGroup) ? item.timeGroup : '',
+        Math.max(0, Math.min(999, Math.round(Number(item.stepNo) || 0))),
+        LIFE_CONTENT_TYPES.includes(givenType) ? givenType : '',
+        item.contentBody || item.content_body
+          ? (typeof (item.contentBody || item.content_body) === 'string' ? String(item.contentBody || item.content_body) : JSON.stringify(item.contentBody || item.content_body))
+          : '',
+        // 开始日期：与截止日期（horizon）分开存，AI 有明确开始日时才给
+        lifeText(item.startDate || item.start_date, 10),
+        item.shared === true || item.isShared === true ? 1 : 0
+      ];
+      const reuse = isSelfItem && selfId ? selfId : byTitle.get(lifeTitleKey(title));
+      if (reuse) {
+        await pool.execute(
+          'UPDATE life_plan_nodes SET kind = ?, domain = ?, title = ?, detail = ?, risk = ?, priority = ?, series = ?, status = IF(status IN (\'done\', \'doing\'), status, ?), horizon = ?, weight = ?, time_group = ?, step_no = ?, content_type = ?, content_body = ?, start_date = IF(? = \'\', start_date, ?), is_shared = ?, updated_at = ? WHERE id = ?',
+          [...cols.slice(0, 14), cols[14], cols[14], cols[15], now, reuse]
+        );
+        idList.push(reuse);
+        updated += 1;
+        continue;
+      }
+      const id = crypto.randomUUID();
+      await pool.execute(
+        'INSERT INTO life_plan_nodes (id, parent_id, kind, domain, title, detail, risk, priority, series, status, horizon, weight, time_group, step_no, content_type, content_body, start_date, is_shared, source, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [id, '', ...cols, 'ai', inserted, now, now]
+      );
+      byTitle.set(lifeTitleKey(title), id);
+      idList.push(id);
+      inserted += 1;
+    }
+    for (let i = 0; i < list.length; i++) {
+      const ref = list[i]?.parentRef;
+      if (ref === null || ref === undefined || ref === '') continue;
+      const parentIndex = Number(ref);
+      if (!Number.isInteger(parentIndex) || parentIndex < 0 || parentIndex >= idList.length || parentIndex === i) continue;
+      await pool.execute('UPDATE life_plan_nodes SET parent_id = ? WHERE id = ?', [idList[parentIndex], idList[i]]);
+    }
+    // 兜底：非「大脑」节点不能成为顶层根，parent_id 为空的统一挂到「大脑」下面；
+    // 保证「大脑 → 赛道 → 计划 → 动作」的单根结构，AI 漏填 parentRef 时也不会散出多个并列根
+    if (selfId) {
+      await pool.execute("UPDATE life_plan_nodes SET parent_id = ? WHERE kind <> 'self' AND (parent_id IS NULL OR parent_id = '')", [selfId]);
+    }
+    // depsRef 用下标引用本轮其他节点，插入完成后统一换算成真实 id
+    for (let i = 0; i < list.length; i++) {
+      const refs = Array.isArray(list[i]?.depsRef) ? list[i].depsRef : [];
+      const deps = refs
+        .map(ref => Number(ref))
+        .filter(index => Number.isInteger(index) && index >= 0 && index < idList.length && index !== i)
+        .map(index => idList[index]);
+      if (deps.length) await pool.execute('UPDATE life_plan_nodes SET deps = ? WHERE id = ?', [JSON.stringify([...new Set(deps)]), idList[i]]);
+    }
+    // referenceRef 同样用下标引用本轮节点，换算成真实 id 写入横向关联，剔除悬空引用
+    for (let i = 0; i < list.length; i++) {
+      if (!idList[i]) continue;
+      const refs = Array.isArray(list[i]?.referenceRef) ? list[i].referenceRef : [];
+      const linked = refs
+        .map(ref => Number(ref))
+        .filter(index => Number.isInteger(index) && index >= 0 && index < idList.length && index !== i && idList[index])
+        .map(index => idList[index]);
+      if (linked.length) await pool.execute('UPDATE life_plan_nodes SET reference_ids = ? WHERE id = ?', [JSON.stringify([...new Set(linked)]), idList[i]]);
+    }
+
+    // ===== 清理作废节点：兑现系统提示里「作废的节点通过减少对应条目来删除」的约定 =====
+    // 之前这里只做「同名就地更新 + 缺失才新增」，AI 这轮不再输出的旧节点会一直赖在图上，
+    // 于是「重新规划」之后新旧两版规划混在一起（用户看到的「跟这四个也没多大关系」就是这么来的）。
+    // 只有三个条件同时满足才清理，避免误删：① 这一轮拿到完整全集 ② 数量正常 ③ 已有节点全都喂给过模型
+    //   —— 节点超过 120 个时模型没见过全部节点，它「没输出」只代表没看到，不代表作废。
+    let removed = 0;
+    if (result.complete && list.length >= 12 && fullyFed) {
+      const keep = new Set(list.map(item => lifeTitleKey(lifeText(item.title, 200))).filter(Boolean));
+      const [candidates] = await pool.query('SELECT id, title, status, source, kind FROM life_plan_nodes');
+      for (const row of candidates) {
+        if (String(row.kind) === 'self') continue                          // 「大脑」常驻，永远不删
+        if (String(row.source) !== 'ai') continue                          // 用户手动建的节点不动
+        if (['done', 'doing'].includes(String(row.status))) continue       // 已经做起来 / 做完的，保住进度
+        const key = lifeTitleKey(row.title)
+        if (!key || keep.has(key)) continue                                // 这一轮还在输出 → 保留
+        await pool.execute('DELETE FROM life_plan_nodes WHERE id = ?', [row.id])
+        removed += 1
+      }
+      if (removed) console.log(`[life-regen] 本轮清理作废节点 ${removed} 个（未出现在新一版规划里）`)
+    } else if (result.complete && !fullyFed) {
+      console.log(`[life-regen] 已有节点 ${allTitleRows.length} 个、本次只喂了 ${existingNodes.length} 个，跳过作废清理（避免误删模型没看到的节点）`)
+    }
+
+    // 时间骨架收口：赛道 / 目标这类容器节点按子树补上「开始日期 → 截止日期」，
+    // 画布才能显示时间区间；否则用户看到的只是一堆「近期」标签，不知道什么时候开始、什么时候结束
+    const datedNodes = await fillLifeContainerDates().catch(err => { console.warn('[life-time] 容器时间收口失败：', err.message); return 0; });
+    if (datedNodes) console.log(`[life-time] 本轮为 ${datedNodes} 个节点补齐了起止日期`);
+
+    // 输出两部分：①自然语言规划解读 落进对话流，用户刷新后在会话里能看到本次解读
+    if (result.summary) {
+      await pool.execute('INSERT INTO life_chat_messages (id, role, content, created_at) VALUES (?, ?, ?, ?)',
+        [crypto.randomUUID(), 'assistant', `【规划解读】${result.summary}`, Date.now()]);
+    }
+    res.json({ nodes: await listLifeNodes(), summary: result.summary || '', inserted, updated, removed, anchors: anchorReport });
+    // 规划一变，人物画像就跟着重算（动态画像的输入就是右侧这份规划的完成度）。
+    // 这里刻意放在 res.json 之后异步跑：画像推理要几十秒，不能让用户干等这一轮规划返回
+    deriveLifePersona('规划重生成').catch(err => console.warn('[life-persona] 重生成后重算画像失败：', err.message));
+  } catch (err) {
+    console.error('重新生成人生规划失败:', err);
+    res.status(500).json({ error: err.message || '生成失败' });
+  }
+});
+
+// 新增规划节点（手动维护）
+app.post('/api/life/plan/nodes', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const title = lifeText(body.title, 200);
+    if (!title) return res.status(400).json({ error: '节点标题不能为空' });
+    // 手动新增＝用户明确要它：从「不要了」清单里移除，否则之后会被自动清理掉
+    await pool.execute('DELETE FROM life_plan_rejects WHERE title = ?', [title]).catch(() => '');
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    const givenType = String(body.contentType || body.content_type || '').trim().toLowerCase();
+    const contentBody = body.contentBody || body.content_body
+      ? (typeof (body.contentBody || body.content_body) === 'string' ? String(body.contentBody || body.content_body) : JSON.stringify(body.contentBody || body.content_body))
+      : '';
+    const kind = LIFE_KINDS.includes(body.kind) ? body.kind : 'goal';
+    // 新增的赛道 / 计划 / 动作必须有父节点：没指定就默认挂到「大脑」下面，避免散出并列根
+    let parentId = lifeText(body.parentId, 64);
+    if (kind !== 'self' && !parentId) {
+      const [selfNodes] = await pool.query("SELECT id FROM life_plan_nodes WHERE kind = 'self' ORDER BY created_at ASC LIMIT 1");
+      if (selfNodes.length) parentId = String(selfNodes[0].id);
+    }
+    await pool.execute(
+      'INSERT INTO life_plan_nodes (id, parent_id, kind, domain, title, detail, risk, status, horizon, start_date, weight, content_type, content_body, progress_note, reference_ids, is_shared, source, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        id, kind === 'self' ? '' : parentId, kind,
+        LIFE_DOMAINS.includes(body.domain) ? body.domain : '成长', title, lifeText(body.detail, 1200), lifeText(body.risk, 200),
+        ['todo', 'doing', 'done', 'drop'].includes(body.status) ? body.status : 'todo',
+        lifeText(body.horizon, 32), lifeText(body.startDate, 10), lifeClampWeight(body.weight),
+        LIFE_CONTENT_TYPES.includes(givenType) ? givenType : '', contentBody, lifeText(body.progressNote, 1200),
+        JSON.stringify(Array.isArray(body.referenceIds) ? body.referenceIds.map(String).filter(Boolean) : []),
+        body.shared ? 1 : 0,
+        'user', Number(body.sortOrder) || 0, now, now
+      ]
+    );
+    res.json({ nodes: await listLifeNodes() });
+  } catch (err) {
+    console.error('新增规划节点失败:', err);
+    res.status(500).json({ error: err.message || '新增失败' });
+  }
+});
+
+// 更新规划节点（手动维护）
+app.put('/api/life/plan/nodes/:id', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const fields = [];
+    const values = [];
+    if (body.title !== undefined) { fields.push('title = ?'); values.push(lifeText(body.title, 200)); }
+    if (body.detail !== undefined) { fields.push('detail = ?'); values.push(lifeText(body.detail, 1200)); }
+    if (body.risk !== undefined) { fields.push('risk = ?'); values.push(lifeText(body.risk, 200)); }
+    if (body.horizon !== undefined) { fields.push('horizon = ?'); values.push(lifeText(body.horizon, 32)); }
+    // 开始日期：与截止日期分开字段，用户可各自修改
+    if (body.startDate !== undefined) { fields.push('start_date = ?'); values.push(lifeText(body.startDate, 10)); }
+    if (body.weight !== undefined) { fields.push('weight = ?'); values.push(lifeClampWeight(body.weight)); }
+    if (body.status !== undefined && ['todo', 'doing', 'done', 'drop'].includes(body.status)) { fields.push('status = ?'); values.push(body.status); }
+    if (body.domain !== undefined && LIFE_DOMAINS.includes(body.domain)) { fields.push('domain = ?'); values.push(body.domain); }
+    if (body.kind !== undefined && LIFE_KINDS.includes(body.kind)) {
+      // 「大脑」中心节点（kind=self）必须常驻：不允许把它改成别的类型，否则根节点会消失
+      const [selfRows] = await pool.query("SELECT id FROM life_plan_nodes WHERE id = ? AND kind = 'self' LIMIT 1", [String(req.params.id)]);
+      if (!selfRows.length || body.kind === 'self') { fields.push('kind = ?'); values.push(body.kind); }
+    }
+    if (body.parentId !== undefined) { fields.push('parent_id = ?'); values.push(lifeText(body.parentId, 64)); }
+    if (body.series !== undefined) { fields.push('series = ?'); values.push(lifeText(body.series, 64)); }
+    if (body.priority !== undefined) { fields.push('priority = ?'); values.push(LIFE_TASK_PRIORITY.includes(body.priority) ? body.priority : ''); }
+    if (body.stepNo !== undefined) { fields.push('step_no = ?'); values.push(Math.max(0, Math.min(999, Math.round(Number(body.stepNo) || 0)))); }
+    if (body.timeGroup !== undefined && LIFE_TIME_GROUPS.includes(body.timeGroup)) { fields.push('time_group = ?'); values.push(body.timeGroup); }
+    if (body.contentType !== undefined) {
+      const type = String(body.contentType || '').trim().toLowerCase();
+      fields.push('content_type = ?'); values.push(LIFE_CONTENT_TYPES.includes(type) ? type : '');
+    }
+    if (body.contentBody !== undefined) {
+      fields.push('content_body = ?');
+      values.push(body.contentBody ? (typeof body.contentBody === 'string' ? body.contentBody : JSON.stringify(body.contentBody)) : '');
+    }
+    // 部分完成：用户写下「哪些做完了、哪些还没做」，作为刻画大脑的依据
+    if (body.progressNote !== undefined) { fields.push('progress_note = ?'); values.push(lifeText(body.progressNote, 1200)); }
+    if (body.referenceIds !== undefined) {
+      fields.push('reference_ids = ?');
+      values.push(JSON.stringify(Array.isArray(body.referenceIds) ? body.referenceIds.map(String).filter(Boolean) : []));
+    }
+    if (body.shared !== undefined) { fields.push('is_shared = ?'); values.push(body.shared ? 1 : 0); }
+    if (!fields.length) return res.json({ nodes: await listLifeNodes() });
+    fields.push('updated_at = ?');
+    values.push(Date.now(), req.params.id);
+    await pool.execute(`UPDATE life_plan_nodes SET ${fields.join(', ')} WHERE id = ?`, values);
+    // 任务类节点状态与「每日任务」板块双向同步：在思维导图里勾完成/放弃，对应每日任务也同步，
+    // 反过来在每日任务面板打卡也会回写节点状态（见 /api/life/tasks/:id/state）
+    if (body.status !== undefined && ['todo', 'doing', 'done', 'drop'].includes(body.status)) {
+      const taskStatus = body.status === 'drop' ? 'drop' : body.status;
+      await pool.execute('UPDATE life_daily_tasks SET status = ?, updated_at = ? WHERE node_id = ?', [taskStatus, Date.now(), String(req.params.id)]);
+    }
+    res.json({ nodes: await listLifeNodes() });
+  } catch (err) {
+    console.error('更新规划节点失败:', err);
+    res.status(500).json({ error: err.message || '更新失败' });
+  }
+});
+
+// 删除规划节点（同时清理指向它的子节点关联）
+// 关键：删掉的节点与它的全部后代标题都记进「不要了」清单 —— 用户点一下减号就是「我不做」，
+// 后续 AI 更新规划时不能再把它自动加回来；只有用户明确点名要它、或手动再新增，才会重新出现
+app.delete('/api/life/plan/nodes/:id', async (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    // 「大脑」中心节点（kind=self）必须常驻：它是整张规划网络的起点锚，不允许被删掉
+    const [selfRows] = await pool.query("SELECT id FROM life_plan_nodes WHERE id = ? AND kind = 'self' LIMIT 1", [id]);
+    if (selfRows.length) return res.status(400).json({ error: '「大脑」根节点不能删除，它是整张规划网络的起点' });
+    const all = await listLifeNodes();
+    const kids = new Map();
+    for (const node of all) {
+      const pid = String(node.parentId || '');
+      if (!kids.has(pid)) kids.set(pid, []);
+      kids.get(pid).push(node);
+    }
+    const doomed = [];
+    const queue = all.filter(node => String(node.id) === id);
+    while (queue.length) {
+      const node = queue.shift();
+      doomed.push(node);
+      queue.push(...(kids.get(String(node.id)) || []));
+    }
+    const now = Date.now();
+    for (const node of doomed) {
+      const title = String(node.title || '').trim();
+      if (!title) continue;
+      await pool.execute(
+        'INSERT INTO life_plan_rejects (title, kind, created_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE created_at = VALUES(created_at)',
+        [title.slice(0, 200), String(node.kind || '').slice(0, 32), now]
+      ).catch(() => '');
+    }
+    await pool.execute('DELETE FROM life_plan_nodes WHERE id = ?', [id]);
+    await pool.execute('UPDATE life_plan_nodes SET parent_id = ? WHERE parent_id = ?', ['', id]);
+    res.json({ nodes: await listLifeNodes(), rejected: doomed.map(node => String(node.title || '')).filter(Boolean) });
+  } catch (err) {
+    console.error('删除规划节点失败:', err);
+    res.status(500).json({ error: err.message || '删除失败' });
+  }
+});
+
+// 一键清除：把规划网络相关数据全部清掉（做测试用），个人档案 life_skill_profile 与对话记录保留
+app.delete('/api/life/plan', async (req, res) => {
+  try {
+    // 保留「大脑」中心节点（kind=self）：它是整张规划网络的起点锚，清除规划数据时也必须留下
+    await pool.execute("DELETE FROM life_plan_nodes WHERE kind <> 'self'").catch(() => '');
+    const tables = [
+      'life_daily_tasks',
+      'life_plan_snapshots',
+      'life_energy_logs',
+      'life_calendar_events',
+      'life_change_logs',
+      'life_plan_rejects'
+    ];
+    for (const table of tables) await pool.execute(`DELETE FROM ${table}`).catch(() => '');
+    await ensureLifeSelfNode();
+    res.json({ ok: true, nodes: await listLifeNodes() });
+  } catch (err) {
+    console.error('清空人生规划失败:', err);
+    res.status(500).json({ error: err.message || '清空失败' });
+  }
+});
+
+// 「不要了」清单：查看 / 加回（加回＝从清单移除，之后 AI 可以重新生成它）
+app.get('/api/life/plan/rejects', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT title, kind, created_at FROM life_plan_rejects ORDER BY created_at DESC');
+    res.json({ items: rows.map(row => ({ title: row.title, kind: row.kind, createdAt: Number(row.created_at) || 0 })) });
+  } catch (err) {
+    res.status(500).json({ error: err.message || '读取失败' });
+  }
+});
+app.delete('/api/life/plan/rejects', async (req, res) => {
+  try {
+    const title = lifeText(req.body?.title, 200);
+    if (title) await pool.execute('DELETE FROM life_plan_rejects WHERE title = ?', [title]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message || '加回失败' });
+  }
+});
+
+// 清空对话记录
+app.delete('/api/life/chat', async (req, res) => {
+  try {
+    await pool.execute('DELETE FROM life_chat_messages');
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('清空规划对话失败:', err);
+    res.status(500).json({ error: err.message || '清空失败' });
+  }
+});
+
+// 彻底重置人生规划模块：连对话记录、人物画像（含动态画像）、路径库、技能 / 知识 / 事件、
+// 快照 / 变更日志 / 检索记录一起清空，用于「清干净之后重新对话输入训练」。清完自动补回「大脑」锚点节点。
+const LIFE_WIPE_TABLES = [
+  'life_retrieval_logs', 'life_retrieval_cache', 'life_retrieval_queue', 'life_retrieval_batches',
+  'life_plan_snapshots', 'life_change_logs', 'life_plan_rejects', 'life_persona_derived', 'life_future_paths',
+  'life_persona', 'life_skill_profile', 'life_knowledge', 'life_calendar_events', 'life_energy_logs',
+  'life_daily_tasks', 'life_chat_messages', 'life_plan_nodes'
+];
+app.delete('/api/life/data', async (req, res) => {
+  try {
+    let cleared = 0;
+    for (const table of LIFE_WIPE_TABLES) {
+      try { await pool.execute(`DELETE FROM ${table}`); cleared += 1; }
+      catch (err) { console.warn(`[life-reset] 清空 ${table} 失败：${err.message}`); }
+    }
+    await ensureLifeSelfNode();
+    console.log(`[life-reset] 已重置人生规划模块：${cleared}/${LIFE_WIPE_TABLES.length} 张表清空`);
+    res.json({ ok: true, cleared, total: LIFE_WIPE_TABLES.length, nodes: await listLifeNodes() });
+  } catch (err) {
+    console.error('重置人生规划失败:', err);
+    res.status(500).json({ error: err.message || '重置失败' });
+  }
+});
+
+// ========== 人生规划 · 结构化模块（模块2/3/15/16/17/18/19） ==========
+const LIFE_TASK_STATUS = ['todo', 'doing', 'done', 'delay', 'drop'];
+const LIFE_TASK_PRIORITY = ['P0', 'P1', 'P2', 'P3'];
+// 每日任务的重复类型：daily 每日 / weekday 工作日 / weekly 每周 / once 单次
+const LIFE_REPEAT_TYPES = ['daily', 'weekday', 'weekly', 'once'];
+// 由标题自动判定重复类型：'' = 从未设置，按关键词推断；明确给出 once 表示用户/AI 就是选了单次，直接尊重。
+// 这样「每日背单词」不会被标成单次，而「今天做一套真题」也不会被硬说成每日重复。
+function lifeRepeatType(raw, title) {
+  const value = String(raw || '').trim().toLowerCase();
+  if (value === 'once') return 'once';
+  if (LIFE_REPEAT_TYPES.includes(value)) return value;
+  const text = String(title || '');
+  if (/工作日|周一至周五|周一~周五|周一到周五/.test(text)) return 'weekday';
+  if (/每天|每日|天天|日常/.test(text)) return 'daily';
+  if (/每周|周[一二三四五六日天]|一周一次|每周一次/.test(text)) return 'weekly';
+  // 备考类功夫活（刷题 / 背单词 / 错题复盘 / 模拟考）本该天天做，模型却常忘填 repeat 或误填 once，
+  // 结果「每日刷行测 40 题」只排了一天 —— 这里按标题兜底成每日重复（每周类规则在前，不会被这条吞掉）
+  if (/刷题|刷\d+|背单词|背诵|精读|每日一练|错题|复盘|模拟考|真题|单词|打卡|练字|听力|阅读理解/.test(text)) return 'daily';
+  return 'once';
+}
+// 个人档案分类：基础信息 / 已掌握 / 待学习 / 证书资质 / 爱好特长 / 短板 / 偏好与约束
+const LIFE_SKILL_CATEGORY = ['info', 'own', 'learn', 'cert', 'hobby', 'weak', 'pref'];
+// 间隔重复复习节点：学完当天 / 第2天 / 第4天 / 第7天 / 第14天 / 已掌握
+const LIFE_REVIEW_OFFSETS = [0, 2, 4, 7, 14, -1];
+
+function lifeDateShift(iso, days) {
+  const [y, m, d] = String(iso || '').split('-').map(Number);
+  if (!y || !m || !d) return iso;
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + days);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+}
+
+function lifeDaysUntil(iso) {
+  const [y, m, d] = String(iso || '').split('-').map(Number);
+  if (!y || !m || !d) return null;
+  const target = new Date(y, m - 1, d);
+  const [ty, tm, td] = todayStr().split('-').map(Number);
+  const base = new Date(ty, tm - 1, td);
+  return Math.round((target - base) / 86400000);
+}
+
+// 间隔重复：由入库日与当前复习阶段推算下次复习日期
+function lifeNextReviewDate(baseDate, stage) {
+  const offset = LIFE_REVIEW_OFFSETS[Math.max(0, Math.min(LIFE_REVIEW_OFFSETS.length - 1, Number(stage) || 0))];
+  if (offset < 0) return '';
+  return lifeDateShift(baseDate || todayStr(), offset);
+}
+
+// 时间戳按本地日期转 YYYY-MM-DD
+function lifeDateOf(ts) {
+  const d = new Date(Number(ts) || Date.now());
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// 面板改动落库后，写一条系统消息进对话流并记变更日志，让下一轮 AI 上下文自动带上
+async function logLifePanelChange(moduleName, content, reason = '', affectedModules = []) {
+  const now = Date.now();
+  const affected = Array.isArray(affectedModules) ? affectedModules.filter(Boolean).join(',') : String(affectedModules || '');
+  await pool.execute('INSERT INTO life_change_logs (id, module, content, reason, affected, snapshot_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [crypto.randomUUID(), lifeText(moduleName, 32), lifeText(content, 400), lifeText(reason, 200), lifeText(affected, 200), '', now]);
+  const affectedText = affected ? `，受影响模块：${affected}` : '';
+  await pool.execute('INSERT INTO life_chat_messages (id, role, content, created_at) VALUES (?, ?, ?, ?)',
+    [crypto.randomUUID(), 'system', `【面板变更】${lifeText(moduleName, 32)}：${lifeText(content, 400)}${affectedText}`, now]);
+}
+
+// 增量联动：只重算被牵连的模块（当日进度快照 + 当日精力负荷），并记一条带「受影响模块」的变更日志
+async function refreshLifeDerived(trigger, changedModules, reason, changeContent) {
+  const today = todayStr();
+  const modules = Array.isArray(changedModules) ? changedModules : [];
+  const stats = await lifeProgressStats();
+  const now = Date.now();
+
+  // 1) 当日进度快照：同一天只保留一条，存在即覆盖（仅当该模块被牵连时重算）
+  // 快照只是存档，写失败（例如历史 TEXT 列溢出）绝不能连带整轮同步失败，这里单独兜异常
+  if (modules.includes('进度快照')) {
+    try {
+      const [snapRows] = await pool.query('SELECT id, progress FROM life_plan_snapshots WHERE snap_date = ? LIMIT 1', [today]);
+      const prevNote = snapRows.length
+        ? `对比上次快照：完成率 ${Number(snapRows[0].progress) || 0}% → ${stats.progress}%`
+        : '当日首次快照';
+      const diffNote = `${prevNote}，延期 ${stats.counts.delay}，共 ${stats.total} 项任务`;
+      // 快照同时存档当时的规划节点与每日任务，供后续「回退到历史版本」使用（额外字段，不影响原有统计读取）
+      const payload = JSON.stringify({ ...stats, nodes: await listLifeNodes(), tasks: await listLifeTasks() });
+      if (snapRows.length) {
+        await pool.execute('UPDATE life_plan_snapshots SET progress = ?, payload = ?, diff_note = ? WHERE id = ?',
+          [stats.progress, payload, lifeText(diffNote, 500), snapRows[0].id]);
+      } else {
+        await pool.execute('INSERT INTO life_plan_snapshots (id, snap_date, progress, payload, diff_note, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+          [crypto.randomUUID(), today, stats.progress, payload, lifeText(diffNote, 500), now]);
+      }
+    } catch (err) {
+      console.warn('[life snapshot] 存档失败，已跳过（不影响规划同步）：', err.message);
+    }
+  }
+
+  // 2) 当日精力负荷：只更新计划总时长，保留用户填写的上限、干扰与身体状态（仅当该模块被牵连时重算）
+  if (modules.includes('精力负荷')) {
+    const planned = await lifePlannedMinutes(today);
+    const [energyRows] = await pool.query('SELECT id, capacity_minutes FROM life_energy_logs WHERE log_date = ? LIMIT 1', [today]);
+    if (energyRows.length) {
+      const capacity = Number(energyRows[0].capacity_minutes) || 0;
+      const overload = planned > capacity && capacity > 0 ? 1 : 0;
+      await pool.execute('UPDATE life_energy_logs SET planned_minutes = ?, overload = ? WHERE id = ?', [planned, overload, energyRows[0].id]);
+    } else {
+      await pool.execute("INSERT INTO life_energy_logs (id, log_date, planned_minutes, capacity_minutes, overload, distractions, sleep_hours, health, note, created_at) VALUES (?, ?, ?, 0, 0, '', 0, '', ?, ?)",
+        [crypto.randomUUID(), today, planned, '由任务变更自动汇总', now]);
+    }
+  }
+
+  // 3) 变更日志 + 系统消息（把受影响模块写进内容，供 AI 与变更日志面板展示）
+  await logLifePanelChange(
+    lifeText(trigger, 32),
+    changeContent || `${lifeText(trigger, 32)}发生变更，已联动刷新：${modules.join('、') || '无'}`,
+    reason || '自动增量联动',
+    modules
+  );
+}
+
+function lifeTaskOut(row) {
+  return {
+    id: row.id,
+    date: row.task_date || '',
+    title: row.title || '',
+    estMinutes: Number(row.est_minutes) || 0,
+    priority: LIFE_TASK_PRIORITY.includes(row.priority) ? row.priority : 'P1',
+    status: LIFE_TASK_STATUS.includes(row.status) ? row.status : 'todo',
+    preTask: row.pre_task || '',
+    blocker: row.blocker || '',
+    support: row.support || '',
+    nodeId: row.node_id || '',
+    // 重复类型：daily 每日 / weekday 工作日 / weekly 每周 / once 单次（旧数据缺列时按标题兜底推断）
+    repeat: lifeRepeatType(row.repeat_type, row.title),
+    sortOrder: Number(row.sort_order) || 0,
+    createdAt: Number(row.created_at) || 0,
+    updatedAt: Number(row.updated_at) || 0
+  };
+}
+
+function lifeSnapshotOut(row) {
+  let payload = null;
+  try { payload = row.payload ? JSON.parse(row.payload) : null; } catch (_) { payload = null; }
+  return {
+    id: row.id,
+    date: row.snap_date || '',
+    progress: Number(row.progress) || 0,
+    payload,
+    diffNote: row.diff_note || '',
+    createdAt: Number(row.created_at) || 0
+  };
+}
+
+function lifeEnergyOut(row) {
+  return {
+    id: row.id,
+    date: row.log_date || '',
+    plannedMinutes: Number(row.planned_minutes) || 0,
+    capacityMinutes: Number(row.capacity_minutes) || 0,
+    overload: row.overload === 1,
+    distractions: row.distractions || '',
+    sleepHours: Number(row.sleep_hours) || 0,
+    health: row.health || '',
+    note: row.note || '',
+    createdAt: Number(row.created_at) || 0
+  };
+}
+
+function lifeSkillOut(row) {
+  return {
+    id: row.id,
+    category: LIFE_SKILL_CATEGORY.includes(row.category) ? row.category : 'own',
+    name: row.name || '',
+    level: row.level || '',
+    note: row.note || '',
+    sortOrder: Number(row.sort_order) || 0
+  };
+}
+
+function lifeKnowledgeOut(row) {
+  return {
+    id: row.id,
+    subject: row.subject || '',
+    topic: row.topic || '',
+    content: row.content || '',
+    wrongQuestions: row.wrong_questions || '',
+    tags: row.tags || '',
+    reviewStage: Number(row.review_stage) || 0,
+    nextReviewDate: row.next_review_date || '',
+    source: row.source || 'ai',
+    createdAt: Number(row.created_at) || 0
+  };
+}
+
+function lifeEventOut(row) {
+  const days = lifeDaysUntil(row.event_date);
+  return {
+    id: row.id,
+    title: row.title || '',
+    date: row.event_date || '',
+    category: row.category || '',
+    level: ['high', 'mid', 'low'].includes(row.level) ? row.level : 'mid',
+    remindDays: row.remind_days || '30,7,1',
+    status: row.status || 'pending',
+    note: row.note || '',
+    daysLeft: days
+  };
+}
+
+function lifeChangeOut(row) {
+  return {
+    id: row.id,
+    module: row.module || '',
+    content: row.content || '',
+    reason: row.reason || '',
+    affected: String(row.affected || '').split(',').map(s => s.trim()).filter(Boolean),
+    snapshotId: row.snapshot_id || '',
+    createdAt: Number(row.created_at) || 0
+  };
+}
+
+async function listLifeTasks(range = {}) {
+  const where = [];
+  const params = [];
+  if (range.date) { where.push('task_date = ?'); params.push(range.date); }
+  if (range.from) { where.push('task_date >= ?'); params.push(range.from); }
+  if (range.to) { where.push('task_date <= ?'); params.push(range.to); }
+  const sql = `SELECT * FROM life_daily_tasks ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY task_date ASC, sort_order ASC, created_at ASC`;
+  const [rows] = await pool.query(sql, params);
+  return rows.map(lifeTaskOut);
+}
+
+// 某日待执行任务的预估总时长（精力负荷的数据源）
+async function lifePlannedMinutes(date) {
+  const tasks = await listLifeTasks({ date });
+  return tasks.filter(t => t.status !== 'done' && t.status !== 'drop').reduce((sum, t) => sum + (t.estMinutes || 0), 0);
+}
+
+// 进度统计（模块15 快照的数据源）
+async function lifeProgressStats() {
+  const tasks = await listLifeTasks();
+  const counts = { todo: 0, doing: 0, done: 0, delay: 0, drop: 0 };
+  for (const task of tasks) counts[task.status] = (counts[task.status] || 0) + 1;
+  const active = tasks.length - counts.drop;
+  const progress = active > 0 ? Math.round((counts.done / active) * 100) : 0;
+  return { total: tasks.length, active, progress, counts };
+}
+
+// 重点提醒区聚合：P0 三日临近 + 高风险 + 外部事件 30/7/1 天
+async function lifeAlerts() {
+  const alerts = [];
+  const today = todayStr();
+  const tasks = await listLifeTasks({ to: lifeDateShift(today, 3) });
+  for (const task of tasks) {
+    if (task.status === 'done' || task.status === 'drop') continue;
+    if (task.priority !== 'P0') continue;
+    const days = lifeDaysUntil(task.date);
+    alerts.push({ kind: 'task', level: 'high', title: task.title, date: task.date, daysLeft: days, note: `P0 任务${days != null && days >= 0 ? `${days} 天内到期` : '已逾期'}` });
+  }
+  const nodes = await listLifeNodes();
+  for (const node of nodes) {
+    if (node.status === 'done' || !node.risk) continue;
+    if (!/高/.test(String(node.risk))) continue;
+    alerts.push({ kind: 'risk', level: 'high', title: node.title, date: node.horizon || '', daysLeft: null, note: `高风险：${node.risk}` });
+  }
+  const [eventRows] = await pool.query('SELECT * FROM life_calendar_events ORDER BY event_date ASC');
+  for (const row of eventRows.map(lifeEventOut)) {
+    if (row.status === 'done') continue;
+    const marks = String(row.remindDays || '30,7,1').split(',').map(Number).filter(n => Number.isFinite(n));
+    if (row.daysLeft == null || row.daysLeft < 0) continue;
+    if (!marks.includes(row.daysLeft)) continue;
+    alerts.push({ kind: 'event', level: row.level === 'high' ? 'high' : 'mid', title: row.title, date: row.date, daysLeft: row.daysLeft, note: `外部事件距今 ${row.daysLeft} 天` });
+  }
+  return alerts;
+}
+
+// 每日任务：按优先级与日期排序（P0 在前）
+app.get('/api/life/tasks', async (req, res) => {
+  try {
+    res.json({ tasks: await listLifeTasks({ date: req.query.date || '', from: req.query.from || '', to: req.query.to || '' }) });
+  } catch (err) {
+    console.error('获取每日任务失败:', err);
+    res.status(500).json({ error: err.message || '获取失败' });
+  }
+});
+
+app.post('/api/life/tasks', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    const priority = LIFE_TASK_PRIORITY.includes(body.priority) ? body.priority : 'P1';
+    const status = LIFE_TASK_STATUS.includes(body.status) ? body.status : 'todo';
+    const title = lifeText(body.title, 200);
+    const repeatType = lifeRepeatType(body.repeat, title);
+    await pool.execute(
+      'INSERT INTO life_daily_tasks (id, task_date, title, est_minutes, priority, status, pre_task, blocker, support, node_id, repeat_type, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, lifeText(body.date, 10) || todayStr(), title, Math.max(0, Number(body.estMinutes) || 0), priority, status,
+        lifeText(body.preTask, 120), lifeText(body.blocker, 200), lifeText(body.support, 200), lifeText(body.nodeId, 64),
+        repeatType, Math.max(0, Number(body.sortOrder) || 0), now, now]
+    );
+    await refreshLifeDerived('每日任务', ['每日任务', '进度快照', '精力负荷', '重点提醒', '变更日志'], '面板手动新增', `新增任务「${lifeText(body.title, 60)}」`);
+    res.json({ id, tasks: await listLifeTasks() });
+  } catch (err) {
+    console.error('新增每日任务失败:', err);
+    res.status(500).json({ error: err.message || '新增失败' });
+  }
+});
+
+app.put('/api/life/tasks/:id', async (req, res) => {
+  try {
+    const map = { date: 'task_date', title: 'title', estMinutes: 'est_minutes', priority: 'priority', preTask: 'pre_task', blocker: 'blocker', support: 'support', nodeId: 'node_id', repeat: 'repeat_type', sortOrder: 'sort_order' };
+    const fields = [];
+    const values = [];
+    for (const key of Object.keys(map)) {
+      if (req.body[key] === undefined) continue;
+      fields.push(`${map[key]} = ?`);
+      if (key === 'priority') values.push(LIFE_TASK_PRIORITY.includes(req.body[key]) ? req.body[key] : 'P1');
+      else if (key === 'repeat') values.push(lifeRepeatType(req.body[key], req.body.title));
+      else if (key === 'estMinutes' || key === 'sortOrder') values.push(Math.max(0, Number(req.body[key]) || 0));
+      else values.push(lifeText(req.body[key], key === 'date' ? 10 : 200));
+    }
+    if (fields.length) {
+      fields.push('updated_at = ?');
+      values.push(Date.now(), req.params.id);
+      await pool.execute(`UPDATE life_daily_tasks SET ${fields.join(', ')} WHERE id = ?`, values);
+      await refreshLifeDerived('每日任务', ['每日任务', '进度快照', '精力负荷', '重点提醒', '变更日志'], '面板手动修改', `修改任务「${lifeText(req.body.title || req.params.id, 60)}」`);
+    }
+    res.json({ tasks: await listLifeTasks() });
+  } catch (err) {
+    console.error('修改每日任务失败:', err);
+    res.status(500).json({ error: err.message || '修改失败' });
+  }
+});
+
+// 改状态：delay 时本任务顺延一天，且同日及之后的未完成任务整体后移一天
+// 任务状态驱动推演：状态变更只重绘该任务的关联子树，不重绘整张网络
+const LIFE_STATUS_INFERENCE_SYSTEM = `你是人生规划的状态推演引擎。某个最小可执行任务的状态刚刚发生变化，你只针对这个任务的关联子树做局部增量推演，禁止重绘整张网络。
+输出一个 JSON 对象 {"summary":"一句话说明这次推演做了什么","ops":[ ... ]}，ops 规范与主规划一致，只允许三种操作：
+- op="add"：新增衍生子节点，必须带 tempId、parentId（指向该任务对应的规划节点 id，或本轮其他 tempId）、kind、domain、series、title、detail、risk、priority、status、horizon、weight、timeGroup、stepNo、content_type、content_body
+- op="update"：更新既有节点（例如向上更新父目标完成概率、调整后续任务优先级），必须带 id
+- op="queue_search"：需要真实外网资料时只写待检索条目（query / nodeId / priority），禁止自行编造时间、官网、政策
+推演规则：
+1. 新状态 = done（已完成）：新增「验收结果」「复盘记录」两个子节点；把以它为前置的后续任务解锁（这些任务的 status 由 todo 改为 doing）；评估进度盈余，必要时新增一个拔高拓展任务；用 op="update" 向上更新父目标的完成概率（写进父节点 detail 的「完成概率：x%」）。
+2. 新状态 = delay（未完成 / 延期）：新增「未完成原因」「风险评估」「补救备选方案」三个子节点；向上逐层评估对上级模块、主线赛道、横向关联赛道带来的连锁负面影响（写进 risk 与 detail）；并明确给出任务减量 / 延后 / 裁剪低优先级任务的方案。
+3. 复盘模板、补救方案属于公共节点，加 "shared":true 跨分支复用，禁止重复建节点。
+4. 只输出 JSON，不要任何解释文字；本轮最多 8 个节点；每个节点仍按通用规则自动匹配 content_type。`;
+
+// 状态变更后异步跑一次局部推演：生成「完成 / 延期」两套分支，写回增量节点
+async function runLifeStatusInference(task, nextStatus) {
+  const nodeId = String(task.node_id || '');
+  const [all] = await pool.query('SELECT id, parent_id, kind, series, title, detail, status FROM life_plan_nodes');
+  const byId = new Map(all.map(row => [String(row.id), row]));
+  const node = nodeId ? byId.get(nodeId) : null;
+  // 沿 parent_id 向上收集父链（最多 4 层），让 AI 看清这次变更会影响哪条主线
+  const chain = [];
+  let cursor = node;
+  let depth = 0;
+  while (cursor && depth < 4) {
+    chain.unshift(`${cursor.kind}｜${cursor.title}`);
+    cursor = cursor.parent_id ? byId.get(String(cursor.parent_id)) : null;
+    depth += 1;
+  }
+  const siblings = node
+    ? all.filter(row => String(row.parent_id) === String(node.parent_id || '') && String(row.id) !== nodeId).slice(0, 8).map(row => row.title)
+    : [];
+  const userPrompt = [
+    `【任务】${lifeText(task.title, 200)}`,
+    node && node.detail ? `【任务细节】${lifeText(node.detail, 600)}` : '',
+    `【原状态】${task.status}　【新状态】${nextStatus}`,
+    `【所属主线】${node?.series || '未标注'}`,
+    `【父节点链】${chain.join(' → ') || '无'}`,
+    `【同层兄弟节点】${siblings.join('、') || '无'}`,
+    nodeId ? `【该任务对应的规划节点 id】${nodeId}` : '',
+    `【前置任务】${lifeText(task.pre_task, 120) || '无'}　【阻碍】${lifeText(task.blocker, 200) || '无'}`,
+    `【最近对话】\n${recentLifeTranscript(await (async () => {
+      const [rows] = await pool.query('SELECT role, content FROM life_chat_messages ORDER BY created_at DESC LIMIT 12');
+      return rows.reverse();
+    })())}`
+  ].filter(Boolean).join('\n');
+  const model = await resolveLifeModel();
+  const raw = await callAI(LIFE_STATUS_INFERENCE_SYSTEM, userPrompt, null, model, 120000, 3000);
+  const parsed = parseLifeJson(raw) || { ops: salvageJsonObjects(raw) };
+  const ops = Array.isArray(parsed?.ops) ? parsed.ops : (Array.isArray(parsed) ? parsed : []);
+  if (!ops.length) return 0;
+  const applied = await applyLifeOps(ops);
+  if (applied) {
+    await logLifePanelChange('每日任务', `任务「${lifeText(task.title, 60)}」状态变为 ${nextStatus}，自动推演关联子树（${applied} 项）`, '任务状态变更触发局部增量推理', ['规划网络', '每日任务', '进度快照']);
+  }
+  return applied;
+}
+
+// 后台自主生长：挑几个「还没往下拆」的叶节点，让 AI 按通用递归规则继续下拆一层
+// 只做纯逻辑推演（免费），不做外网检索；每轮增量追加，禁止清空重写
+const LIFE_GROW_SYSTEM = `你是人生规划的后台生长引擎。系统靠多轮对话 + 后台间歇推理逐层扩图，你这一轮只做一件事：把下面列出的「待展开叶节点」各自再向下拆一层。
+【通用递归拆解规则】任意节点都自动生成 4 个子分支：事件时间节点｜基础信息环境｜风险注意事项｜待完成任务项；其中【待完成任务项】继续拆：任务清单 → 阶段计划 → 每日计划 → 执行方法 → 复盘机制；【每日计划】再拆：各模块细分任务 → 工作量量化 → 验收标准 → 进度表。一直拆到「最小可执行任务」为止，不再继续拆。不限层级、不限分支数量。
+【严禁】
+1. 禁止生成「制定 XX 计划」「整理 XX 规划」这类无效顶层任务，全部拆成可直接动手的动作。
+2. 永远增量更新：只新增受影响的子节点，禁止清空或重写任何现有节点，禁止改动本轮没列出的节点。
+3. 禁止编造时间、官网、政策数据；没把握就不要写具体日期与网址，改为 op="queue_search" 入待检索队列，绝不自行联网。
+【输出】只输出一个 JSON 对象 {"summary":"一句话说明本轮扩了哪些节点","ops":[...]}：
+- op="add"：新增子节点，必须带 tempId、parentId（= 本轮列出的那个叶节点的 id，或本轮其他 tempId）、kind（子层用 goal / action）、domain、series（与该叶节点一致）、title（14 字内、写清动作）、detail、risk、priority、status、horizon、weight、timeGroup、stepNo、content_type（按内容自动匹配）、content_body
+- op="queue_search"：缺真实资料时写查询（query / nodeId / priority）
+每个叶节点本轮产出 2~4 个子节点；最小可执行任务用 content_type="checklist" 并带具体动作步骤。`;
+
+async function backgroundLifeGrow() {
+  const [rows] = await pool.query('SELECT id, parent_id, kind, series, title, detail, content_type, step_no FROM life_plan_nodes');
+  if (!rows.length) return 0;
+  const childCount = new Map();
+  for (const row of rows) {
+    const parent = String(row.parent_id || '');
+    if (parent) childCount.set(parent, (childCount.get(parent) || 0) + 1);
+  }
+  // 叶节点 = 没有任何子节点；再排除前瞻推演分支与已到终点的最小可执行任务（checklist）
+  const leaves = rows.filter(row => {
+    if (childCount.has(String(row.id))) return false;
+    if (String(row.kind) === 'milestone') return false;
+    return lifeContentType(row) !== 'checklist';
+  });
+  // 按创建顺序推进，保证后台长期运行能把整棵树逐层覆盖到；单轮只取 3 个，避免一次暴涨
+  const targets = leaves.slice(0, 3);
+  if (!targets.length) return 0;
+  const block = ['【待展开叶节点（只拆这几个，其他节点一律不许动）】',
+    targets.map(row => `${row.id}｜${row.kind}｜${row.series || '无主线'}｜${row.title}｜${String(row.detail || '').slice(0, 120)}`).join('\n')].join('\n');
+  const model = await resolveLifeModel();
+  const raw = await callAI(LIFE_GROW_SYSTEM, block, null, model, 150000, 3200);
+  const parsed = parseLifeJson(raw) || { ops: salvageJsonObjects(raw) };
+  const ops = Array.isArray(parsed?.ops) ? parsed.ops : (Array.isArray(parsed) ? parsed : []);
+  if (!ops.length) return 0;
+  const applied = await applyLifeOps(ops);
+  if (applied) await logLifePanelChange('规划网络', `后台自主生长：向下展开 ${targets.length} 个叶节点（新增 ${applied} 项）`, '后台间歇推理免费扩图', ['规划网络']);
+  return applied;
+}
+
+// ── 资料检索审批工作流 API（付费管控：攒批 → 人工审批 → 批量执行 → 缓存 → 账单）──
+app.get('/api/life/retrieval/queue', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM life_retrieval_queue ORDER BY created_at DESC LIMIT 120');
+    res.json({
+      tasks: rows.map(row => ({
+        id: row.id, batchId: row.batch_id, nodeId: row.node_id, series: row.series, title: row.title,
+        query: row.query, priority: row.priority, estCost: Number(row.est_cost || 0), status: row.status,
+        result: row.result || '', fromCache: Number(row.from_cache) === 1,
+        createdAt: Number(row.created_at), decidedAt: Number(row.decided_at)
+      })),
+      pendingCount: rows.filter(row => row.status === 'pending').length
+    });
+  } catch (err) { res.status(500).json({ error: err.message || '读取待检索队列失败' }); }
+});
+
+// 手动归集：立即把 pending 打成一批，产出检索清单 + 预估账单
+app.post('/api/life/retrieval/collect', async (req, res) => {
+  try {
+    const batchId = await collectLifeRetrievalBatch();
+    if (!batchId) return res.json({ batch: null, message: '当前没有待归集的检索需求' });
+    const [rows] = await pool.query('SELECT * FROM life_retrieval_batches WHERE id = ? LIMIT 1', [batchId]);
+    const row = rows[0];
+    res.json({
+      batch: { id: row.id, batchNo: row.batch_no, taskCount: Number(row.task_count), estCost: Number(row.est_cost), status: row.status, createdAt: Number(row.created_at) },
+      message: `已归集 ${row.task_count} 条待检索，预估费用 ${Number(row.est_cost).toFixed(2)} 元，等待审批`
+    });
+  } catch (err) { res.status(500).json({ error: err.message || '归集失败' }); }
+});
+
+app.get('/api/life/retrieval/batches', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM life_retrieval_batches ORDER BY created_at DESC LIMIT 40');
+    const [items] = await pool.query("SELECT id, batch_id FROM life_retrieval_queue WHERE batch_id <> ''");
+    const byBatch = new Map();
+    for (const item of items) {
+      if (!byBatch.has(item.batch_id)) byBatch.set(item.batch_id, []);
+      byBatch.get(item.batch_id).push(item.id);
+    }
+    res.json({
+      batches: rows.map(row => ({
+        id: row.id, batchNo: row.batch_no, taskCount: Number(row.task_count), estCost: Number(row.est_cost),
+        actualCost: Number(row.actual_cost), status: row.status, createdAt: Number(row.created_at),
+        decidedAt: Number(row.decided_at), taskIds: byBatch.get(row.id) || []
+      }))
+    });
+  } catch (err) { res.status(500).json({ error: err.message || '读取批次失败' }); }
+});
+
+// 三种人工审批：全部同意 / 部分同意（带 ids 勾选）/ 全部驳回
+app.post('/api/life/retrieval/batches/:id/decide', async (req, res) => {
+  try {
+    const mode = ['all', 'partial', 'reject'].includes(req.body?.mode) ? req.body.mode : 'reject';
+    const [batches] = await pool.query('SELECT * FROM life_retrieval_batches WHERE id = ? LIMIT 1', [req.params.id]);
+    if (!batches.length) return res.status(404).json({ error: '批次不存在' });
+    const batch = batches[0];
+    const [pendingRows] = await pool.query("SELECT * FROM life_retrieval_queue WHERE batch_id = ? AND status = 'pending'", [batch.id]);
+    const now = Date.now();
+
+    if (mode === 'reject') {
+      // 全部驳回：本次一律不检索，任务保留在队列里，后续可再审
+      for (const row of pendingRows) await pool.execute("UPDATE life_retrieval_queue SET status = 'rejected', updated_at = ? WHERE id = ?", [now, row.id]);
+      await pool.execute("UPDATE life_retrieval_batches SET status = 'rejected', actual_cost = 0, decided_at = ? WHERE id = ?", [now, batch.id]);
+      await logLifeRetrieval(batch.id, 'reject', `驳回 ${pendingRows.length} 条检索需求，费用 0 元`, 0);
+      return res.json({ batch: { id: batch.id, batchNo: batch.batch_no, status: 'rejected' }, executed: 0, cost: 0, message: `已驳回 ${pendingRows.length} 条，任务保留在队列中可再审` });
+    }
+
+    // partial：只执行勾选的条目，其余退回待定状态（脱离本批次，留待下次审批）
+    const picked = mode === 'partial' ? new Set((Array.isArray(req.body?.ids) ? req.body.ids : []).map(String)) : null;
+    if (picked && !picked.size) return res.status(400).json({ error: '请至少勾选一条需要检索的条目' });
+    const selected = pendingRows.filter(row => !picked || picked.has(String(row.id)));
+    const rest = pendingRows.filter(row => picked && !picked.has(String(row.id)));
+    for (const row of rest) await pool.execute("UPDATE life_retrieval_queue SET batch_id = '', updated_at = ? WHERE id = ?", [now, row.id]);
+
+    // 批量执行：逐条先查缓存，未命中才联网；任一失败不影响其余
+    let cost = 0;
+    let cachedHits = 0;
+    for (const row of selected) {
+      try {
+        const outcome = await executeLifeRetrieval(row, req.user.id);
+        cost += outcome.cost;
+        if (outcome.fromCache) cachedHits += 1;
+      } catch (err) {
+        await pool.execute("UPDATE life_retrieval_queue SET status = 'failed', result = ?, updated_at = ? WHERE id = ?", [lifeText(err.message, 400), Date.now(), row.id]);
+      }
+    }
+    const status = mode === 'partial' && rest.length ? 'partial' : 'done';
+    await pool.execute('UPDATE life_retrieval_batches SET status = ?, actual_cost = ?, decided_at = ? WHERE id = ?', [status, cost, now, batch.id]);
+    await logLifeRetrieval(batch.id, mode === 'all' ? 'approve_all' : 'approve_partial', `执行 ${selected.length} 条检索（缓存命中 ${cachedHits} 条），实际费用 ${cost.toFixed(2)} 元`, cost);
+    res.json({
+      batch: { id: batch.id, batchNo: batch.batch_no, status },
+      executed: selected.length, cachedHits, cost,
+      message: `已执行 ${selected.length} 条检索${cachedHits ? `（${cachedHits} 条命中缓存，未扣费）` : ''}，实际费用 ${cost.toFixed(2)} 元`
+    });
+  } catch (err) { res.status(500).json({ error: err.message || '审批失败' }); }
+});
+
+// 账单 + 审批记录 + 检索日志
+app.get('/api/life/retrieval/bill', async (req, res) => {
+  try {
+    const [logs] = await pool.query('SELECT * FROM life_retrieval_logs ORDER BY created_at DESC LIMIT 80');
+    const [totals] = await pool.query("SELECT COUNT(*) AS n, COALESCE(SUM(actual_cost), 0) AS cost FROM life_retrieval_batches WHERE status IN ('done','partial')");
+    const [cache] = await pool.query('SELECT COUNT(*) AS n, COALESCE(SUM(hit_count), 0) AS hits FROM life_retrieval_cache');
+    const [pending] = await pool.query("SELECT COUNT(*) AS n FROM life_retrieval_queue WHERE status = 'pending'");
+    res.json({
+      logs: logs.map(row => ({ id: row.id, batchId: row.batch_id, action: row.action, detail: row.detail, cost: Number(row.cost || 0), createdAt: Number(row.created_at) })),
+      totalBatches: Number(totals[0].n), totalCost: Number(totals[0].cost || 0),
+      cacheEntries: Number(cache[0].n), cacheHits: Number(cache[0].hits || 0),
+      pendingCount: Number(pending[0].n)
+    });
+  } catch (err) { res.status(500).json({ error: err.message || '读取账单失败' }); }
+});
+
+app.post('/api/life/tasks/:id/state', async (req, res) => {
+  try {
+    const status = LIFE_TASK_STATUS.includes(req.body?.status) ? req.body.status : 'todo';
+    const [rows] = await pool.query('SELECT * FROM life_daily_tasks WHERE id = ? LIMIT 1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: '任务不存在' });
+    const task = rows[0];
+    const now = Date.now();
+    if (status === 'delay') {
+      const base = task.task_date || todayStr();
+      const [later] = await pool.query('SELECT id, task_date FROM life_daily_tasks WHERE task_date >= ? AND id <> ?', [base, task.id]);
+      for (const item of later) {
+        await pool.execute('UPDATE life_daily_tasks SET task_date = ?, updated_at = ? WHERE id = ?', [lifeDateShift(item.task_date, 1), now, item.id]);
+      }
+      await pool.execute('UPDATE life_daily_tasks SET status = ?, task_date = ?, updated_at = ? WHERE id = ?', [status, lifeDateShift(base, 1), now, task.id]);
+      await refreshLifeDerived('每日任务', ['每日任务', '进度快照', '精力负荷', '重点提醒', '变更日志'], '任务未按时完成', `任务「${lifeText(task.title, 60)}」延期，同日及之后任务整体顺延一天`);
+    } else {
+      await pool.execute('UPDATE life_daily_tasks SET status = ?, updated_at = ? WHERE id = ?', [status, now, task.id]);
+      await refreshLifeDerived('每日任务', ['每日任务', '进度快照', '精力负荷', '重点提醒', '变更日志'], '面板手动更新', `任务「${lifeText(task.title, 60)}」状态改为 ${status}`);
+    }
+    // 状态驱动推演：done / delay 时异步触发局部增量推理，只更新该任务关联子树，不阻塞响应
+    if (status !== task.status && (status === 'done' || status === 'delay')) {
+      runLifeStatusInference(task, status).catch(err => console.warn('[life-status-infer]', err.message));
+    }
+    // 反向同步：每日任务绑定过规划节点时，把状态回写到对应节点，思维导图上的前置依赖随之解锁/锁定
+    if (status !== task.status && task.node_id) {
+      const nodeStatus = ['done', 'doing', 'todo', 'drop'].includes(status) ? status : 'doing';
+      pool.execute('UPDATE life_plan_nodes SET status = ?, updated_at = ? WHERE id = ?', [nodeStatus, now, String(task.node_id)])
+        .catch(err => console.warn('[life-node-sync]', err.message));
+    }
+    res.json({ tasks: await listLifeTasks() });
+  } catch (err) {
+    console.error('更新任务状态失败:', err);
+    res.status(500).json({ error: err.message || '更新失败' });
+  }
+});
+
+app.delete('/api/life/tasks/:id', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT title FROM life_daily_tasks WHERE id = ? LIMIT 1', [req.params.id]);
+    await pool.execute('DELETE FROM life_daily_tasks WHERE id = ?', [req.params.id]);
+    await refreshLifeDerived('每日任务', ['每日任务', '进度快照', '精力负荷', '重点提醒', '变更日志'], '面板手动删除', `删除任务「${lifeText(rows[0]?.title || req.params.id, 60)}」`);
+    res.json({ tasks: await listLifeTasks() });
+  } catch (err) {
+    console.error('删除每日任务失败:', err);
+    res.status(500).json({ error: err.message || '删除失败' });
+  }
+});
+
+// 进度快照
+app.get('/api/life/snapshots', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM life_plan_snapshots ORDER BY created_at DESC LIMIT 60');
+    res.json({ snapshots: rows.map(lifeSnapshotBrief), stats: await lifeProgressStats() });
+  } catch (err) {
+    console.error('获取进度快照失败:', err);
+    res.status(500).json({ error: err.message || '获取失败' });
+  }
+});
+
+app.post('/api/life/snapshots', async (req, res) => {
+  try {
+    // 同一自然日只保留一条快照：由 refreshLifeDerived 按 snap_date 覆盖更新
+    await refreshLifeDerived('任务进度快照', ['进度快照', '变更日志'], lifeText(req.body?.reason, 200) || '面板手动生成，覆盖当天记录', '生成今日进度快照（覆盖同一天记录）');
+    const [rows] = await pool.query('SELECT * FROM life_plan_snapshots ORDER BY created_at DESC LIMIT 60');
+    res.json({ snapshot: rows.length ? lifeSnapshotBrief(rows[0]) : null, snapshots: rows.map(lifeSnapshotBrief) });
+  } catch (err) {
+    console.error('生成进度快照失败:', err);
+    res.status(500).json({ error: err.message || '生成失败' });
+  }
+});
+
+// 列表接口只回传统计信息，节点存档仅在详情接口返回，避免响应过大
+function lifeSnapshotBrief(row) {
+  const out = lifeSnapshotOut(row);
+  if (out.payload) out.payload = { ...out.payload, nodes: undefined };
+  return out;
+}
+
+// 回看第 N 次快照
+app.get('/api/life/snapshots/:id', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM life_plan_snapshots WHERE id = ? LIMIT 1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: '快照不存在' });
+    res.json({ snapshot: lifeSnapshotOut(rows[0]) });
+  } catch (err) {
+    console.error('回看快照失败:', err);
+    res.status(500).json({ error: err.message || '获取失败' });
+  }
+});
+
+// 回退到某个历史快照：把快照里存档的规划节点整体还原（不改动数据库结构，只覆盖节点数据）
+app.post('/api/life/snapshots/:id/restore', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM life_plan_snapshots WHERE id = ? LIMIT 1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: '快照不存在' });
+    let payload = {};
+    try { payload = JSON.parse(rows[0].payload || '{}'); } catch (_) { payload = {}; }
+    const nodes = Array.isArray(payload.nodes) ? payload.nodes : [];
+    if (!nodes.length) return res.status(400).json({ error: '该快照没有存档规划节点，无法回退' });
+    const now = Date.now();
+    // 回退只重建非「大脑」节点：中心节点（kind=self）必须常驻，不被快照覆盖或删除
+    await pool.execute("DELETE FROM life_plan_nodes WHERE kind <> 'self'");
+    for (const node of nodes) {
+      if (String(node.kind || '') === 'self') continue;
+      await pool.execute(
+        'INSERT INTO life_plan_nodes (id, parent_id, kind, domain, title, detail, risk, status, horizon, weight, source, sort_order, time_group, deps, step_no, priority, series, content_type, content_body, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          lifeText(node.id, 64) || crypto.randomUUID(), lifeText(node.parentId, 64),
+          LIFE_KINDS.includes(node.kind) ? node.kind : 'goal', LIFE_DOMAINS.includes(node.domain) ? node.domain : '成长',
+          lifeText(node.title, 200), lifeText(node.detail, 1200), lifeText(node.risk, 200),
+          ['todo', 'doing', 'done', 'drop'].includes(node.status) ? node.status : 'todo',
+          lifeText(node.horizon, 32), lifeClampWeight(node.weight), 'ai', Number(node.sortOrder) || 0,
+          LIFE_TIME_GROUPS.includes(node.timeGroup) ? node.timeGroup : '',
+          JSON.stringify(Array.isArray(node.deps) ? [...new Set(node.deps.map(v => String(v)))] : []),
+          Number(node.stepNo) || 0, LIFE_TASK_PRIORITY.includes(node.priority) ? node.priority : '',
+          lifeText(node.series, 64),
+          LIFE_CONTENT_TYPES.includes(String(node.contentType || '').toLowerCase()) ? String(node.contentType).toLowerCase() : '',
+          node.contentBody ? (typeof node.contentBody === 'string' ? node.contentBody : JSON.stringify(node.contentBody)) : '',
+          Number(node.createdAt) || now, now
+        ]
+      );
+    }
+    await logLifePanelChange('规划快照', `回退到 ${rows[0].snap_date} 的历史规划版本（${nodes.length} 个节点）`, '用户手动回退历史版本', ['规划网络']);
+    res.json({ restored: nodes.length, nodes: await listLifeNodes() });
+  } catch (err) {
+    console.error('回退快照失败:', err);
+    res.status(500).json({ error: err.message || '回退失败' });
+  }
+});
+
+// 精力负荷
+app.get('/api/life/energy', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM life_energy_logs ORDER BY log_date DESC LIMIT 60');
+    res.json({ logs: rows.map(lifeEnergyOut), planned: await lifePlannedMinutes(todayStr()) });
+  } catch (err) {
+    console.error('获取精力负荷失败:', err);
+    res.status(500).json({ error: err.message || '获取失败' });
+  }
+});
+
+app.post('/api/life/energy', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const logDate = lifeText(body.date, 10) || todayStr();
+    const planned = body.plannedMinutes != null ? Math.max(0, Number(body.plannedMinutes) || 0) : await lifePlannedMinutes(logDate);
+    const capacity = Math.max(0, Number(body.capacityMinutes) || 0);
+    const overload = planned > capacity && capacity > 0 ? 1 : 0;
+    const distractions = lifeText(body.distractions, 200);
+    const sleepHours = Number(body.sleepHours) || 0;
+    const health = lifeText(body.health, 100);
+    const note = lifeText(body.note, 1000);
+    // 一天只保留一条记录：与 refreshLifeDerived 的自动汇总对称，避免同一天出现两行
+    const [exist] = await pool.query('SELECT id FROM life_energy_logs WHERE log_date = ? LIMIT 1', [logDate]);
+    if (exist.length) {
+      await pool.execute(
+        'UPDATE life_energy_logs SET planned_minutes = ?, capacity_minutes = ?, overload = ?, distractions = ?, sleep_hours = ?, health = ?, note = ? WHERE id = ?',
+        [planned, capacity, overload, distractions, sleepHours, health, note, exist[0].id]
+      );
+    } else {
+      await pool.execute(
+        'INSERT INTO life_energy_logs (id, log_date, planned_minutes, capacity_minutes, overload, distractions, sleep_hours, health, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [crypto.randomUUID(), logDate, planned, capacity, overload, distractions, sleepHours, health, note, Date.now()]
+      );
+    }
+    await refreshLifeDerived('精力负荷评估', ['精力负荷', '变更日志'], distractions || '面板手动记录', `记录 ${logDate}：计划 ${planned} 分钟 / 上限 ${capacity} 分钟${overload ? '（超负荷）' : ''}`);
+    const [rows] = await pool.query('SELECT * FROM life_energy_logs ORDER BY log_date DESC LIMIT 60');
+    res.json({ logs: rows.map(lifeEnergyOut), planned: await lifePlannedMinutes(todayStr()) });
+  } catch (err) {
+    console.error('记录精力负荷失败:', err);
+    res.status(500).json({ error: err.message || '记录失败' });
+  }
+});
+
+// 技能档案
+app.get('/api/life/skills', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM life_skill_profile ORDER BY sort_order ASC, created_at ASC');
+    res.json({ skills: rows.map(lifeSkillOut) });
+  } catch (err) {
+    console.error('获取技能档案失败:', err);
+    res.status(500).json({ error: err.message || '获取失败' });
+  }
+});
+
+app.post('/api/life/skills', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    await pool.execute('INSERT INTO life_skill_profile (id, category, name, level, note, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, LIFE_SKILL_CATEGORY.includes(body.category) ? body.category : 'own', lifeText(body.name, 120), lifeText(body.level, 32), lifeText(body.note, 200), Math.max(0, Number(body.sortOrder) || 0), now, now]);
+    await logLifePanelChange('个人技能档案', `新增技能「${lifeText(body.name, 60)}」`, '面板手动新增');
+    const [rows] = await pool.query('SELECT * FROM life_skill_profile ORDER BY sort_order ASC, created_at ASC');
+    res.json({ skills: rows.map(lifeSkillOut) });
+  } catch (err) {
+    console.error('新增技能失败:', err);
+    res.status(500).json({ error: err.message || '新增失败' });
+  }
+});
+
+app.put('/api/life/skills/:id', async (req, res) => {
+  try {
+    const map = { category: 'category', name: 'name', level: 'level', note: 'note', sortOrder: 'sort_order' };
+    const fields = [];
+    const values = [];
+    for (const key of Object.keys(map)) {
+      if (req.body[key] === undefined) continue;
+      fields.push(`${map[key]} = ?`);
+      if (key === 'category') values.push(LIFE_SKILL_CATEGORY.includes(req.body[key]) ? req.body[key] : 'own');
+      else if (key === 'sortOrder') values.push(Math.max(0, Number(req.body[key]) || 0));
+      else values.push(lifeText(req.body[key], 200));
+    }
+    if (fields.length) {
+      fields.push('updated_at = ?');
+      values.push(Date.now(), req.params.id);
+      await pool.execute(`UPDATE life_skill_profile SET ${fields.join(', ')} WHERE id = ?`, values);
+      await logLifePanelChange('个人技能档案', `修改技能「${lifeText(req.body.name || req.params.id, 60)}」`, '面板手动修改');
+    }
+    const [rows] = await pool.query('SELECT * FROM life_skill_profile ORDER BY sort_order ASC, created_at ASC');
+    res.json({ skills: rows.map(lifeSkillOut) });
+  } catch (err) {
+    console.error('修改技能失败:', err);
+    res.status(500).json({ error: err.message || '修改失败' });
+  }
+});
+
+app.delete('/api/life/skills/:id', async (req, res) => {
+  try {
+    await pool.execute('DELETE FROM life_skill_profile WHERE id = ?', [req.params.id]);
+    const [rows] = await pool.query('SELECT * FROM life_skill_profile ORDER BY sort_order ASC, created_at ASC');
+    res.json({ skills: rows.map(lifeSkillOut) });
+  } catch (err) {
+    console.error('删除技能失败:', err);
+    res.status(500).json({ error: err.message || '删除失败' });
+  }
+});
+
+// ===== 全局人物画像（用户模型）：跨所有根目标的统一画像，AI 生成计划 / 判断短板 / 推演未来分支的数据源 =====
+// 6 大维度固定：硬能力 / 时间与行为习惯 / 性格与心智特质 / 资源 / 目标价值偏好 / 风险与短板
+const LIFE_PERSONA_DIMS = [
+  { key: 'hardSkills', col: 'hard_skills', label: '硬能力', hint: '语言能力、专业技术、其他技能、证明材料、能力成长曲线（有客观依据、可量化）' },
+  { key: 'timeHabits', col: 'time_habits', label: '时间与行为习惯', hint: '可用时段、任务履约特征、耐力指标、拖延模式、偏好（由打卡数据自动统计）' },
+  { key: 'traits', col: 'traits', label: '性格与心智特质', hint: '风险偏好、目标倾向性、抗压能力、决策特点、执行力（由对话 + 行为客观推断）' },
+  { key: 'resources', col: 'resources', label: '资源', hint: '资金状况、硬件资源、人脉资源、地域约束' },
+  { key: 'valuesPref', col: 'values_pref', label: '目标价值偏好', hint: '优先级排序、取舍倾向、生活诉求' },
+  { key: 'risks', col: 'risks', label: '风险与短板', hint: '薄弱能力项、行为短板、外部风险（预警用）' }
+];
+
+function lifePersonaOut(row) {
+  const out = { id: row?.id || '', source: row?.source || 'user', updatedAt: Number(row?.updated_at) || 0 };
+  for (const dim of LIFE_PERSONA_DIMS) out[dim.key] = String(row?.[dim.col] || '');
+  return out;
+}
+
+async function readLifePersonaRow() {
+  const [rows] = await pool.query('SELECT * FROM life_persona ORDER BY updated_at DESC LIMIT 1');
+  return rows[0] || null;
+}
+
+app.get('/api/life/persona', async (req, res) => {
+  try {
+    const row = await readLifePersonaRow();
+    res.json({
+      persona: lifePersonaOut(row),
+      dims: LIFE_PERSONA_DIMS.map(({ key, label, hint }) => ({ key, label, hint })),
+      // 动态画像（由右侧规划完成度反推）：与手填的 6 维并列返回，前端挂在画像树的最外层
+      derived: lifeDerivedOut(await readLifeDerivedRow()),
+      derivedDims: LIFE_PERSONA_DERIVED_DIMS.map(({ key, label, hint }) => ({ key, label, hint }))
+    });
+  } catch (err) {
+    console.error('获取人物画像失败:', err);
+    res.status(500).json({ error: err.message || '获取失败' });
+  }
+});
+
+app.put('/api/life/persona', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const now = Date.now();
+    let row = await readLifePersonaRow();
+    if (!row) {
+      const id = crypto.randomUUID();
+      await pool.execute(
+        `INSERT INTO life_persona (id, hard_skills, time_habits, traits, resources, values_pref, risks, source, created_at, updated_at) VALUES (?, '', '', '', '', '', '', 'user', ?, ?)`,
+        [id, now, now]
+      );
+      row = await readLifePersonaRow();
+    }
+    const fields = [];
+    const values = [];
+    for (const dim of LIFE_PERSONA_DIMS) {
+      if (body[dim.key] === undefined) continue;
+      fields.push(`${dim.col} = ?`);
+      values.push(lifeText(body[dim.key], 6000));
+    }
+    if (!fields.length) return res.json({ persona: lifePersonaOut(row) });
+    fields.push('source = ?'); values.push('user');
+    fields.push('updated_at = ?'); values.push(now);
+    values.push(row.id);
+    await pool.execute(`UPDATE life_persona SET ${fields.join(', ')} WHERE id = ?`, values);
+    const updated = await readLifePersonaRow();
+    res.json({ persona: lifePersonaOut(updated) });
+  } catch (err) {
+    console.error('保存人物画像失败:', err);
+    res.status(500).json({ error: err.message || '保存失败' });
+  }
+});
+
+// 动态画像重算：前端每次刷新完规划就调一次，指纹没变会直接复用缓存（几乎零成本）
+app.post('/api/life/persona/derived/refresh', async (req, res) => {
+  try {
+    const derived = await deriveLifePersona(lifeText(req.body?.reason, 40) || '面板刷新');
+    res.json({ derived: derived || lifeDerivedOut(await readLifeDerivedRow()), derivedDims: LIFE_PERSONA_DERIVED_DIMS.map(({ key, label, hint }) => ({ key, label, hint })) });
+  } catch (err) {
+    console.error('重算动态画像失败:', err);
+    res.status(500).json({ error: err.message || '重算失败' });
+  }
+});
+
+// ===== 未来可选发展路径库：画像的衍生模块，每条路径带适配得分 / 优势 / 代价 / 前置 / 长期推演 =====
+function lifePathOut(row) {
+  return {
+    id: row.id,
+    name: row.name || '',
+    advantages: row.advantages || '',
+    risks: row.risks || '',
+    prerequisites: row.prerequisites || '',
+    evolution: row.evolution || '',
+    score: Number(row.score) || 0,
+    nodeId: row.node_id || '',
+    source: row.source || 'user',
+    sortOrder: Number(row.sort_order) || 0
+  };
+}
+
+async function listLifePaths() {
+  const [rows] = await pool.query('SELECT * FROM life_future_paths ORDER BY sort_order ASC, created_at ASC');
+  return rows.map(lifePathOut);
+}
+
+app.get('/api/life/paths', async (req, res) => {
+  try {
+    res.json({ items: await listLifePaths() });
+  } catch (err) {
+    console.error('获取发展路径库失败:', err);
+    res.status(500).json({ error: err.message || '获取失败' });
+  }
+});
+
+app.post('/api/life/paths', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const now = Date.now();
+    const id = crypto.randomUUID();
+    await pool.execute(
+      'INSERT INTO life_future_paths (id, name, advantages, risks, prerequisites, evolution, score, node_id, source, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, lifeText(body.name, 120), lifeText(body.advantages, 4000), lifeText(body.risks, 4000), lifeText(body.prerequisites, 2000), lifeText(body.evolution, 4000), Math.max(0, Math.min(100, Math.round(Number(body.score) || 0))), lifeText(body.nodeId, 64), lifeText(body.source, 8) || 'user', Math.max(0, Math.round(Number(body.sortOrder) || 0)), now, now]
+    );
+    res.json({ items: await listLifePaths() });
+  } catch (err) {
+    console.error('新增发展路径失败:', err);
+    res.status(500).json({ error: err.message || '新增失败' });
+  }
+});
+
+app.put('/api/life/paths/:id', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const fields = [];
+    const values = [];
+    const map = { name: 'name', advantages: 'advantages', risks: 'risks', prerequisites: 'prerequisites', evolution: 'evolution', nodeId: 'node_id' };
+    for (const [key, col] of Object.entries(map)) {
+      if (body[key] === undefined) continue;
+      fields.push(`${col} = ?`);
+      values.push(lifeText(body[key], key === 'name' ? 120 : 4000));
+    }
+    if (body.score !== undefined) { fields.push('score = ?'); values.push(Math.max(0, Math.min(100, Math.round(Number(body.score) || 0)))); }
+    if (body.sortOrder !== undefined) { fields.push('sort_order = ?'); values.push(Math.max(0, Math.round(Number(body.sortOrder) || 0))); }
+    if (!fields.length) return res.json({ items: await listLifePaths() });
+    fields.push('updated_at = ?'); values.push(Date.now());
+    values.push(String(req.params.id));
+    await pool.execute(`UPDATE life_future_paths SET ${fields.join(', ')} WHERE id = ?`, values);
+    res.json({ items: await listLifePaths() });
+  } catch (err) {
+    console.error('更新发展路径失败:', err);
+    res.status(500).json({ error: err.message || '更新失败' });
+  }
+});
+
+app.delete('/api/life/paths/:id', async (req, res) => {
+  try {
+    await pool.execute('DELETE FROM life_future_paths WHERE id = ?', [String(req.params.id)]);
+    res.json({ items: await listLifePaths() });
+  } catch (err) {
+    console.error('删除发展路径失败:', err);
+    res.status(500).json({ error: err.message || '删除失败' });
+  }
+});
+
+// 学习知识库
+app.get('/api/life/knowledge', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM life_knowledge ORDER BY created_at DESC LIMIT 300');
+    const items = rows.map(lifeKnowledgeOut);
+    const today = todayStr();
+    res.json({ items, due: items.filter(item => item.nextReviewDate && item.nextReviewDate <= today) });
+  } catch (err) {
+    console.error('获取学习知识库失败:', err);
+    res.status(500).json({ error: err.message || '获取失败' });
+  }
+});
+
+app.post('/api/life/knowledge', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    const baseDate = todayStr();
+    await pool.execute(
+      'INSERT INTO life_knowledge (id, subject, topic, content, wrong_questions, tags, review_stage, next_review_date, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, lifeText(body.subject, 32), lifeText(body.topic, 120), lifeText(body.content, 4000), lifeText(body.wrongQuestions, 4000), lifeText(body.tags, 120), 0, lifeNextReviewDate(baseDate, 0), lifeText(body.source, 16) || 'user', now, now]
+    );
+    await refreshLifeDerived('个人学习知识库', ['知识库', '变更日志', '重点提醒'], '面板手动新增', `新增知识点「${lifeText(body.topic, 60)}」`);
+    const [rows] = await pool.query('SELECT * FROM life_knowledge ORDER BY created_at DESC LIMIT 300');
+    res.json({ items: rows.map(lifeKnowledgeOut) });
+  } catch (err) {
+    console.error('新增知识点失败:', err);
+    res.status(500).json({ error: err.message || '新增失败' });
+  }
+});
+
+app.put('/api/life/knowledge/:id', async (req, res) => {
+  try {
+    const map = { subject: 'subject', topic: 'topic', content: 'content', wrongQuestions: 'wrong_questions', tags: 'tags' };
+    const fields = [];
+    const values = [];
+    for (const key of Object.keys(map)) {
+      if (req.body[key] === undefined) continue;
+      fields.push(`${map[key]} = ?`);
+      values.push(lifeText(req.body[key], key === 'subject' || key === 'tags' ? 120 : 4000));
+    }
+    if (fields.length) {
+      fields.push('updated_at = ?');
+      values.push(Date.now(), req.params.id);
+      await pool.execute(`UPDATE life_knowledge SET ${fields.join(', ')} WHERE id = ?`, values);
+      await refreshLifeDerived('个人学习知识库', ['知识库', '变更日志', '重点提醒'], '面板手动修改', `修改知识点「${lifeText(req.body.topic || req.params.id, 60)}」`);
+    }
+    const [rows] = await pool.query('SELECT * FROM life_knowledge ORDER BY created_at DESC LIMIT 300');
+    res.json({ items: rows.map(lifeKnowledgeOut) });
+  } catch (err) {
+    console.error('修改知识点失败:', err);
+    res.status(500).json({ error: err.message || '修改失败' });
+  }
+});
+
+app.delete('/api/life/knowledge/:id', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT topic FROM life_knowledge WHERE id = ? LIMIT 1', [req.params.id]);
+    await pool.execute('DELETE FROM life_knowledge WHERE id = ?', [req.params.id]);
+    await refreshLifeDerived('个人学习知识库', ['知识库', '变更日志', '重点提醒'], '面板手动删除', `删除知识点「${lifeText(rows[0]?.topic || req.params.id, 60)}」`);
+    const [list] = await pool.query('SELECT * FROM life_knowledge ORDER BY created_at DESC LIMIT 300');
+    res.json({ items: list.map(lifeKnowledgeOut) });
+  } catch (err) {
+    console.error('删除知识点失败:', err);
+    res.status(500).json({ error: err.message || '删除失败' });
+  }
+});
+
+// 间隔重复：推进复习阶段并重算下次复习日
+app.post('/api/life/knowledge/:id/review', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM life_knowledge WHERE id = ? LIMIT 1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: '知识点不存在' });
+    const item = rows[0];
+    const stage = Math.min(LIFE_REVIEW_OFFSETS.length - 1, (Number(item.review_stage) || 0) + 1);
+    const baseDate = lifeDateOf(item.created_at);
+    const next = lifeNextReviewDate(baseDate, stage);
+    await pool.execute('UPDATE life_knowledge SET review_stage = ?, next_review_date = ?, updated_at = ? WHERE id = ?', [stage, next, Date.now(), item.id]);
+    await refreshLifeDerived('个人学习知识库', ['知识库', '变更日志', '重点提醒'], next ? `下次复习 ${next}` : '已掌握，退出复习队列', `推进复习「${lifeText(item.topic, 60)}」至第 ${stage} 阶段`);
+    const [list] = await pool.query('SELECT * FROM life_knowledge ORDER BY created_at DESC LIMIT 300');
+    res.json({ items: list.map(lifeKnowledgeOut) });
+  } catch (err) {
+    console.error('推进复习失败:', err);
+    res.status(500).json({ error: err.message || '操作失败' });
+  }
+});
+
+// 外部事件日历
+app.get('/api/life/events', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM life_calendar_events ORDER BY event_date ASC LIMIT 200');
+    res.json({ events: rows.map(lifeEventOut) });
+  } catch (err) {
+    console.error('获取外部事件失败:', err);
+    res.status(500).json({ error: err.message || '获取失败' });
+  }
+});
+
+app.post('/api/life/events', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    await pool.execute(
+      'INSERT INTO life_calendar_events (id, title, event_date, category, level, remind_days, status, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, lifeText(body.title, 120), lifeText(body.date, 10), lifeText(body.category, 32), ['high', 'mid', 'low'].includes(body.level) ? body.level : 'mid', lifeText(body.remindDays, 32) || '30,7,1', lifeText(body.status, 16) || 'pending', lifeText(body.note, 1000), now, now]
+    );
+    await refreshLifeDerived('外部事件日历', ['外部事件', '变更日志', '重点提醒'], '面板手动新增', `新增事件「${lifeText(body.title, 60)}」${lifeText(body.date, 10) ? `，${lifeText(body.date, 10)}` : ''}`);
+    const [rows] = await pool.query('SELECT * FROM life_calendar_events ORDER BY event_date ASC LIMIT 200');
+    res.json({ events: rows.map(lifeEventOut) });
+  } catch (err) {
+    console.error('新增外部事件失败:', err);
+    res.status(500).json({ error: err.message || '新增失败' });
+  }
+});
+
+app.put('/api/life/events/:id', async (req, res) => {
+  try {
+    const map = { title: 'title', date: 'event_date', category: 'category', level: 'level', remindDays: 'remind_days', status: 'status', note: 'note' };
+    const fields = [];
+    const values = [];
+    for (const key of Object.keys(map)) {
+      if (req.body[key] === undefined) continue;
+      fields.push(`${map[key]} = ?`);
+      if (key === 'level') values.push(['high', 'mid', 'low'].includes(req.body[key]) ? req.body[key] : 'mid');
+      else values.push(lifeText(req.body[key], key === 'note' ? 1000 : 120));
+    }
+    if (fields.length) {
+      fields.push('updated_at = ?');
+      values.push(Date.now(), req.params.id);
+      await pool.execute(`UPDATE life_calendar_events SET ${fields.join(', ')} WHERE id = ?`, values);
+      await refreshLifeDerived('外部事件日历', ['外部事件', '变更日志', '重点提醒'], '面板手动修改', `修改事件「${lifeText(req.body.title || req.params.id, 60)}」`);
+    }
+    const [rows] = await pool.query('SELECT * FROM life_calendar_events ORDER BY event_date ASC LIMIT 200');
+    res.json({ events: rows.map(lifeEventOut) });
+  } catch (err) {
+    console.error('修改外部事件失败:', err);
+    res.status(500).json({ error: err.message || '修改失败' });
+  }
+});
+
+app.delete('/api/life/events/:id', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT title FROM life_calendar_events WHERE id = ? LIMIT 1', [req.params.id]);
+    await pool.execute('DELETE FROM life_calendar_events WHERE id = ?', [req.params.id]);
+    await refreshLifeDerived('外部事件日历', ['外部事件', '变更日志', '重点提醒'], '面板手动删除', `删除事件「${lifeText(rows[0]?.title || req.params.id, 60)}」`);
+    const [list] = await pool.query('SELECT * FROM life_calendar_events ORDER BY event_date ASC LIMIT 200');
+    res.json({ events: list.map(lifeEventOut) });
+  } catch (err) {
+    console.error('删除外部事件失败:', err);
+    res.status(500).json({ error: err.message || '删除失败' });
+  }
+});
+
+// 变更日志
+app.get('/api/life/changes', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM life_change_logs ORDER BY created_at DESC LIMIT 200');
+    res.json({ changes: rows.map(lifeChangeOut) });
+  } catch (err) {
+    console.error('获取变更日志失败:', err);
+    res.status(500).json({ error: err.message || '获取失败' });
+  }
+});
+
+// 重点提醒区
+app.get('/api/life/alerts', async (req, res) => {
+  try {
+    res.json({ alerts: await lifeAlerts(), stats: await lifeProgressStats() });
+  } catch (err) {
+    console.error('获取重点提醒失败:', err);
+    res.status(500).json({ error: err.message || '获取失败' });
+  }
+});
+
 // ========== 每日备注 API ==========
 
 // 获取某天的备注
@@ -5421,15 +10598,90 @@ app.get('/api/wechat/training-data', async (req, res) => {
 })
 
 // 通用 AI 调用函数（支持多模型）
+// 在用户自助接入的自定义模型里查找模型名对应的配置
+async function findCustomModel(model) {
+  const list = await getCustomModels();
+  return list.find(item => item && (item.id === model || (Array.isArray(item.models) && item.models.includes(model)))) || null;
+}
+
+// 解析模型配置：内置模型走官方地址与官方密钥，自定义模型走用户接入的地址与密钥
+async function prepareModel(model) {
+  if (typeof model !== 'string' || !model || model.length > 200) throw new Error('不支持的模型，请选择官网模型');
+  // 用户显式接入的模型优先于内置前缀猜测：避免同名模型被错误路由到官方地址与官方 Key
+  const custom = await findCustomModel(model);
+  const isBuiltin = !custom && /^(?:agnes$|agnes-|glm-)/.test(model);
+  if (!custom && !isBuiltin) throw new Error('不支持的模型，请在设置中接入该模型');
+
+  const isGlm = !custom && model.startsWith('glm-');
+  const isAgnes = !custom && (model === 'agnes' || model.startsWith('agnes-'));
+  const provider = custom ? (custom.id || 'custom') : (isGlm ? 'glm' : 'agnes');
+  const providerName = custom ? (custom.name || model) : ({ agnes: 'Agnes', glm: '智谱GLM' }[provider] || provider);
+  const apiKey = await getUserSecret(custom ? custom.keyField : `${provider}_api_key`);
+  const resolvedModel = model === 'agnes' ? 'agnes-2.5-flash' : model;
+  const config = custom
+    ? {
+      url: String(custom.baseUrl || '').replace(/\/+$/, '') + (String(custom.path || '/chat/completions').startsWith('/') ? String(custom.path || '/chat/completions') : `/${custom.path}`),
+      model: resolvedModel,
+      authStyle: custom.authStyle === 'x-api-key' ? 'x-api-key' : 'bearer',
+      apiStyle: custom.apiStyle === 'anthropic' ? 'anthropic' : 'openai'
+    }
+    : {
+      url: isAgnes ? 'https://apihub.agnes-ai.com/v1/chat/completions' : 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+      model: resolvedModel,
+      authStyle: 'bearer',
+      apiStyle: 'openai'
+    };
+  return { custom, isGlm, isAgnes, provider, providerName, apiKey, resolvedModel, config };
+}
+
+// 联网检索工具定义（OpenAI Function Calling 协议）
+const WEB_SEARCH_TOOL = [{
+  type: 'function',
+  function: {
+    name: 'web_search',
+    description: '联网查询实时资料：行业就业与薪资、考试升学政策与时间、理财资产、健康营养、生活消费与政策、技能学习方案、法律法规、人际关系研究结论。可并列提出多个关键词；同一问题最多检索 3 次，超出上限的需求会转入待审批队列，因此优先把最关键的查询一次提全',
+    parameters: { type: 'object', properties: { q: { type: 'string', description: '搜索关键词' } }, required: ['q'] }
+  }
+}];
+
+// 带工具调用的单轮请求：仅 OpenAI 兼容协议可用，返回模型原始消息对象供调用方判断是否发起检索
+async function callAIChatWithTools(model, messages, tools, timeoutMs = 40000, maxTokens = 800) {
+  const { apiKey, providerName, isGlm, config } = await prepareModel(model);
+  if (!apiKey) return { error: `未配置 ${providerName} API Key` };
+  // Anthropic 协议请求体结构不同，此处只走 OpenAI 兼容协议；不支持时由调用方记录提示，本次不联网
+  if (config.apiStyle !== 'openai') return { unsupported: true };
+
+  const headers = { 'Content-Type': 'application/json' };
+  if (config.authStyle === 'x-api-key') headers['x-api-key'] = apiKey;
+  else headers['Authorization'] = `Bearer ${apiKey}`;
+
+  const response = await fetch(config.url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: config.model,
+      messages,
+      tools,
+      tool_choice: 'auto',
+      temperature: 0.2,
+      max_tokens: maxTokens,
+      ...(isGlm ? { thinking: { type: 'disabled' } } : {})
+    }),
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    throw new Error(`AI API 请求失败 (${response.status}): ${errText.slice(0, 200)}`);
+  }
+  const data = await response.json();
+  return { message: data.choices?.[0]?.message || {} };
+}
+
 async function callAI(systemPrompt, userPrompt, imagePath, model = 'agnes', timeoutMs = 30000, maxTokens = 800) {
-  if (typeof model !== 'string' || !/^(?:agnes$|agnes-|glm-)/.test(model) || model.length > 100) throw new Error('不支持的模型，请选择官网模型');
   const startTime = Date.now();
-  const isGlm = model.startsWith('glm-');
-  const provider = isGlm ? 'glm' : 'agnes';
-  const apiKey = await getUserSecret(`${provider}_api_key`);
+  const { isGlm, provider, providerName, apiKey, resolvedModel, config } = await prepareModel(model);
   if (!apiKey) {
-    const nameMap = { agnes: 'Agnes', glm: '智谱GLM' };
-    const msg = `⚠️ 未配置 ${nameMap[provider] || provider} API Key，请在设置中配置。`;
+    const msg = `⚠️ 未配置 ${providerName} API Key，请在设置中配置。`;
     // 记录无 Key 日志
     try {
       await pool.execute(
@@ -5440,16 +10692,10 @@ async function callAI(systemPrompt, userPrompt, imagePath, model = 'agnes', time
     return msg;
   }
 
-  // 模型配置
-  const isAgnes = model === 'agnes' || model.startsWith('agnes-');
-  let resolvedModel = model;
-  if (model === 'agnes') resolvedModel = 'agnes-2.5-flash';
+  // 图像场景下 GLM 需要切到视觉模型
   if (imagePath && isGlm && !/v(?:-|$)/.test(model) && !model.includes('thinking-flash')) {
-    resolvedModel = 'glm-4.6v-flash';
+    config.model = 'glm-4.6v-flash';
   }
-  const config = isAgnes
-    ? { url: 'https://apihub.agnes-ai.com/v1/chat/completions', model: resolvedModel }
-    : { url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', model: resolvedModel };
 
   const messages = [
     { role: 'system', content: systemPrompt }
@@ -5489,19 +10735,24 @@ async function callAI(systemPrompt, userPrompt, imagePath, model = 'agnes', time
     if (imagePath && imagePath.startsWith('uploads/')) {
       requestContent += `\n[图片] ${imagePath}`;
     }
+    const isAnthropic = config.apiStyle === 'anthropic';
+    const headers = { 'Content-Type': 'application/json' };
+    if (config.authStyle === 'x-api-key') headers['x-api-key'] = apiKey;
+    else headers['Authorization'] = `Bearer ${apiKey}`;
+    if (isAnthropic) headers['anthropic-version'] = '2023-06-01';
+
     const response = await fetch(config.url, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: config.model,
-        messages,
-        temperature: 0.2,
-        max_tokens: maxTokens,
-        ...(isGlm ? { thinking: { type: 'disabled' } } : {})
-      }),
+      headers,
+      body: JSON.stringify(isAnthropic
+        ? { model: config.model, system: systemPrompt, messages: messages.filter(item => item.role !== 'system'), max_tokens: maxTokens }
+        : {
+          model: config.model,
+          messages,
+          temperature: 0.2,
+          max_tokens: maxTokens,
+          ...(isGlm ? { thinking: { type: 'disabled' } } : {})
+        }),
       signal: AbortSignal.timeout(timeoutMs)
     });
 
@@ -5511,16 +10762,23 @@ async function callAI(systemPrompt, userPrompt, imagePath, model = 'agnes', time
     }
 
     const data = await response.json();
-    const msg = data.choices?.[0]?.message;
-    content = msg?.content;
-    // 推理模型可能 content 为空但 reasoning_content 有值
-    if ((!content || (typeof content === 'string' && !content.trim())) && msg?.reasoning_content) {
-      content = msg.reasoning_content;
-    }
-    if (Array.isArray(content)) {
-      content = content.map(item => item?.text || '').join('') || 'AI 未返回有效结果';
+    if (isAnthropic) {
+      // Anthropic 兼容响应：content 为内容块数组
+      content = Array.isArray(data.content)
+        ? (data.content.map(item => item?.text || '').join('') || 'AI 未返回有效结果')
+        : (data.content || 'AI 未返回有效结果');
     } else {
-      content = content || 'AI 未返回有效结果';
+      const msg = data.choices?.[0]?.message;
+      content = msg?.content;
+      // 推理模型可能 content 为空但 reasoning_content 有值
+      if ((!content || (typeof content === 'string' && !content.trim())) && msg?.reasoning_content) {
+        content = msg.reasoning_content;
+      }
+      if (Array.isArray(content)) {
+        content = content.map(item => item?.text || '').join('') || 'AI 未返回有效结果';
+      } else {
+        content = content || 'AI 未返回有效结果';
+      }
     }
   } catch (err) {
     success = false;
@@ -5871,7 +11129,13 @@ app.get('/api/gold-price', async (req, res) => {
 // 股票现价接口（腾讯财经，国内极速、无key、无403）
 // 腾讯行情接口统一返回 GBK 编码，用这个函数解码而不是 response.text()
 async function fetchGbkText(resp) {
-  const buf = Buffer.from(await resp.arrayBuffer());
+  if (typeof resp.arrayBuffer === 'function') {
+    const buf = Buffer.from(await resp.arrayBuffer());
+    return new TextDecoder('gbk').decode(buf);
+  }
+  const chunks = [];
+  for await (const chunk of resp) chunks.push(Buffer.from(chunk));
+  const buf = Buffer.concat(chunks);
   return new TextDecoder('gbk').decode(buf);
 }
 
@@ -6038,15 +11302,104 @@ function computeHoldingDays(r, today) {
   return entryType === 1 ? Math.max(0, days - 1) : days;
 }
 
+// ===== 日K本地缓存：从外部 API 拉取后落盘，避免每次重复请求，并支持离线回退 =====
+const klineCacheDir = path.join(__dirname, '.cache', 'kline');
+if (!fs.existsSync(klineCacheDir)) fs.mkdirSync(klineCacheDir, { recursive: true });
+const KLINE_CACHE_TTL = 10 * 60 * 1000; // 10 分钟内视为新鲜，直接读本地缓存
+
+function klineCachePath(stockCode) {
+  return path.join(klineCacheDir, `${String(stockCode).replace(/[^0-9A-Za-z._-]/g, '')}.json`);
+}
+function readKlineCache(stockCode) {
+  try {
+    const obj = JSON.parse(fs.readFileSync(klineCachePath(stockCode), 'utf8'));
+    return Array.isArray(obj?.bars) && obj.bars.length ? obj : null;
+  } catch { return null; }
+}
+function writeKlineCache(stockCode, bars) {
+  try { fs.writeFileSync(klineCachePath(stockCode), JSON.stringify({ savedAt: Date.now(), bars })); } catch {}
+}
+
+// 优先读本地缓存；缺失或过期则从外部 API 拉取并落盘；网络异常时退回旧缓存
 async function fetchStockDailyHistory(stockCode, days = 30) {
+  const cached = readKlineCache(stockCode);
+  if (cached && Date.now() - cached.savedAt < KLINE_CACHE_TTL) return cached.bars;
+  try {
+    const bars = await fetchStockDailyHistoryRemote(stockCode, days);
+    if (bars && bars.length) { writeKlineCache(stockCode, bars); return bars; }
+    return cached ? cached.bars : [];
+  } catch (error) {
+    if (cached) return cached.bars;
+    throw error;
+  }
+}
+
+// ===== 汇率缓存：无 KEY 公共接口 fawazahmed0 =====
+const forexCachePath = path.join(__dirname, '.cache', 'forex.json');
+const FOREX_CACHE_TTL = 24 * 60 * 60 * 1000; // 1 天缓存，该接口每日更新一次
+
+function readForexCache() {
+  try { return JSON.parse(fs.readFileSync(forexCachePath, 'utf8')); } catch { return null; }
+}
+function writeForexCache(obj) {
+  try { fs.writeFileSync(forexCachePath, JSON.stringify(obj)); } catch {}
+}
+// 受支持的计价货币，与前端 CURRENCY_META 保持一致
+const FOREX_SUPPORTED = ['CNY', 'USD', 'EUR', 'JPY', 'HKD', 'GBP'];
+
+// 上游 fawazahmed0 以 CNY 为基准返回小写币种键（usd/eur/...）：
+// 这里统一转大写、只保留受支持币种、过滤非法值，缓存文件与接口返回格式保持一致
+function normalizeForexRates(src) {
+  const out = { CNY: 1 };
+  for (const code of FOREX_SUPPORTED) {
+    if (code === 'CNY') continue;
+    const v = Number(src?.[code.toLowerCase()] ?? src?.[code]);
+    if (Number.isFinite(v) && v > 0) out[code] = v;
+  }
+  return out;
+}
+
+async function fetchForexRates() {
+  const cached = readForexCache();
+  if (cached?.rates && Date.now() - cached.savedAt < FOREX_CACHE_TTL) {
+    return { ...cached, rates: normalizeForexRates(cached.rates) };
+  }
+  try {
+    const res = await fetch('https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/cny.json', {
+      signal: AbortSignal.timeout(10000),
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    if (!res.ok) throw new Error('upstream ' + res.status);
+    const json = await res.json();
+    const saved = { savedAt: Date.now(), rates: normalizeForexRates(json?.cny) }; // 1 CNY = x 目标币
+    writeForexCache(saved);
+    return saved;
+  } catch (e) {
+    // 网络异常时退回旧缓存，确保离线可用
+    return cached
+      ? { ...cached, rates: normalizeForexRates(cached.rates) }
+      : { savedAt: 0, rates: { CNY: 1 } };
+  }
+}
+
+app.get('/api/forex/rates', async (req, res) => {
+  try {
+    const data = await fetchForexRates(); // 键名归一化已在 fetchForexRates 内完成
+    res.json({ ok: true, savedAt: data.savedAt, rates: data.rates });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
+async function fetchStockDailyHistoryRemote(stockCode, days = 30) {
   const tencentCode = stockCodeToTencent(stockCode);
   if (!tencentCode) return [];
   // 日期范围放宽到 days*2 个日历日
   const end = new Date();
   const start = new Date(end.getTime() - days * 2 * 24 * 3600 * 1000);
-  const fmt = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const fmt = d => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
   const count = Math.max(days * 2, 320);
-  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${tencentCode},day,${fmt(start)},${fmt(end)},${count},qfq`;
+  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${tencentCode},day,,,${count},qfq`;
   let response, text, json;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -6062,6 +11415,7 @@ async function fetchStockDailyHistory(stockCode, days = 30) {
     }
   }
   const dataNode = json?.data?.[tencentCode];
+  if (json?.code && json.code !== 0) return [];
   if (!dataNode) return [];
   const klines = dataNode.qfqday || dataNode.day || [];
   const history = klines.map(k => ({
@@ -9064,6 +14418,7 @@ async function mergeExistingInvestorAliases() {
 let server = null;
 
 async function startServer() {
+  await initTaskTables(getRawPool());
   try {
     await ensureAiArticlesTable();
     await migrate();
@@ -9087,12 +14442,34 @@ async function startServer() {
     await fixNullCategories();
     server = app.listen(port, () => {
       console.log(`服务器运行在 http://localhost:${port}`);
+      // 搜索链路开机自启 + 真实可用性自检：拉起 Docker Desktop → SearXNG 容器 → 端到端探测
+      // （缺 Docker / 引擎起不来时自动降级到 Bing，全程不阻塞 Express 启动）
+      if (process.env.BACKGROUND_JOBS_ENABLED !== 'false') {
+        setImmediate(async () => {
+          // 先按系统设置恢复降级链顺序，再跑自检：用户手动排过顺序时，自检不再覆盖它
+          try {
+            const [orderRows] = await pool.query("SELECT setting_value FROM ai_settings WHERE setting_key = 'search_source_order'");
+            const order = parseSearchSourceOrder(orderRows[0]?.setting_value);
+            if (order.length) setSourceOrder(order);
+          } catch (e) { console.warn('[搜索顺序] 读取设置失败:', e.message); }
+          startSearchStack()
+            .then(({ searxng, health }) => {
+              console.log('[SearXNG]', searxng.started ? `就绪（${searxng.reason}）` : `未启用（${searxng.reason}）`);
+              console.log(`[搜索链路] 自检完成，当前主力源：${health.healthy || '无，将走 Tavily 兜底'}`);
+            })
+            .catch(e => console.warn('[搜索环境] 启动流程异常（已忽略，搜索自动降级）:', e.message));
+        });
+      }
       // 延迟 3 秒预热行情缓存（新浪 70 页要 40+ 秒，首次后台跑不阻塞）
       if (process.env.BACKGROUND_JOBS_ENABLED !== 'false') setTimeout(() => {
         fetchMarketOverview().then(d => {
           if (d) console.log('[market] 预热完成:', d.totalAmountYi, '亿, 涨' + d.riseCount + '/跌' + d.fallCount);
         }).catch(e => console.warn('[market] 预热失败:', e.message));
       }, 3000);
+      // 启动即预热打新日历缓存（akshare 约 16 秒，后台跑，避免用户首次打开等待）
+      if (process.env.BACKGROUND_JOBS_ENABLED !== 'false') refreshIpoCalendar()
+        .then(c => console.log('[IpoCalendar] 预热完成:', c.rows.length, '行，来源', c.source))
+        .catch(e => console.warn('[IpoCalendar] 预热失败:', e.message));
 // ===== 盘中实时止盈检测 =====
 // 每 60s 扫一次所有未止盈、未锁定的追踪股，用腾讯实时价判断：
 //   现价 vs 买入价 的涨幅 >= 该条的 targetProfit% → 立刻固化并锁定
@@ -9216,6 +14593,14 @@ async function checkIntradayProfit() {
         fetchMarketOverview().catch(() => {});
         checkIntradayProfit().catch(() => {});
       }, 60000);
+
+      // 人生规划 · 后台自主增量生长：纯逻辑推演免费扩图，每 30 分钟往下拆一层
+      if (process.env.BACKGROUND_JOBS_ENABLED !== 'false') {
+        setTimeout(() => backgroundLifeGrow().catch(err => console.warn('[life-grow]', err.message)), 90000);
+        setInterval(() => backgroundLifeGrow().catch(err => console.warn('[life-grow]', err.message)), 30 * 60 * 1000);
+        // 资料检索每 30 分钟自动归集一批 pending 需求，产出检索清单 + 预估账单，等待人工审批
+        setInterval(() => collectLifeRetrievalBatch().catch(err => console.warn('[life-retrieval]', err.message)), 30 * 60 * 1000);
+      }
     });
   } catch (error) {
     console.error('服务器初始化失败:', error);
@@ -9226,6 +14611,8 @@ async function checkIntradayProfit() {
 
 async function shutdown() {
   stopWechatMonitor();
+  // 注意：不再随服务退出停掉 SearXNG 容器——容器带 --restart unless-stopped，
+  // 常驻可让下次启动秒级复用，也能在 Docker 引擎重启后自动跟着起来（线上环境不会执行）
   console.log('\n正在关闭服务器...');
   if (!server) {
     await pool.end().catch(() => {});
@@ -9259,4 +14646,3 @@ bootstrap().catch(async error => {
   await getRawPool().end().catch(() => {});
   process.exitCode = 1;
 });
-

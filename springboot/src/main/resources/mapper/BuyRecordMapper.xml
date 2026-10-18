@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.BuyRecordMapper">
+
+  <sql id="buyColumns">
+    id, stock_id, buy_price, buy_count, commission, transfer_fee, handling_fee, regulatory_fee,
+    t_type, t_profit, cost_change, t_group_id,
+    DATE_FORMAT(buy_date, '%Y-%m-%d') AS buy_date_str,
+    DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at_str
+  </sql>
+
+  <select id="listByStockId" resultType="com.wangwenlin.stock.model.BuyRecordRow">
+    SELECT <include refid="buyColumns"/>
+    FROM buy_records WHERE stock_id = #{stockId} ORDER BY buy_date ASC, created_at ASC
+  </select>
+
+  <select id="listByStockIds" resultType="com.wangwenlin.stock.model.BuyRecordRow">
+    SELECT <include refid="buyColumns"/>
+    FROM buy_records WHERE stock_id IN
+    <foreach collection="stockIds" item="item" open="(" separator="," close=")">#{item}</foreach>
+    ORDER BY buy_date ASC, created_at ASC
+  </select>
+
+  <insert id="insertRecord">
+    INSERT INTO buy_records (id, stock_id, buy_date, buy_price, buy_count, commission, transfer_fee, handling_fee, regulatory_fee, t_type, t_profit, cost_change, t_group_id)
+    VALUES (#{id}, #{stockId}, #{buyDate}, #{buyPrice}, #{buyCount}, #{commission}, #{transferFee}, #{handlingFee}, #{regulatoryFee}, #{tType}, #{tProfit}, #{costChange}, #{tGroupId})
+  </insert>
+
+  <update id="updateFields">
+    UPDATE buy_records
+    <set>
+      <if test="_parameter.containsKey('buyDate')">buy_date = #{buyDate},</if>
+      <if test="_parameter.containsKey('buyPrice')">buy_price = #{buyPrice},</if>
+      <if test="_parameter.containsKey('buyCount')">buy_count = #{buyCount},</if>
+      <if test="_parameter.containsKey('commission')">commission = #{commission},</if>
+      <if test="_parameter.containsKey('transferFee')">transfer_fee = #{transferFee},</if>
+      <if test="_parameter.containsKey('handlingFee')">handling_fee = #{handlingFee},</if>
+      <if test="_parameter.containsKey('regulatoryFee')">regulatory_fee = #{regulatoryFee},</if>
+      <if test="_parameter.containsKey('tType')">t_type = #{tType},</if>
+      <if test="_parameter.containsKey('tProfit')">t_profit = #{tProfit},</if>
+      <if test="_parameter.containsKey('costChange')">cost_change = #{costChange},</if>
+      <if test="_parameter.containsKey('tGroupId')">t_group_id = #{tGroupId},</if>
+    </set>
+    WHERE id = #{id}
+  </update>
+
+  <delete id="deleteById">
+    DELETE FROM buy_records WHERE id = #{id}
+  </delete>
+
+</mapper>

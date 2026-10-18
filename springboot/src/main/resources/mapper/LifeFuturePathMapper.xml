@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.LifeFuturePathMapper">
+
+  <select id="selectAll" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_future_paths ORDER BY sort_order ASC, created_at ASC
+  </select>
+
+  <select id="selectTop40" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_future_paths ORDER BY sort_order ASC LIMIT 40
+  </select>
+
+  <select id="selectByName" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_future_paths WHERE name = #{name} LIMIT 1
+  </select>
+
+  <insert id="insertPath">
+    INSERT INTO life_future_paths
+      (id, name, advantages, risks, prerequisites, evolution, score, node_id, source, sort_order, created_at, updated_at)
+    VALUES
+      (#{id}, #{name}, #{advantages}, #{risks}, #{prerequisites}, #{evolution}, #{score}, #{node_id}, #{source}, #{sort_order}, #{created_at}, #{updated_at})
+  </insert>
+
+  <delete id="deleteById">
+    DELETE FROM life_future_paths WHERE id = #{id}
+  </delete>
+
+  <!-- 只更新请求里出现过的列（对齐 server.js 10009 的动态字段拼接） -->
+  <update id="updatePath">
+    UPDATE life_future_paths
+    <set>
+      <if test="name != null">name = #{name},</if>
+      <if test="advantages != null">advantages = #{advantages},</if>
+      <if test="risks != null">risks = #{risks},</if>
+      <if test="prerequisites != null">prerequisites = #{prerequisites},</if>
+      <if test="evolution != null">evolution = #{evolution},</if>
+      <if test="node_id != null">node_id = #{node_id},</if>
+      <if test="score != null">score = #{score},</if>
+      <if test="sort_order != null">sort_order = #{sort_order},</if>
+      updated_at = #{updated_at}
+    </set>
+    WHERE id = #{id}
+  </update>
+
+</mapper>

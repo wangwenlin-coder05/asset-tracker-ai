@@ -1,7 +1,6 @@
 <template>
   <div v-if="!auth.ready" class="auth-page">正在检查登录状态…</div>
   <template v-else-if="auth.user">
-    <div class="account-chip"><span>{{ auth.user.email }}</span><button @click="signOut">退出登录</button><span v-if="error">{{ error }}</span></div>
     <BusinessApp />
   </template>
   <main v-else class="auth-page">

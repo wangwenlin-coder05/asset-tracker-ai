@@ -6,6 +6,7 @@ import { useGold } from './useGold'
 
 const deposits = ref([])
 const loading = ref(false)
+let loadDepositsPromise = null
 let bindSyncInitialized = false
 
 function setupBindSync() {
@@ -71,15 +72,21 @@ export function useDeposit() {
   const totalAmount = computed(() => sumByFilter(deposits.value, item => !item.excludeTotal, 'amount'))
 
   async function loadDeposits() {
+    // 同一时刻只允许一个请求：切换看板时的统一刷新与看板自身 onMounted 的加载会合并为一次
+    if (loadDepositsPromise) return loadDepositsPromise
     loading.value = true
-    try {
-      const data = await depositApi.getDeposits()
-      deposits.value = data
-    } catch (error) {
-      console.error('Failed to load deposits:', error)
-    } finally {
-      loading.value = false
-    }
+    loadDepositsPromise = (async () => {
+      try {
+        const data = await depositApi.getDeposits()
+        deposits.value = data
+      } catch (error) {
+        console.error('Failed to load deposits:', error)
+      } finally {
+        loading.value = false
+        loadDepositsPromise = null
+      }
+    })()
+    return loadDepositsPromise
   }
 
   async function addDeposit(data) {

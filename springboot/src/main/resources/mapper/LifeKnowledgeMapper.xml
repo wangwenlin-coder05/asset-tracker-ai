@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wangwenlin.stock.mapper.LifeKnowledgeMapper">
+
+  <select id="selectRecent" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_knowledge
+    ORDER BY created_at DESC
+    LIMIT #{limit}
+  </select>
+
+  <select id="selectById" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_knowledge WHERE id = #{id} LIMIT 1
+  </select>
+
+  <select id="selectByTopic" resultType="java.util.LinkedHashMap">
+    SELECT * FROM life_knowledge WHERE topic = #{topic} LIMIT 1
+  </select>
+
+  <insert id="insertKnowledge">
+    INSERT INTO life_knowledge
+      (id, subject, topic, content, wrong_questions, tags, review_stage, next_review_date, source, created_at, updated_at)
+    VALUES
+      (#{id}, #{subject}, #{topic}, #{content}, #{wrong_questions}, #{tags}, #{review_stage}, #{next_review_date}, #{source}, #{created_at}, #{updated_at})
+  </insert>
+
+  <update id="updateReviewStage">
+    UPDATE life_knowledge
+    SET review_stage = #{reviewStage}, next_review_date = #{nextReviewDate}, updated_at = #{updatedAt}
+    WHERE id = #{id}
+  </update>
+
+  <delete id="deleteById">
+    DELETE FROM life_knowledge WHERE id = #{id}
+  </delete>
+
+  <!-- 等价 server.js 10101：DELETE 前取 topic -->
+  <select id="selectTopicById" resultType="java.util.LinkedHashMap">
+    SELECT topic FROM life_knowledge WHERE id = #{id} LIMIT 1
+  </select>
+
+  <!-- 等价 server.js 10088 的 PUT 动态更新 -->
+  <update id="updateKnowledgeFields">
+    UPDATE life_knowledge
+    <set>
+      <if test="_parameter.containsKey('subject')">subject = #{subject},</if>
+      <if test="_parameter.containsKey('topic')">topic = #{topic},</if>
+      <if test="_parameter.containsKey('content')">content = #{content},</if>
+      <if test="_parameter.containsKey('wrong_questions')">wrong_questions = #{wrong_questions},</if>
+      <if test="_parameter.containsKey('tags')">tags = #{tags},</if>
+      updated_at = #{updated_at}
+    </set>
+    WHERE id = #{id}
+  </update>
+
+</mapper>
